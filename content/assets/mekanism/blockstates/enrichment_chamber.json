@@ -1,0 +1,50 @@
+{
+  "variants": {
+    "facing=north,open=false": {
+      "model": "mekanism:block/enrichment_chamber"
+    },
+    "facing=north,open=true": {
+      "model": "mekanism:block/enrichment_chamber"
+    },
+    "facing=south,open=false": {
+      "model": "mekanism:block/enrichment_chamber",
+      "y": 180
+    },
+    "facing=south,open=true": {
+      "model": "mekanism:block/enrichment_chamber",
+      "y": 180
+    },
+    "facing=east,open=false": {
+      "model": "mekanism:block/enrichment_chamber",
+      "y": 90
+    },
+    "facing=east,open=true": {
+      "model": "mekanism:block/enrichment_chamber",
+      "y": 90
+    },
+    "facing=west,open=false": {
+      "model": "mekanism:block/enrichment_chamber",
+      "y": -90
+    },
+    "facing=west,open=true": {
+      "model": "mekanism:block/enrichment_chamber",
+      "y": -90
+    },
+    "facing=up,open=false": {
+      "model": "mekanism:block/enrichment_chamber",
+      "x": -90
+    },
+    "facing=up,open=true": {
+      "model": "mekanism:block/enrichment_chamber",
+      "x": -90
+    },
+    "facing=down,open=false": {
+      "model": "mekanism:block/enrichment_chamber",
+      "x": 90
+    },
+    "facing=down,open=true": {
+      "model": "mekanism:block/enrichment_chamber",
+      "x": 90
+    }
+  }
+}
