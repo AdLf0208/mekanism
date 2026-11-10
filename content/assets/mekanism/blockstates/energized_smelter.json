@@ -1,0 +1,50 @@
+{
+  "variants": {
+    "facing=north,open=false": {
+      "model": "mekanism:block/energized_smelter"
+    },
+    "facing=north,open=true": {
+      "model": "mekanism:block/energized_smelter"
+    },
+    "facing=south,open=false": {
+      "model": "mekanism:block/energized_smelter",
+      "y": 180
+    },
+    "facing=south,open=true": {
+      "model": "mekanism:block/energized_smelter",
+      "y": 180
+    },
+    "facing=east,open=false": {
+      "model": "mekanism:block/energized_smelter",
+      "y": 90
+    },
+    "facing=east,open=true": {
+      "model": "mekanism:block/energized_smelter",
+      "y": 90
+    },
+    "facing=west,open=false": {
+      "model": "mekanism:block/energized_smelter",
+      "y": -90
+    },
+    "facing=west,open=true": {
+      "model": "mekanism:block/energized_smelter",
+      "y": -90
+    },
+    "facing=up,open=false": {
+      "model": "mekanism:block/energized_smelter",
+      "x": -90
+    },
+    "facing=up,open=true": {
+      "model": "mekanism:block/energized_smelter",
+      "x": -90
+    },
+    "facing=down,open=false": {
+      "model": "mekanism:block/energized_smelter",
+      "x": 90
+    },
+    "facing=down,open=true": {
+      "model": "mekanism:block/energized_smelter",
+      "x": 90
+    }
+  }
+}

@@ -1,0 +1,38 @@
+id = "mekanism"
+kind = "native-mod"
+name = "Mekanism"
+summary = "The Energized Smelter, Enrichment Chamber, Basic Energy Cube and Universal Cable, ported."
+description = """
+A port of [Mekanism](https://github.com/mekanism/Mekanism) by Aidan C. Brady and
+the Mekanism contributors for Horizon. These first slices bring four pieces of
+the ore-processing chain:
+
+- **Energized Smelter** — 50 FE/t, 200 ticks per smelt, a 20,000 FE buffer.
+- **Enrichment Chamber** — the jar's recipes: one ore becomes two dusts, raw ore
+  3 becomes 4, a raw block 1 becomes 12.
+- **Basic Energy Cube** — a 4,000,000 FE buffer with the mod's side
+  configuration.
+- **Basic Universal Cable** — moves 8,000 FE/t between them.
+
+Place them, feed items and FE through their sides, and right-click to open their
+menus. The rest of Mekanism — the other machines, the multiblocks, the tools and
+the deep-tier content — is a planned gap list. MIT — original copyright and
+licence notices are kept in the port repository; see LICENSE and
+LICENSE-NOTICE.md there.
+"""
+authors = ["Aidancbrady", "Thommy101", "Thiakil", "pupnewfster", "dizzyd", "AdLf0208"]
+owners = ["AdLf0208"]
+owner_ids = [107615167]
+license = "MIT"
+source = "https://github.com/AdLf0208/mekanism"
+icon = "icons/mekanism.png"
+categories = ["technology"]
+tags = ["port", "machines", "energy", "ore-processing"]
+
+[[versions]]
+version = "0.1.0"
+published = "2026-11-09"
+game = "26.3"
+file = "mekanism.hnmod"
+sha256 = "66ae69763229c005bf7db6643bbecce273869e8f2eca988f6de3ee57edcac0b4"
+changelog = "First release"

@@ -1,0 +1,12 @@
+# Port-owned content mod for the Mekanism slices 1-2 (energized smelter, basic
+# energy cube, basic universal cable, enrichment chamber and the iron, gold and
+# copper dusts). The models, textures, blockstate,
+# recipes and lang are carried from Mekanism 10.7.19.85
+# (mekanism/Mekanism, MIT); the cube and cable models are plain replacements
+# for upstream's custom model loaders. The Rust is a clean-room rewrite.
+id = "mekanism"
+name = "Mekanism"
+version = "10.7.19"
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
