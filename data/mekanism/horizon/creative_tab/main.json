@@ -1,0 +1,13 @@
+{
+  "title": "Mekanism",
+  "icon": "mekanism:energized_smelter",
+  "items": [
+    "mekanism:energized_smelter",
+    "mekanism:enrichment_chamber",
+    "mekanism:basic_energy_cube",
+    "mekanism:basic_universal_cable",
+    "mekanism:dust_iron",
+    "mekanism:dust_gold",
+    "mekanism:dust_copper"
+  ]
+}

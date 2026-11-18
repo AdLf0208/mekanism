@@ -1,0 +1,27 @@
+{
+  "category": "misc",
+  "key": {
+    "A": {
+      "item": "minecraft:iron_ingot"
+    },
+    "C": {
+      "item": "minecraft:redstone"
+    },
+    "G": {
+      "item": "minecraft:glass"
+    },
+    "X": {
+      "item": "minecraft:iron_block"
+    }
+  },
+  "pattern": [
+    "ACA",
+    "GXG",
+    "ACA"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:energized_smelter"
+  },
+  "type": "minecraft:crafting_shaped"
+}

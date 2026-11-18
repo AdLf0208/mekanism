@@ -1,0 +1,27 @@
+{
+  "category": "misc",
+  "key": {
+    "A": {
+      "item": "minecraft:iron_ingot"
+    },
+    "E": {
+      "item": "minecraft:redstone_block"
+    },
+    "I": {
+      "item": "minecraft:copper_ingot"
+    },
+    "P": {
+      "item": "minecraft:iron_block"
+    }
+  },
+  "pattern": [
+    "AEA",
+    "IPI",
+    "AEA"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:basic_energy_cube"
+  },
+  "type": "minecraft:crafting_shaped"
+}
