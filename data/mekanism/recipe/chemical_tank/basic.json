@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "A": "minecraft:iron_ingot",
+    "O": "minecraft:glass"
+  },
+  "pattern": [
+    "AOA",
+    "O O",
+    "AOA"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:basic_chemical_tank"
+  }
+}

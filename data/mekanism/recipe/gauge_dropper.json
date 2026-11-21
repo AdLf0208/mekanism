@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "equipment",
+  "key": {
+    "G": "minecraft:glass_pane",
+    "O": "minecraft:iron_ingot"
+  },
+  "pattern": [
+    " O ",
+    "G G",
+    "GGG"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:gauge_dropper"
+  }
+}

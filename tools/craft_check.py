@@ -203,6 +203,30 @@ def main() -> int:
         "mekanism:basic_energy_cube", 1, "minecraft:redstone_block",
     )
     check(
+        "basic chemical tank: 4 iron + 4 glass",
+        [
+            ("minecraft:iron_ingot", 4),
+            ("minecraft:glass", 4),
+        ],
+        [
+            ("minecraft:iron_ingot", every(100, 102, 106, 108)),
+            ("minecraft:glass", every(101, 107, 103, 105)),
+        ],
+        "mekanism:basic_chemical_tank", 1, "minecraft:glass",
+    )
+    check(
+        "gauge dropper: iron + 5 glass panes",
+        [
+            ("minecraft:iron_ingot", 1),
+            ("minecraft:glass_pane", 5),
+        ],
+        [
+            ("minecraft:iron_ingot", every(101)),
+            ("minecraft:glass_pane", every(103, 105, 106, 107, 108)),
+        ],
+        "mekanism:gauge_dropper", 1, "minecraft:glass_pane",
+    )
+    check(
         "basic universal cable: 2 iron + redstone, eight at a time",
         [("minecraft:iron_ingot", 2), ("minecraft:redstone", 1)],
         [
@@ -229,6 +253,28 @@ def main() -> int:
         ],
     )
     empty_control(
+        "chemical tank with a stick where the glass goes",
+        [
+            ("minecraft:iron_ingot", 4),
+            ("minecraft:stick", 4),
+        ],
+        [
+            ("minecraft:iron_ingot", every(100, 102, 106, 108)),
+            ("minecraft:stick", every(101, 107, 103, 105)),
+        ],
+    )
+    empty_control(
+        "gauge dropper with a dirt where the glass panes go",
+        [
+            ("minecraft:iron_ingot", 1),
+            ("minecraft:dirt", 5),
+        ],
+        [
+            ("minecraft:iron_ingot", every(101)),
+            ("minecraft:dirt", every(103, 105, 106, 107, 108)),
+        ],
+    )
+    empty_control(
         "crusher with a stick where the magma goes",
         [
             ("minecraft:redstone", 6),
@@ -250,8 +296,8 @@ def main() -> int:
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)
         return 1
-    print("recipe PASS: all five carried shaped recipes craft with their declared id and "
-          "count, their ingredients are consumed, and both wrong-ingredient controls leave "
+    print("recipe PASS: all seven carried shaped recipes craft with their declared id and "
+          "count, their ingredients are consumed, and every wrong-ingredient control leaves "
           "the result empty")
     return 0
 

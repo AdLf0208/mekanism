@@ -7,10 +7,10 @@
 #
 # Cargo's name and version are not the mod's identity: horizon-mod.toml is.
 name = "mekanism"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "MIT"
-description = "Mekanism for Horizon: the Energized Smelter, the Enrichment Chamber, the Crusher, the Basic Energy Cube and the Basic Universal Cable"
+description = "Mekanism for Horizon: the Energized Smelter, the Enrichment Chamber, the Crusher, the Basic Energy Cube, the Basic Universal Cable, and the chemical capability (the Basic Chemical Tank and the Gauge Dropper)"
 publish = false
 
 [dependencies]

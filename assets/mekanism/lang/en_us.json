@@ -1,4 +1,5 @@
 {
+  "block.mekanism.basic_chemical_tank": "Basic Chemical Tank",
   "block.mekanism.basic_energy_cube": "Basic Energy Cube",
   "block.mekanism.basic_universal_cable": "Basic Universal Cable",
   "block.mekanism.crusher": "Crusher",
@@ -20,12 +21,15 @@
   "container.mekanism.crusher": "Crusher",
   "container.mekanism.energized_smelter": "Energized Smelter",
   "container.mekanism.enrichment_chamber": "Enrichment Chamber",
+  "description.mekanism.basic_chemical_tank": "A tank that holds one chemical, filled and drained through the chemical capability.",
   "description.mekanism.crusher": "A simple machine used to crush blocks and ores into their counterparts, such as cobblestone into gravel.",
   "description.mekanism.energized_smelter": "A simple machine that serves as a Mekanism-based furnace that runs off of energy.",
   "description.mekanism.enrichment_chamber": "A simple machine used to enrich ores into two of their dust counterparts, as well as perform many other operations.",
+  "description.mekanism.gauge_dropper": "A hand-held container that carries up to 16,000 units of one chemical.",
   "item.mekanism.dust_copper": "Copper Dust",
   "item.mekanism.dust_gold": "Gold Dust",
   "item.mekanism.dust_iron": "Iron Dust",
+  "item.mekanism.gauge_dropper": "Gauge Dropper",
   "sound_event.mekanism.tile.machine.crusher": "Crusher grinds",
   "sound_event.mekanism.tile.machine.energized_smelter": "Smelter whines",
   "sound_event.mekanism.tile.machine.enrichment_chamber": "Enricher hums"

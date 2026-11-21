@@ -54,11 +54,17 @@
 #     nothing (control 4), and a chamber with no cable gets no energy (control 5);
 #  E  every machine's energy, progress and slots survive save + relaunch (the
 #     block entity's saved compound).
+#  F  the chemical capability (slice 4): the published capability names include
+#     `mekanism:chemical`; an insert through the key lands in the Basic Chemical
+#     Tank's saved data (`chemical` + `amount`); part of it drains into the Gauge
+#     Dropper through the item side of the same capability; an unknown chemical
+#     id is refused **by name** and moves nothing; and the same insert against a
+#     crusher, which answers no chemical, moves nothing (the counterfactual).
 #
 # NOCABLE=1 runs the cable scenario without the cable and asserts that the
 # smelter and the chamber stay empty (the differential control passing).
-# SELFTEST=1 flips the smelting and crushing assertions (they must FAIL),
-# proving the scenario can fail.
+# SELFTEST=1 flips the chemical insert assertion of phase F (it must FAIL), so
+# the new family's own check is the one proven able to fail.
 #
 # CONTROL=1 (needs CONTROL_GAME=<an unmodded horizon-client>) first launches
 # that game in its own scratch home and world and shows that the block ids are
@@ -93,6 +99,8 @@ CUBE=mekanism:basic_energy_cube
 CABLE=mekanism:basic_universal_cable
 CHAMBER=mekanism:enrichment_chamber
 CRUSHER=mekanism:crusher
+TANK=mekanism:basic_chemical_tank
+DROPPER=mekanism:gauge_dropper
 DUST=mekanism:dust_iron
 
 [ -n "$GAME" ] || { echo "set GAME=<the launcher-built horizon-client> (see the header)" >&2; exit 1; }
@@ -180,6 +188,61 @@ expect_energy() { # expect_energy X Y Z BLOCK_ID OP VALUE
     done
     echo "  energy($1,$2,$3): ${got:-none}"
     [ "$ok" = 1 ] || fail "expected $5 $6 FE at $1,$2,$3, got '${got:-nothing}'"
+}
+
+# How many `/mekanism chemical ...` answers the game's log holds so far, and the
+# newest of them: every reply of that family starts with `chemical: `, so one
+# grep cannot pick up another phase's line.
+chem_lines() { grep -acE "\[CHAT\] chemical: " "$HORIZON_HOME/logs/latest.log" 2>/dev/null || true; }
+chem_last() { grep -aE "\[CHAT\] chemical: " "$HORIZON_HOME/logs/latest.log" 2>/dev/null | tail -1 | sed 's/.*\[CHAT\] //' || true; }
+
+# Run one `/mekanism chemical` command **once** and return its answer, waiting
+# for a line the log did not hold before: a command that moves a chemical must
+# never be re-sent by a retry loop.
+chem_once() { # chem_once ARGS...
+    local ask=("$@") before
+    before=$(chem_lines)
+    say "mekanism chemical ${ask[*]}" >/dev/null
+    for _ in $(seq 1 12); do
+        ctl wait 4 >/dev/null
+        [ "$(chem_lines)" -gt "$before" ] && break
+    done
+    chem_last
+}
+
+# `/mekanism info` at the tank: its line is the tank's, not "No block entity
+# there.", and it arrives as the same `chemical: ` family.
+tank_info() {
+    local before
+    before=$(chem_lines)
+    say "mekanism info 16 64 26" >/dev/null
+    for _ in $(seq 1 12); do
+        ctl wait 4 >/dev/null
+        [ "$(chem_lines)" -gt "$before" ] && break
+    done
+    chem_last
+}
+
+# One command, then assert its answer says TEXT.
+expect_chem() { # expect_chem TEXT -- ARGS...
+    local want=$1 line
+    shift 2
+    line=$(chem_once "$@")
+    echo "  chemical $*: $line"
+    case "$line" in
+        *"$want"*) ;;
+        *) fail "expected /mekanism chemical $* to say '$want', got '$line'" ;;
+    esac
+}
+
+# One `/data get block` reply line, for asserting saved data exactly.
+block_data() { # block_data X Y Z PATH
+    ctl command "data get block $1 $2 $3 $4" | jq -r '.chat[0] // ""'
+}
+
+# One `/data get entity` reply line (the player's held stack and its components).
+entity_data() { # entity_data TARGET [PATH]
+    ctl command "data get entity $1 ${2:-}" | jq -r '.chat[0] // ""'
 }
 
 cleanup() {
@@ -313,8 +376,8 @@ arena
 # A. Content: every carried block and item, the unknown id, the loot tables
 # ---------------------------------------------------------------------------
 echo "== A1: every carried block and item is give-able =="
-BLOCKS=("$SMELTER" "$CHAMBER" "$CRUSHER" "$CUBE" "$CABLE")
-ITEMS=("mekanism:dust_iron" "mekanism:dust_gold" "mekanism:dust_copper")
+BLOCKS=("$SMELTER" "$CHAMBER" "$CRUSHER" "$CUBE" "$CABLE" "$TANK")
+ITEMS=("mekanism:dust_iron" "mekanism:dust_gold" "mekanism:dust_copper" "$DROPPER")
 for id in "${BLOCKS[@]}" "${ITEMS[@]}"; do
     ctl command "clear @s" >/dev/null
     ctl give "$id" 1 >/dev/null || fail "give $id failed"
@@ -335,6 +398,119 @@ ctl wait 3
 [ "$(block_name 6 64 26)" = "minecraft:air" ] \
     || fail "an unknown block id was accepted: $(block_name 6 64 26)"
 echo "  ${#BLOCKS[@]} blocks place and read back; an unknown id is refused"
+
+# ---------------------------------------------------------------------------
+# F. The chemical capability: one tank, one item, one id table (slice 4)
+# ---------------------------------------------------------------------------
+# The tank stands clear of every other phase at 16,64,26; the counterfactual's
+# crusher at 18,64,26. `mekanism:chemical` is asked exactly as another mod's
+# crate would: `LevelRef::capability` by name, then the handler's own
+# insert/extract. Nothing here reads the block entity's fields directly except
+# the two `/data get block` assertions that prove what was saved.
+echo "== F1: the chemical capability is published by name, with Mekanism's ids =="
+CHEM_LIST=$(chem_once list)
+echo "  chemical list: $CHEM_LIST"
+case "$CHEM_LIST" in
+    *"32 chemicals"*) ;;
+    *) fail "the chemical id table did not answer: $CHEM_LIST" ;;
+esac
+case "$CHEM_LIST" in
+    *mekanism:chemical*) ;;
+    *) fail "mekanism:chemical is not among the published capabilities: $CHEM_LIST" ;;
+esac
+case "$CHEM_LIST" in
+    *"32 chemicals, mekanism:hydrogen among them"*) ;;
+    *) fail "mekanism:hydrogen is not in the id table: $CHEM_LIST" ;;
+esac
+
+echo "== F2: an insert through the capability lands in the tank's saved data =="
+place 16 64 26 "$TANK"
+CHEM_WANT="inserted 4000 mekanism:hydrogen into mekanism:basic_chemical_tank (4000/64000)"
+if [ "$SELFTEST" = 1 ]; then
+    echo "(selftest: asserting the insert moved nothing)"
+    CHEM_WANT="inserted 0 mekanism:hydrogen"
+fi
+expect_chem "$CHEM_WANT" -- insert 4000 mekanism:hydrogen 16 64 26
+CHEM_SAVED=$(block_data 16 64 26 chemical)
+CHEM_AMOUNT=$(block_data 16 64 26 amount)
+echo "  data get block 16 64 26 chemical: $CHEM_SAVED"
+echo "  data get block 16 64 26 amount: $CHEM_AMOUNT"
+case "$CHEM_SAVED" in
+    *\"mekanism:hydrogen\"*) ;;
+    *) fail "the tank's saved chemical is not mekanism:hydrogen: $CHEM_SAVED" ;;
+esac
+case "$CHEM_AMOUNT" in
+    *"4000"*) ;;
+    *) fail "the tank's saved amount is not 4000: $CHEM_AMOUNT" ;;
+esac
+expect_chem "holds mekanism:hydrogen 4000/64000 (answered by mekanism)" -- read 16 64 26
+# `/mekanism info` at a tank answers its tank rather than claiming there is no
+# block entity where there is one.
+TANK_INFO=$(tank_info)
+echo "  mekanism info 16 64 26: $TANK_INFO"
+case "$TANK_INFO" in
+    *"mekanism:basic_chemical_tank holds mekanism:hydrogen 4000/64000"*) ;;
+    *) fail "/mekanism info at the tank did not answer its tank: $TANK_INFO" ;;
+esac
+
+echo "== F3: part of it drains into the gauge dropper through the item capability =="
+ctl command "clear @s" >/dev/null
+ctl give "$DROPPER" 1 >/dev/null || fail "give $DROPPER failed"
+ctl wait 3
+ctl select "$DROPPER" >/dev/null
+# Survival, not creative: a creative hand gives an item without losing the old
+# stack, so the exchange would leave the plain dropper in hand and put the filled
+# one in the inventory. Survival replaces it where it is, as a bucket does.
+ctl command "gamemode survival @s" >/dev/null
+ctl wait 3
+# The dropper moves at most its own transfer rate (250 a call), so asking for
+# 1,000 moves 250: the item's limit is the item's, not the tank's.
+expect_chem "drained 250 mekanism:hydrogen into the gauge dropper (tank 3750/64000, dropper 250/16000)" \
+    -- drain 1000 16 64 26
+CHEM_AMOUNT=$(block_data 16 64 26 amount)
+echo "  data get block 16 64 26 amount: $CHEM_AMOUNT"
+case "$CHEM_AMOUNT" in
+    *"3750"*) ;;
+    *) fail "the tank did not lose exactly the 250 the dropper took: $CHEM_AMOUNT" ;;
+esac
+DROPPER_DATA=$(entity_data @s SelectedItem)
+echo "  data get entity @s SelectedItem: $DROPPER_DATA"
+case "$DROPPER_DATA" in
+    *"mekanism:chemical"*) ;;
+    *) fail "the dropper's stack has no mekanism:chemical component: $DROPPER_DATA" ;;
+esac
+case "$DROPPER_DATA" in
+    *mekanism:hydrogen*) ;;
+    *) fail "the dropper's component does not name mekanism:hydrogen: $DROPPER_DATA" ;;
+esac
+case "$DROPPER_DATA" in
+    *"amount: 250"*) ;;
+    *) fail "the dropper's component does not hold 250: $DROPPER_DATA" ;;
+esac
+expect_chem "the gauge dropper holds mekanism:hydrogen 250/16000" -- dropper
+ctl command "gamemode creative @s" >/dev/null
+ctl wait 2
+
+echo "== F4: an unknown chemical id is refused by name and moves nothing =="
+expect_chem "unknown chemical mekanism:unobtainium" -- insert 500 mekanism:unobtainium 16 64 26
+CHEM_AMOUNT=$(block_data 16 64 26 amount)
+echo "  data get block 16 64 26 amount: $CHEM_AMOUNT"
+case "$CHEM_AMOUNT" in
+    *"3750"*) ;;
+    *) fail "a refused chemical changed the tank: $CHEM_AMOUNT" ;;
+esac
+
+echo "== F5: the counterfactual: a block entity that answers no chemical moves nothing =="
+# The same insert as F2 against a crusher: a real mod block entity with its own
+# container and energy buffer, which does not answer `mekanism:chemical`.
+place 18 64 26 "$CRUSHER"
+expect_chem "no chemical handler at 18 64 26" -- insert 1000 mekanism:hydrogen 18 64 26
+CHEM_ABSENT=$(block_data 18 64 26 chemical)
+echo "  data get block 18 64 26 chemical: ${CHEM_ABSENT:-<no such key>}"
+case "$CHEM_ABSENT" in
+    *mekanism:hydrogen*|*"1000"*) fail "the crusher took a chemical it does not answer for: $CHEM_ABSENT" ;;
+esac
+echo "  the same insert moved nothing into a block that answers no chemical"
 
 # ---------------------------------------------------------------------------
 # B. Recipes: the five shaped recipes in a real table, and the blocks' loot
@@ -653,10 +829,10 @@ jq -e '.ok == true and .screen == "container"' <<<"$state" >/dev/null \
 SCREEN_OPEN=1
 
 if [ "$NOCABLE" = 1 ]; then
-    echo "PASS: the blocks answer, and without a cable the charged cube moves no energy into the adjacent smelter or chamber, which never smelt or enrich"
+    echo "PASS: the chemical capability works (an insert lands in the tank's saved data, part of it drains into the gauge dropper, an unknown id and a block that answers no chemical both move nothing), and without a cable the charged cube moves no energy into the adjacent smelter or chamber, which never smelt or enrich"
 elif [ "$SELFTEST" = 1 ]; then
     echo "SELFTEST finished without failing (this is a bug in the test)"
     exit 1
 else
-    echo "PASS: the five blocks, their five shaped recipes and their loot tables work, every carried crushing recipe runs in a real crusher, and the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input and an uncabled neighbour do nothing, the menus open, and the machines' FE, progress and slots survive a save and relaunch"
+    echo "PASS: the six blocks, their seven shaped recipes and their loot tables work, every carried crushing recipe runs in a real crusher, the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input and an uncabled neighbour do nothing, the menus open, the machines' FE, progress and slots survive a save and relaunch, and the chemical capability moves one chemical into the tank's saved data, drains part of it into the gauge dropper through the item capability, and refuses an unknown id by name while a block that answers no chemical moves nothing"
 fi

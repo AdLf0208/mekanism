@@ -990,3 +990,278 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > `check` exit 0; `fits` `made for` at the pin and `fits` at `0b14f8a`; 52 tests, clippy
 > `-D warnings` clean; in game `PASS` + `EXIT:0` with all 145 crushing rows and the five recipes
 > proven, the unmodded game `EXIT:1`, `SELFTEST=1` `EXIT:1`, `NOCABLE=1` `PASS` + `EXIT:0`.
+
+## Slice 4 — the chemical capability (0.2.3, 2026-11-21)
+
+### The scope authority, quoted
+
+The gap line this slice comes from is the port's own (`notes.md` "Gaps / deviations" item 1 and
+`FINDINGS.md` "Next slices" 1 and 6), and the slice-3 note names the missing surface twice:
+
+> Ore processing beyond smelting, enriching and crushing (Purification, Ore Washer, Chemical
+> Injection — all three need a gas), factories, … **the gas system**, …
+
+> **Machines that need new capabilities**: Metallurgic Infuser, Thermal Distillation, Electrolytic
+> Separator, Digital Miner (requires a gas capability and a mod-defined resource type).
+
+The campaign's evidence adds the demand side: at the pin the game publishes **11** capabilities and
+none is chemical (`surface.json`: energy, fluids, items, item_energy, item_fluids, item_items,
+entity_automation, entity_energy, entity_fluids, entity_items, storage), and two ports stopped on
+exactly that — `refinedstorage_mekanism_integration` (`blocked(mekanism:chemical_handler)`) and
+`mekanisticrouters` (`blocked(no-parent-module-api,no-chemical-capability)`).
+
+**Chosen: the chemical capability**, as the smallest honest provider of it: one resource (a chemical
+id + amount), **one** `CapabilityKey` published by the shipped crate, one block entity holding one
+buffer, and one item that carries a chemical through the item side of the same capability. Not the
+gas system, not the factories, not osmium/alloys, not a multiblock — half a chemical system is only
+a chemical system if one round trip through the key works, so the slice is that round trip and
+nothing else.
+
+It fits the **`deep` tier** as a machines-shaped feature: a block entity with its own saved state,
+its capability provider and its item, no entity, renderer, dimension or custom vanilla hook.
+
+### How the SDK's capability mechanism works (read before designing the key)
+
+`ports/_shared/sdk/0a875da/crates/horizon-mod-api/src/parts/capabilities.rs`:
+
+- `PartRegistrar::capability(table, shares_names, name, target, before_game, (provider, handler))` keys
+  providers by **`name`** and refuses one name answered with **two handler types** (it compares the
+  handler's `type_name`), because a lookup of a mod's own capability downcasts to the trait object the
+  asker names (`OwnProvider` holds `Arc<dyn Any>`; only a mod linked with the defining crate knows its
+  handler type).
+- `CapabilityKey<T> { name, default, handler }`: `CapabilityKey::new("mymod:chemicals")` is a **mod's
+  own** capability, answered only by its Parts (`LevelRef::capability` → the table's providers, then
+  the game's `default`). The game's own keys (`ITEMS`, `ENERGY`, `FLUIDS`) fill in `default`.
+- The fixture the brief points at (`#[cfg(any(test, feature = "testing"))] pub mod tests`) is exactly
+  this shape: `Chemical(pub String)`, `CHEMICALS = CapabilityKey::new("test:chemical")`, and a
+  `ChemTank` keeping `chemical` + `amount` in a block entity's saved data. It is a **test** fixture,
+  so the key here is the same shape in a shipped module (`src/chemical.rs`), not a copy of it.
+- Item capabilities are a separate table with their own key type (`ItemCapabilityKey`), as fluids are
+  (`FLUIDS` / `ITEM_FLUIDS`), which is why the item side is `mekanism:item_chemical`.
+
+### What the jar says (upstream truth, read from `v1.21.1-10.7.19.85`)
+
+| value | source | port |
+|---|---|---|
+| 64 buckets of one chemical, 1,000 out per tick | `ChemicalTankTier.java:12` (`BASIC(BaseTier.BASIC, 64 * BUCKET_VOLUME, BUCKET_VOLUME)`) | `TANK_CAPACITY = 64_000` |
+| the tank's one tank, drain and fill slots, side IO | `TileEntityChemicalTank.java:117-133` (`getInitialChemicalTanks`, `getInitialInventory`) | one tank; **no slots** (recorded deviation) |
+| the chemical registry's 32 named chemicals | `MekanismChemicals.java:19-58` | `runtime::CHEMICALS` (ids only, sorted) |
+| a chemical stack serialises as `{id, amount}` | `ChemicalStack.java:80-83` (`MAP_CODEC`, `SerializationConstants.ID`/`AMOUNT`) | the item component `mekanism:chemical` |
+| the gauge dropper holds 16,000, moves 250 a call | `GearConfig.java:159-163` (`gaugeDropperCapacity` 16 × 1,000, `gaugeDroppedTransferRate` 250) | `DROPPER_CAPACITY`, `DROPPER_TRANSFER` |
+| it is a chemical container: `Capabilities.CHEMICAL.getCapability(stack)` | `ItemGaugeDropper.java:78-96` (`use`, shift-clears its tanks) | `ITEM_CHEMICAL` provider over the stack's component |
+| the tank block: machine properties 3.5/16, no `active`, no `facing` | `MekanismBlockTypes.java:836`, `createMachine(...)` at 928-935 | barrel-free block template (`minecraft:iron_block`) with 3.5/16 |
+| the tank's shape is inset (`BlockShapes.CHEMICAL_TANK`) | `MekanismBlockTypes.java:930` | full cube (recorded deviation) |
+
+### The slice, in the port's three layers
+
+- **`src/chemical.rs`** — the published surface: `Chemical` (a namespaced id), `CHEMICAL` (the block
+  key, `mekanism:chemical`), `ITEM_CHEMICAL` (the item key, `mekanism:item_chemical`) and
+  `ITEM_COMPONENT` (`mekanism:chemical`, the component an item's chemical lives in). `Chemical::new`
+  checks the *shape*; whether an id is a chemical Mekanism registers is `runtime::known_chemical`, so a
+  compound written by a later version still reads back instead of being dropped.
+- **`src/runtime.rs`** — the rules: `CHEMICALS` (32 ids), `known_chemical`, `Tank` (`chemical` +
+  `amount`, `amount == 0` is empty whatever the id), `insert_chemical` (unknown id → `Refusal::
+  UnknownChemical(<the id>)`; a different chemical than the held one → 0; capped by the room left),
+  `extract_chemical`, `dropper_move` (at most 250 a call), and the three capacities.
+- **`src/support.rs`** — the glue: `ChemicalTank(BlockSide)` answering `CHEMICAL` for the
+  `basic_chemical_tank` block entity type (reads and writes `chemical` + `amount` through
+  `BlockEntityRef::{data, merge_data}`, so the chunk is marked changed and a transaction can roll it
+  back), `ItemChemicalTank(ItemPlace)` answering `ITEM_CHEMICAL` for `mekanism:gauge_dropper` (the
+  `{id, amount}` component rewritten through `ItemComponentHandler::write`, i.e. an exchange of one),
+  `read_tank`/`write_tank` for the saved shape, and the `/mekanism chemical …` readouts.
+
+The one structural choice worth naming: the tank **does not tick**. Nothing here moves on its own, so
+a capability call is the only writer — which is why the slice sidesteps the `level_tick_post`
+write-back trap entirely (a ticked block entity's writes are overwritten by its own write-back unless
+queued to `level_tick_post`).
+
+### Commands (harness, recorded like `/mekanism info`)
+
+| command | what it does |
+|---|---|
+| `/mekanism chemical list` | the id table's size and a member, plus `block_capability_names(host)` — the game's published capability names, where `mekanism:chemical` now appears |
+| `/mekanism chemical read <pos>` | asks `mekanism:chemical` at `pos` through `LevelRef::capability` and prints what the **handler** answers — and `(answered by <mod>)`, which is the table's word, not this port's |
+| `/mekanism chemical insert <amount> <id> <pos>` (op 2) | inserts through the key, exactly as another mod's crate would; an id outside the table is refused **by name** |
+| `/mekanism chemical drain <amount> <pos>` (op 2) | extracts through the block key and inserts into the gauge dropper in the caller's main hand through the item key, at the dropper's 250-per-call rate; what the dropper refuses goes back into the tank |
+| `/mekanism chemical dropper` | what the held dropper carries, read through the item key |
+
+`/mekanism info` at a chemical tank now answers the tank line instead of "No block entity there." (the
+tank has no FE buffer, so the machine line would have been a lie).
+
+### Red → green
+
+The runtime rules were written as tests first and ran red on `todo!()` bodies
+(`../_shared/evidence/mekanism/slice4-unit-red.log`):
+
+```
+---- runtime::chemical_tests::an_unknown_chemical_is_refused_by_name stdout ----
+thread 'runtime::chemical_tests::an_unknown_chemical_is_refused_by_name' panicked at src/runtime.rs:1939:5:
+not yet implemented: a tank takes a chemical
+...
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 52 filtered out
+```
+
+The glue's saved-shape test ran red the same way (`slice4-glue-red.log`:
+`support::tests::the_saved_chemical_and_amount_read_back … not yet implemented: the tank's saved
+shape`, `1 failed`). Then the implementations made the whole crate green: **63 tests** (was 52) —
+6 new `runtime::chemical_tests`, 3 `chemical::tests`, 2 `support::tests`.
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the capability is published by name, answerable from another crate's lookup | **tested** | `F1`: `published capabilities horizon:items, horizon:energy, horizon:fluids, horizon:storage, mekanism:chemical`; `F2`/`F3` ask it through `LevelRef::capability` (the consumer path) and get `(answered by mekanism)` |
+| the 32-id chemical table; an unknown id refused **by name** | **tested** | `F1` (`32 chemicals, mekanism:hydrogen among them`), `F4` (`unknown chemical mekanism:unobtainium`, tank unchanged at 3,750), unit tests `the_chemical_table_is_mekanism_s_named_chemicals`, `an_unknown_chemical_is_refused_by_name` |
+| the Basic Chemical Tank: block, block entity, 64,000-unit tank, `chemical` + `amount` saved data | **tested** | `A1`/`A2` (give/place/read back), `B2` (loot), `F2` (`data get block … chemical: "mekanism:hydrogen"`, `amount: 4000`), `F2` `/mekanism info` answers the tank line |
+| a chemical inserted through the block key | **tested** | `F2`: `inserted 4000 mekanism:hydrogen into mekanism:basic_chemical_tank (4000/64000)` |
+| a partial extract through the block key into the item | **tested** | `F3`: `drained 250 … (tank 3750/64000, dropper 250/16000)`; `data get block … amount: 3750`; the stack's `components: {"mekanism:chemical": {amount: 250, id: "mekanism:hydrogen"}}` |
+| the Gauge Dropper: item, 16,000 units, 250 a call, its `mekanism:chemical` component | **tested** | `A1` (give), `B1` (crafts), `F3` (the component and the 250 cap), `F3` `chemical dropper: … holds mekanism:hydrogen 250/16000`, unit tests `the_gauge_dropper_moves_at_most_its_transfer_rate` |
+| a block entity that answers no chemical moves nothing (counterfactual) | **tested** | `F5`: `no chemical handler at 18 64 26`, and `data get block 18 64 26 chemical` → `Found no elements matching chemical` |
+| the tank's drain/fill slots and side IO | **not ported** | `TileEntityChemicalTank`'s two `ChemicalInventorySlot`s are a convenience over the same tank; the capability is the interface this slice ships |
+| the tank's inset shape and its own GUI | **not ported** | a full cube over the tank texture (the cube's and cable's recorded deviation); no screen |
+| chemical *items* (gases as items), slurries, pigments, infuse types | **not ported** | the id table names them; no item, no registry entry, no recipe produces one |
+| the chemical-block machine family (washer, injection, separator) | **not ported** | they need this capability *and* their own machines; this slice is the capability they were blocked on |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| runtime rules (RED) | `cargo test --offline chemical_tests` on `todo!()` bodies | **6 failed**, `not yet implemented` (`slice4-unit-red.log`) |
+| glue saved shape (RED) | `cargo test --offline the_saved_chemical` on `todo!()` bodies | **1 failed**, `not yet implemented` (`slice4-glue-red.log`) |
+| tests | `cargo test --offline` | **63 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` | clean (`sdk-fmt.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` | `Built ./target/horizon-mod/mekanism.hmod` (`sdk-build.log`) |
+| same package twice | the same again | **`cmp` identical** (`sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | `mekanism 0.2.3 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **84,180 B, SHA-256 `5e304608…8fd989`**, exit 0 (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, `EXIT:0` (`sdk-fits.log`, sha printed first) |
+| fits, **a different build** | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, `EXIT:0` (`sdk-fits.log`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (94 entries, no packed `Cargo.lock`) |
+| archive shape | `unzip -l mekanism.hmod` | 94 files, no `Cargo.lock` |
+
+The launcher build (`launcher-game.sh build mekanism`, in a slot) printed `Compiling mekanism (1 of
+1)`, which is the trap's check that the binary under test carries this package.
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`ports/_shared/evidence/mekanism-e2e/e2e-package.log` → `PASS` + `EXIT:0`, quoted from phase F:
+
+```
+== F1: the chemical capability is published by name, with Mekanism's ids ==
+  chemical list: chemical: 32 chemicals, mekanism:hydrogen among them; published capabilities horizon:items, horizon:energy, horizon:fluids, horizon:storage, mekanism:chemical
+== F2: an insert through the capability lands in the tank's saved data ==
+  chemical insert 4000 mekanism:hydrogen 16 64 26: chemical: inserted 4000 mekanism:hydrogen into mekanism:basic_chemical_tank (4000/64000)
+  data get block 16 64 26 chemical: 16, 64, 26 has the following block data: "mekanism:hydrogen"
+  data get block 16 64 26 amount: 16, 64, 26 has the following block data: 4000
+  chemical read 16 64 26: chemical: mekanism:basic_chemical_tank holds mekanism:hydrogen 4000/64000 (answered by mekanism)
+  mekanism info 16 64 26: chemical: mekanism:basic_chemical_tank holds mekanism:hydrogen 4000/64000 (answered by mekanism)
+== F3: part of it drains into the gauge dropper through the item capability ==
+  chemical drain 1000 16 64 26: chemical: drained 250 mekanism:hydrogen into the gauge dropper (tank 3750/64000, dropper 250/16000)
+  data get block 16 64 26 amount: 16, 64, 26 has the following block data: 3750
+  data get entity @s SelectedItem: Player… has the following entity data: {components: {"mekanism:chemical": {amount: 250, id: "mekanism:hydrogen"}}, count: 1, id: "mekanism:gauge_dropper"}
+  chemical dropper: chemical: the gauge dropper holds mekanism:hydrogen 250/16000
+== F4: an unknown chemical id is refused by name and moves nothing ==
+  chemical insert 500 mekanism:unobtainium 16 64 26: chemical: unknown chemical mekanism:unobtainium
+  data get block 16 64 26 amount: 16, 64, 26 has the following block data: 3750
+== F5: the counterfactual: a block entity that answers no chemical moves nothing ==
+  chemical insert 1000 mekanism:hydrogen 18 64 26: chemical: no chemical handler at 18 64 26
+  data get block 18 64 26 chemical: Found no elements matching chemical
+  the same insert moved nothing into a block that answers no chemical
+```
+
+What the numbers prove:
+
+- **the key is real and published**: `mekanism:chemical` is in the game's own
+  `block_capability_names` list beside `horizon:energy`/`horizon:fluids`/`horizon:items`, and every
+  read answers `(answered by mekanism)` — the lookup went through the table by name, not through this
+  port's block ids;
+- **the insert round trip**: 4,000 of `mekanism:hydrogen` went in through the capability and the block
+  entity's **saved data** says `chemical: "mekanism:hydrogen"`, `amount: 4000` — the two `/data get
+  block` reads are the "read the buffer back by its saved data, assert id and amount exactly" leg;
+- **the partial extract**: asking for 1,000 moved **250**, because the dropper's own transfer rate is
+  250; the tank reads **3,750** (4,000 − 250) and the dropper's stack carries
+  `{amount: 250, id: "mekanism:hydrogen"}` in its `mekanism:chemical` component — the buffer delta and
+  the item's payload asserted independently, and the item read through its own capability says
+  `250/16000`;
+- **the unknown id** is refused **by name** (`unknown chemical mekanism:unobtainium`) and the tank is
+  untouched at 3,750;
+- **the counterfactual**: the same `insert 1000 mekanism:hydrogen` against a **crusher** — a real mod
+  block entity with a container and an energy buffer, which answers `horizon:items` and
+  `horizon:energy` but not this key — answers `no chemical handler at 18 64 26` and its saved data has
+  no chemical at all. Paired with F2 (the same insert into the tank moves 4,000), it is a
+  two-sided differential, not a one-sided absence.
+
+| leg | result | evidence |
+|---|---|---|
+| package (default) | **`PASS` + `EXIT:0`** | `e2e-package.log` |
+| unmodded game (`GAME=$CONTROL_GAME`) | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** | `e2e-control.log` |
+| fail-capable (`SELFTEST=1`) | **`FAIL: expected /mekanism chemical insert 4000 mekanism:hydrogen 16 64 26 to say 'inserted 0 mekanism:hydrogen', got '…inserted 4000…'` + `EXIT:1`** | `e2e-selftest.log` |
+| differential (`NOCABLE=1`) | **`PASS` + `EXIT:0`** (phase F passes with no cable too) | `e2e-nocable.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+
+The `SELFTEST=1` flip moved to **this** slice's assertion (it used to flip the crusher's output): the
+newest family is the one that has to prove it can fail, and it fails on the insert assertion, which
+runs before the smelting phases.
+
+### What the harness taught this slice
+
+1. **A creative player's hand gives without losing the stack** (`ItemPlace::exchange` →
+   `extract` + `insert`, and a creative hand's extract is vanilla's give-without-taking). The drain
+   probe first showed **two** droppers: the plain one still in the hand and the filled one in the next
+   inventory slot (plus 750 units gone after three retries). The phase now switches to survival for the
+   exchange (as a bucket behaves) and back to creative after it. This is the same class as the
+   `NoAI`/item-entity harness quirks: record it, do not "fix" the game.
+2. **A command that moves something must never be retried by an assertion loop.** F3's first version
+   used the `info_once`-style "ask again until the answer matches" and drained 250 **three** times. The
+   helper now counts the `chemical: ` lines in the log, sends the command **once**, and waits for a
+   *new* line; the assertion is applied to that line only.
+3. **Chat feedback can trail the command** by a second or two under load, so the wait is on the log
+   line count, not on a fixed sleep.
+
+### Gaps after slice 4
+
+Everything in *Gaps / deviations* and *Gaps after the migration* and *Gaps after slice 3* still stands.
+Changed: the port now **publishes** the capability the pack's integrations were blocked on, so
+`refinedstorage_mekanism_integration` and `mekanisticrouters` can ask `mekanism:chemical` and get an
+answer; the id table (32 names) is the registry the gas-based machines will validate against. Still
+missing for those machines: the chemicals as *items*/registry entries, the slurries and pigments, the
+tank's slots and GUI, and the machines themselves.
+
+### `## Upstream defects fixed`
+
+None found in this slice. The 250-per-call gauge-dropper rate and the 64,000-unit tank are upstream's
+own numbers, carried as they are; the deviations (plain cube, no slots, no GUI, no chemical items) are
+scope, not defects.
+
+### Deviations this slice records
+
+- **The tank block is a full cube** over `mekanism:block/models/chemical_tank`; upstream's authored
+  model is an inset 10/16 tank with a valve, and its `BlockShapes.CHEMICAL_TANK` is not carried.
+- **No drain/fill slots and no side IO**: the same tank, reached through the capability instead.
+- **The tank does not tick** (upstream ticks to move its slots and its dumping mode); nothing here
+  moves on its own.
+- **The saved compound names `chemical` + `amount`** (the SDK's `test:chemical` fixture shape) while
+  the item's component uses `{id, amount}` (upstream's `ChemicalStack` codec): a block entity's saved
+  state is the port's own, a component is a serialised stack.
+- **The chemicals exist as ids only**: `runtime::CHEMICALS` validates and names them, but no item, no
+  registry entry and no texture ships for any of them.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices,rust-port
+
+### Changelog (0.2.3) — supersedes 0.2.2
+
+> **0.2.3 — the chemical capability.** This pack's integrations ask for a chemical handler and no
+> Horizon build publishes one (11 capabilities, none chemical), so this version ships the smallest
+> honest provider: **`mekanism:chemical`** (a `CapabilityKey` published by the package, plus
+> `mekanism:item_chemical` for the item side, with the `Chemical` resource type), answered by a new
+> **Basic Chemical Tank** — one tank of 64,000 units of one chemical, kept as `chemical` + `amount` in
+> its block entity's saved data — and carried by a new **Gauge Dropper** item that holds 16,000 units
+> in its `mekanism:chemical` component and moves 250 a call. The id table is Mekanism's own 32 named
+> chemicals, and an id outside it is refused by name. Proven in game through the capability itself: an
+> insert lands in the saved data, part of it drains into the dropper through the item key, an unknown
+> id is refused and moves nothing, and the same insert against a crusher (a block entity that answers
+> no chemical) moves nothing. `/mekanism chemical list|read|insert|drain|dropper` are the harness
+> readouts. Package: **94 entries, 84,180 B**, sha256
+> `5e304608de3b1094a2b9ce62b5fe9245299cc0587e4bacc44201b303cf8fd989`; `check` exit 0; `fits` `made
+> for` at the pin and `fits` at `0b14f8a`; 63 tests, clippy `-D warnings` clean; in game `PASS` +
+> `EXIT:0`, the unmodded game `EXIT:1`, `SELFTEST=1` `EXIT:1`, `NOCABLE=1` `PASS` + `EXIT:0`.

@@ -1807,6 +1807,163 @@ pub fn may_inspect(op: bool, same_level: bool, distance: f64) -> bool {
     op || (same_level && distance <= INSPECT_RANGE)
 }
 
+// ---------------------------------------------------------------------------
+// Slice 4: the chemical capability — one tank, one item, one id table
+// ---------------------------------------------------------------------------
+
+/// The empty chemical's registry id (`ChemicalStack.EMPTY`): what a drained tank
+/// and an empty gauge dropper name, as upstream serialises an empty stack.
+pub const EMPTY_CHEMICAL: &str = "mekanism:empty";
+
+/// The chemicals Mekanism registers by name (`MekanismChemicals`, tag
+/// v1.21.1-10.7.19.85), sorted. Names only: this slice carries no chemical item,
+/// and the pigment/slurry families are later slices.
+pub const CHEMICALS: [&str; 32] = [
+    "mekanism:antimatter",
+    "mekanism:bio",
+    "mekanism:brine",
+    "mekanism:carbon",
+    "mekanism:chlorine",
+    "mekanism:diamond",
+    "mekanism:ethene",
+    "mekanism:fissile_fuel",
+    "mekanism:fungi",
+    "mekanism:gold",
+    "mekanism:hydrofluoric_acid",
+    "mekanism:hydrogen",
+    "mekanism:hydrogen_chloride",
+    "mekanism:lithium",
+    "mekanism:nuclear_waste",
+    "mekanism:osmium",
+    "mekanism:oxygen",
+    "mekanism:plutonium",
+    "mekanism:polonium",
+    "mekanism:redstone",
+    "mekanism:refined_obsidian",
+    "mekanism:sodium",
+    "mekanism:spent_nuclear_waste",
+    "mekanism:steam",
+    "mekanism:sulfur_dioxide",
+    "mekanism:sulfur_trioxide",
+    "mekanism:sulfuric_acid",
+    "mekanism:superheated_sodium",
+    "mekanism:tin",
+    "mekanism:uranium_hexafluoride",
+    "mekanism:uranium_oxide",
+    "mekanism:water_vapor",
+];
+
+/// The id of a chemical Mekanism registers, or `None` for one it does not (and
+/// for the empty chemical, which is not a chemical a tank takes).
+#[must_use]
+pub fn known_chemical(id: &str) -> Option<&'static str> {
+    CHEMICALS.iter().copied().find(|known| *known == id)
+}
+
+/// What the Basic Chemical Tank's one tank holds (`ChemicalTankTier.BASIC`: 64
+/// buckets, a chemical's amount being a millibucket as a fluid's is).
+pub const TANK_CAPACITY: u32 = 64_000;
+
+/// What the Gauge Dropper holds (`GearConfig.gaugeDropperCapacity`).
+pub const DROPPER_CAPACITY: u32 = 16_000;
+
+/// How much one Gauge Dropper call moves (`GearConfig.gaugeDroppedTransferRate`).
+pub const DROPPER_TRANSFER: u32 = 250;
+
+/// One tank of one chemical: what the block entity saves in its compound
+/// (`chemical` and `amount`) and what the item keeps in its component.
+///
+/// `amount == 0` is an empty tank whatever `chemical` names, as an empty
+/// `ChemicalStack` carries its id with amount 0.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tank {
+    /// The chemical it holds, `None` when it holds none.
+    pub chemical: Option<String>,
+    /// How much of it.
+    pub amount: u32,
+}
+
+impl Tank {
+    /// A tank holding `amount` of `chemical` (`amount` 0 for an empty one).
+    #[must_use]
+    pub fn new(chemical: &str, amount: u32) -> Self {
+        if amount == 0 {
+            Self::default()
+        } else {
+            Self {
+                chemical: Some(chemical.to_owned()),
+                amount,
+            }
+        }
+    }
+
+    /// The chemical and its amount, `None` for an empty tank.
+    #[must_use]
+    pub fn held(&self) -> Option<(&str, u32)> {
+        match (&self.chemical, self.amount) {
+            (Some(chemical), amount) if amount > 0 => Some((chemical, amount)),
+            _ => None,
+        }
+    }
+}
+
+/// Why a chemical did not go into a tank.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The id is not one of [`CHEMICALS`].
+    UnknownChemical(String),
+}
+
+/// How much of `amount` one Gauge Dropper call moves: at most its transfer rate.
+#[must_use]
+pub fn dropper_move(amount: u32) -> u32 {
+    amount.min(DROPPER_TRANSFER)
+}
+
+/// Puts up to `amount` of `chemical` into `tank`, up to `capacity`: how much
+/// went in.
+///
+/// A different chemical than the one held (or than a partly filled tank's) is
+/// refused with 0, as `ChemicalTank.insert` does; an id outside [`CHEMICALS`] is
+/// refused by name.
+///
+/// # Errors
+/// [`Refusal::UnknownChemical`] when `chemical` is not a chemical Mekanism
+/// registers.
+pub fn insert_chemical(
+    tank: &mut Tank,
+    chemical: &str,
+    amount: u32,
+    capacity: u32,
+) -> Result<u32, Refusal> {
+    let Some(canonical) = known_chemical(chemical) else {
+        return Err(Refusal::UnknownChemical(chemical.to_owned()));
+    };
+    if tank.held().is_some_and(|(held, _)| held != canonical) {
+        return Ok(0);
+    }
+    let held = tank.amount.min(capacity);
+    let went = amount.min(capacity.saturating_sub(held));
+    if went > 0 {
+        *tank = Tank::new(canonical, held + went);
+    }
+    Ok(went)
+}
+
+/// Takes up to `amount` of `chemical` out of `tank`: how much came out; nothing
+/// of another chemical than the one it holds, and nothing from an empty tank.
+pub fn extract_chemical(tank: &mut Tank, chemical: &str, amount: u32) -> u32 {
+    let Some((held, stored)) = tank.held() else {
+        return 0;
+    };
+    if held != chemical {
+        return 0;
+    }
+    let came = amount.min(stored);
+    *tank = Tank::new(held, stored - came);
+    came
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2608,5 +2765,162 @@ mod tests {
         assert!(may_inspect(false, true, 3.0), "a player in reach");
         assert!(!may_inspect(false, true, 8.5), "out of reach");
         assert!(!may_inspect(false, false, 1.0), "another level");
+    }
+}
+
+#[cfg(test)]
+mod chemical_tests {
+    use super::*;
+
+    /// A tank takes a chemical Mekanism registers, up to its capacity: 64 buckets
+    /// for the Basic Chemical Tank (`ChemicalTankTier.BASIC`).
+    #[test]
+    fn a_tank_takes_a_known_chemical_up_to_its_capacity() {
+        let mut tank = Tank::default();
+        assert_eq!(
+            insert_chemical(&mut tank, "mekanism:hydrogen", 4_000, TANK_CAPACITY),
+            Ok(4_000),
+            "a fresh tank takes what is put in it"
+        );
+        assert_eq!(
+            tank.held(),
+            Some(("mekanism:hydrogen", 4_000)),
+            "and holds it under the chemical's own id"
+        );
+        assert_eq!(
+            insert_chemical(&mut tank, "mekanism:hydrogen", 999_999, TANK_CAPACITY),
+            Ok(TANK_CAPACITY - 4_000),
+            "a second insert is capped by the room left, not by the amount asked"
+        );
+        assert_eq!(tank.amount, TANK_CAPACITY, "the tank is full");
+        assert_eq!(
+            insert_chemical(&mut tank, "mekanism:hydrogen", 1, TANK_CAPACITY),
+            Ok(0),
+            "a full tank takes nothing more"
+        );
+        assert_eq!(
+            insert_chemical(&mut tank, "mekanism:hydrogen", 0, TANK_CAPACITY),
+            Ok(0),
+            "and an empty offer moves nothing"
+        );
+    }
+
+    /// An id Mekanism does not register is refused **by name**, and the tank is
+    /// untouched: the id is the mod's own registry, not a free string.
+    #[test]
+    fn an_unknown_chemical_is_refused_by_name() {
+        let mut tank = Tank::new("mekanism:hydrogen", 4_000);
+        assert_eq!(
+            insert_chemical(&mut tank, "mekanism:unobtainium", 500, TANK_CAPACITY),
+            Err(Refusal::UnknownChemical("mekanism:unobtainium".to_owned())),
+            "the refusal names the id that was asked for"
+        );
+        assert_eq!(
+            tank,
+            Tank::new("mekanism:hydrogen", 4_000),
+            "a refused insert leaves the tank exactly as it was"
+        );
+        assert_eq!(
+            known_chemical("mekanism:empty"),
+            None,
+            "the empty chemical is not a chemical a tank takes"
+        );
+        assert_eq!(
+            known_chemical("minecraft:water"),
+            None,
+            "a vanilla id is not a chemical"
+        );
+        assert_eq!(
+            known_chemical("mekanism:hydrogen"),
+            Some("mekanism:hydrogen"),
+            "a registered one is its own id"
+        );
+    }
+
+    /// One tank holds one chemical: a second is refused whole, as
+    /// `ChemicalTank.insert` tests the held stack first.
+    #[test]
+    fn a_tank_holding_one_chemical_refuses_another() {
+        let mut tank = Tank::new("mekanism:hydrogen", 4_000);
+        assert_eq!(
+            insert_chemical(&mut tank, "mekanism:oxygen", 1_000, TANK_CAPACITY),
+            Ok(0),
+            "oxygen does not go into a tank of hydrogen"
+        );
+        assert_eq!(tank, Tank::new("mekanism:hydrogen", 4_000));
+        assert_eq!(
+            extract_chemical(&mut tank, "mekanism:oxygen", 1_000),
+            0,
+            "and no oxygen comes out of it either"
+        );
+        assert_eq!(tank, Tank::new("mekanism:hydrogen", 4_000));
+    }
+
+    /// A partial extract leaves the rest, and the tank empties to nothing rather
+    /// than to a zero-amount chemical.
+    #[test]
+    fn extracting_part_leaves_the_rest_and_never_takes_another() {
+        let mut tank = Tank::new("mekanism:hydrogen", 4_000);
+        assert_eq!(
+            extract_chemical(&mut tank, "mekanism:hydrogen", 250),
+            250,
+            "a gauge dropper takes its transfer rate"
+        );
+        assert_eq!(tank.held(), Some(("mekanism:hydrogen", 3_750)));
+        assert_eq!(
+            extract_chemical(&mut tank, "mekanism:hydrogen", 999_999),
+            3_750,
+            "a bigger ask takes only what is there"
+        );
+        assert_eq!(tank, Tank::default(), "an emptied tank holds nothing");
+        assert_eq!(
+            extract_chemical(&mut tank, "mekanism:hydrogen", 1),
+            0,
+            "and gives nothing"
+        );
+        assert_eq!(Tank::new("mekanism:hydrogen", 0), Tank::default());
+    }
+
+    /// The id table is Mekanism's own: every entry namespaced, sorted, and the
+    /// empty chemical outside it.
+    #[test]
+    fn the_chemical_table_is_mekanism_s_named_chemicals() {
+        assert_eq!(
+            CHEMICALS.len(),
+            32,
+            "MekanismChemicals registers 32 named ones"
+        );
+        assert!(
+            CHEMICALS.windows(2).all(|pair| pair[0] < pair[1]),
+            "the table is sorted and has no duplicates"
+        );
+        for id in CHEMICALS {
+            assert!(
+                id.starts_with("mekanism:") && id.len() > "mekanism:".len(),
+                "{id} is not a namespaced mekanism id"
+            );
+            assert_eq!(known_chemical(id), Some(id));
+        }
+        assert!(!CHEMICALS.contains(&EMPTY_CHEMICAL));
+    }
+
+    /// The gauge dropper moves at most its transfer rate per call, whatever is
+    /// asked, and holds 16 buckets.
+    #[test]
+    fn the_gauge_dropper_moves_at_most_its_transfer_rate() {
+        assert_eq!(dropper_move(1_000), DROPPER_TRANSFER);
+        assert_eq!(dropper_move(10), 10);
+        assert_eq!(dropper_move(0), 0);
+        let mut dropper = Tank::default();
+        assert_eq!(
+            insert_chemical(&mut dropper, "mekanism:hydrogen", 1_000, DROPPER_CAPACITY),
+            Ok(1_000),
+            "one insert of 1,000 fits the dropper"
+        );
+        assert_eq!(
+            insert_chemical(&mut dropper, "mekanism:hydrogen", 99_999, DROPPER_CAPACITY),
+            Ok(DROPPER_CAPACITY - 1_000),
+            "and its capacity is 16,000"
+        );
     }
 }

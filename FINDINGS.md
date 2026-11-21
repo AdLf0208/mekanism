@@ -210,3 +210,41 @@ entity's NBT and the cable still balances it on its own tick.
   and `/mekanism info|energy|progress`.
 - Unit-tested pure core: `process_tick` (the shared machine operation),
   `cable_plan`, energy clamping, the smelting and enriching tables.
+
+## Slice 4 — the chemical capability (upstream analysis)
+
+Read for this slice (analysis only; the Rust is a clean-room rewrite):
+
+| Area | Files |
+|---|---|
+| the tank | `common/tile/TileEntityChemicalTank.java`, `common/tier/ChemicalTankTier.java`, `common/capabilities/chemical/ChemicalTankChemicalTank.java`, `common/registries/MekanismBlockTypes.java` (`createChemicalTank`, `createMachine`) |
+| the chemical registry | `common/registries/MekanismChemicals.java` (the 32 named chemicals), `common/ChemicalConstants.java` |
+| the stack's saved shape | `src/api/java/mekanism/api/chemical/ChemicalStack.java` (`MAP_CODEC`: `{id, amount}`), `common/attachments/containers/chemical/AttachedChemicals.java` (`mekanism:chemicals`, a list of tanks) |
+| the item | `common/item/ItemGaugeDropper.java`, `common/config/GearConfig.java` (`gaugeDropperCapacity`, `gaugeDroppedTransferRate`), `common/attachments/containers/chemical/ComponentBackedChemicalTank.java` |
+| the capability | `common/capabilities/Capabilities.java` (`Capabilities.CHEMICAL`, block and item), `src/api/java/mekanism/api/chemical/IChemicalHandler.java` |
+
+Numbers carried: tank **64,000** units (`ChemicalTankTier.BASIC`: 64 × `BUCKET_VOLUME`) and
+**1,000/t** out (the port ships no ejector, so the tier's output rate is not used yet);
+gauge dropper **16,000** capacity and **250** per call (`GearConfig` defaults); tank block
+hardness **3.5** / resistance **16** with **no `active` and no `facing` state**
+(`createMachine` minus `AttributeStateActive`); the tank's shape is a **custom inset**
+(`BlockShapes.CHEMICAL_TANK`) the port does not carry.
+
+Where the rewrite differs (and why):
+
+- upstream's tanks are `IChemicalTank` objects inside the block entity with a holder per
+  side; the port keeps the one tank in the block entity's **saved compound** and answers the
+  capability from it, which is the SDK's own fixture shape (`test:chemical`) and survives a
+  save because `merge_data` marks the chunk;
+- the gauge dropper's payload is upstream's **attachment** (`mekanism:chemicals`, a list of
+  stacks) with a fluid tank beside it; the port stores one chemical in the **item component**
+  `mekanism:chemical` as `{id, amount}` (the stack's own codec shape) — one tank, no fluid
+  side, which is this slice's scope;
+- the chemicals are ids only: upstream registers each as a `Chemical` with a texture, a tint
+  and (for gases) a bucket-like item; the port carries the names for validation and ships no
+  chemical item.
+
+Refinement of "Next slices" 1 and 6: the **gas capability they were blocked on now exists**
+(`mekanism:chemical`), so the Purification Chamber, Ore Washer and Chemical Injection Chamber
+are unblocked on the capability and blocked only on their own machines and on the chemicals as
+items; the Metallurgic Infuser and Electrolytic Separator likewise.

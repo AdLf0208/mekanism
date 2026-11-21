@@ -9,6 +9,8 @@
     "mekanism:basic_universal_cable",
     "mekanism:dust_iron",
     "mekanism:dust_gold",
-    "mekanism:dust_copper"
+    "mekanism:dust_copper",
+    "mekanism:basic_chemical_tank",
+    "mekanism:gauge_dropper"
   ]
 }

@@ -4,6 +4,7 @@
     "mekanism:enrichment_chamber",
     "mekanism:crusher",
     "mekanism:basic_energy_cube",
-    "mekanism:basic_universal_cable"
+    "mekanism:basic_universal_cable",
+    "mekanism:basic_chemical_tank"
   ]
 }

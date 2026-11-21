@@ -1,4 +1,4 @@
-# Mekanism for Horizon — slices 1–3
+# Mekanism for Horizon — slices 1–4
 
 One flat **SDK package** (`horizon-mod.toml`, `api = "0.2"`) for Mekanism
 10.7.19.85 (MIT), the exact ATM10 jar. The carried blocks, items, models,
@@ -19,7 +19,20 @@ here; the behaviour is `src/lib.rs` (one `impl mod_api::Hooks`) and
   ingots → dusts, the stone/deepslate/tuff/copper conversions and more);
 - `mekanism:basic_energy_cube` — 4,000,000 FE at 4,000 FE/t;
 - `mekanism:basic_universal_cable` — moves 8,000 FE/t between the block
-  entities beside it, on its own tick.
+  entities beside it, on its own tick;
+- **the chemical capability** (`mekanism:chemical`, the block side, and
+  `mekanism:item_chemical`, the item side), the surface this pack's own
+  integrations ask for and no Horizon build publishes:
+  - `mekanism:basic_chemical_tank` — one tank of 64,000 units of one chemical,
+    kept as `chemical` + `amount` in the block entity's saved data and answered
+    by a capability provider;
+  - `mekanism:gauge_dropper` — carries 16,000 units of one chemical in its
+    `mekanism:chemical` component (`{id, amount}`), moving 250 a call, through
+    the item side of the same capability.
+
+  The port's `src/chemical.rs` publishes the key, the item key and the
+  `Chemical` type; the id table is Mekanism's own (`runtime::CHEMICALS`, 32
+  named chemicals), and an id outside it is refused by name.
 
 Read [notes.md](notes.md) for the slice boundary, the deviations, the gap list
 and the migration to the SDK format, and [FINDINGS.md](FINDINGS.md) for the
@@ -39,6 +52,8 @@ drift apart.
 cargo test --offline
 cargo clippy --all-targets --offline -- -D warnings
 cargo fmt --check                 # NOT `--all`: that would check the fetched SDK
+
+# the chemical capability is also exercised in game: `/mekanism chemical list|read|insert|drain|dropper`
 
 # the package: `cargo horizon-mod` fetches .horizon/sdk/ (gitignored) on first use
 rm -f Cargo.lock                  # a packed lock changes the artifact's sha256

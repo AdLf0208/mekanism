@@ -18,6 +18,7 @@ use mod_api::{
     RegisterCommandsEvent, Registrar, RegistrationContext, RunModCommandEvent, ServerHost, Text,
 };
 
+pub mod chemical;
 mod support;
 
 pub mod runtime;
@@ -81,6 +82,23 @@ impl Hooks for Mod {
         event
             .commands
             .push(Command::new("mekanism progress <pos:block_pos>"));
+        // Slice 4's chemical capability: read it as a consumer through the key,
+        // put a chemical in and take one out through it, and read the item's.
+        event.commands.push(Command::new("mekanism chemical list"));
+        event
+            .commands
+            .push(Command::new("mekanism chemical read <pos:block_pos>"));
+        event.commands.push(Command::op(
+            "mekanism chemical insert <amount:integer> <chemical:id> <pos:block_pos>",
+            2,
+        ));
+        event.commands.push(Command::op(
+            "mekanism chemical drain <amount:integer> <pos:block_pos>",
+            2,
+        ));
+        event
+            .commands
+            .push(Command::new("mekanism chemical dropper"));
     }
 
     /// The command bodies. The arguments are parsed and resolved by the
@@ -93,38 +111,85 @@ impl Hooks for Mod {
         event: &mut RunModCommandEvent<'_>,
     ) -> Flow {
         let literals: Vec<&str> = event.command.literals.iter().map(String::as_str).collect();
-        let Some(CommandArgumentValue::BlockPos(pos)) = event.command.argument("pos") else {
-            return Flow::Continue;
-        };
+        // The chemical readouts answer lines of their own, and two of them take
+        // no position; every other usage resolves one before it runs.
         let line = match literals.as_slice() {
-            ["mekanism", "info"] => {
-                let Some(level) = host.level(host.dimension()) else {
-                    return Flow::Continue;
-                };
-                if !may_read(&*host, event.source, level, *pos) {
-                    let line = format!(
-                        "You must be an operator or within {:.0} blocks of the machine.",
-                        runtime::INSPECT_RANGE
-                    );
-                    let _ = host.commands().feedback(Text::literal(line));
-                    return Flow::Cancel;
-                }
-                support::info_line(host, *pos)
-                    .unwrap_or_else(|| "No block entity there.".to_owned())
-            }
-            ["mekanism", "energy"] => {
-                let Some(CommandArgumentValue::Integer(amount)) = event.command.argument("amount")
+            ["mekanism", "chemical", "list"] => support::chemical_list(host),
+            ["mekanism", "chemical", "dropper"] => support::chemical_dropper(host, event.source),
+            literals => {
+                let Some(CommandArgumentValue::BlockPos(pos)) = event.command.argument("pos")
                 else {
                     return Flow::Continue;
                 };
-                match support::set_energy(host, *pos, *amount) {
-                    Some(after) => format!("Energy set to {after} FE."),
-                    None => "No block entity there.".to_owned(),
+                match literals {
+                    ["mekanism", "info"] => {
+                        let Some(level) = host.level(host.dimension()) else {
+                            return Flow::Continue;
+                        };
+                        if !may_read(&*host, event.source, level, *pos) {
+                            let line = format!(
+                                "You must be an operator or within {:.0} blocks of the machine.",
+                                runtime::INSPECT_RANGE
+                            );
+                            let _ = host.commands().feedback(Text::literal(line));
+                            return Flow::Cancel;
+                        }
+                        if support::is_chemical_tank(host, *pos) {
+                            // A chemical tank has no FE buffer: its line is its tank's.
+                            support::chemical_readout(host, *pos)
+                        } else {
+                            support::info_line(host, *pos)
+                                .unwrap_or_else(|| "No block entity there.".to_owned())
+                        }
+                    }
+                    ["mekanism", "energy"] => {
+                        let Some(CommandArgumentValue::Integer(amount)) =
+                            event.command.argument("amount")
+                        else {
+                            return Flow::Continue;
+                        };
+                        match support::set_energy(host, *pos, *amount) {
+                            Some(after) => format!("Energy set to {after} FE."),
+                            None => "No block entity there.".to_owned(),
+                        }
+                    }
+                    ["mekanism", "progress"] => support::progress_line(host, *pos)
+                        .unwrap_or_else(|| "No block entity there.".to_owned()),
+                    ["mekanism", "chemical", "read"] => support::chemical_readout(host, *pos),
+                    ["mekanism", "chemical", "insert"] => {
+                        let Some(CommandArgumentValue::Integer(amount)) =
+                            event.command.argument("amount")
+                        else {
+                            return Flow::Continue;
+                        };
+                        let Some(CommandArgumentValue::String(chemical)) =
+                            event.command.argument("chemical")
+                        else {
+                            return Flow::Continue;
+                        };
+                        support::chemical_insert(
+                            host,
+                            *pos,
+                            chemical,
+                            u32::try_from(*amount).unwrap_or(0),
+                        )
+                    }
+                    ["mekanism", "chemical", "drain"] => {
+                        let Some(CommandArgumentValue::Integer(amount)) =
+                            event.command.argument("amount")
+                        else {
+                            return Flow::Continue;
+                        };
+                        support::chemical_drain(
+                            host,
+                            event.source,
+                            *pos,
+                            u32::try_from(*amount).unwrap_or(0),
+                        )
+                    }
+                    _ => return Flow::Continue,
                 }
             }
-            ["mekanism", "progress"] => support::progress_line(host, *pos)
-                .unwrap_or_else(|| "No block entity there.".to_owned()),
-            _ => return Flow::Continue,
         };
         let _ = host.commands().feedback(Text::literal(line));
         Flow::Cancel

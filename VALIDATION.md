@@ -1,5 +1,46 @@
 # Validation
 
+## 0.2.3 — the chemical capability, slice 4 (2026-11-21)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`).
+
+| Check | Command | Result |
+|---|---|---|
+| runtime rules, RED first | `cargo test --offline chemical_tests` on `todo!()` bodies | **6 failed**, `not yet implemented` (`slice4-unit-red.log`) |
+| glue saved shape, RED first | `cargo test --offline the_saved_chemical` on `todo!()` bodies | **1 failed**, `not yet implemented` (`slice4-glue-red.log`) |
+| tests | `cargo test --offline` | **63 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`sdk-fmt.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **84,180 B**, `cmp` identical, sha256 `5e304608de3b1094a2b9ce62b5fe9245299cc0587e4bacc44201b303cf8fd989` (`sdk-build.log`, `sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.3 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 94 entries (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`sdk-fits.log`, sha printed beside it) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`sdk-fits.log`) |
+| archive | `unzip -l mekanism.hmod` | 94 entries, no `Cargo.lock` |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (`sdk-verify-package.log`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism chemical insert 4000 mekanism:hydrogen … to say 'inserted 0 …'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+| launcher build | `launcher-game.sh build mekanism` (in a lease) | `Compiling mekanism (1 of 1)`, `native-0a875da-4d3c54971561` (`slice4-launcher-build.log`) |
+
+The in-game leg proves, per the parity rule: the six blocks and four items are give-able and
+placeable, an unknown id is refused, the **seven** carried shaped recipes craft (id, count,
+ingredients consumed, four wrong-ingredient controls empty), the six blocks' loot tables drop
+the block, every carried crushing recipe runs in a real crusher, the machines' chain and
+persistence hold — and **the chemical capability**: `mekanism:chemical` is among the game's
+published block capabilities, an insert through the key lands in the tank's saved data
+(`chemical`/`amount` read back exactly), part of it drains into the gauge dropper through the
+item key (buffer delta **and** the stack's `mekanism:chemical` component), an unknown chemical
+id is refused **by name** and moves nothing, and the same insert against a crusher (a block
+entity that answers no chemical) moves nothing. See [notes.md](notes.md) §"Slice 4 — the
+chemical capability" for the transcript.
+
 ## 0.2.2 — the Crusher, slice 3 (2026-11-21)
 
 Validated on Linux against the campaign pin **Horizon

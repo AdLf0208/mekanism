@@ -7,16 +7,19 @@
 //! state it writes reads back, and the exact lines `/mekanism` answers.
 use mod_api::{
     BlockEntityPart, BlockEntityTickEvent, BlockEntityTickReply, BlockEntityTicksEvent, BlockPart,
-    Capability, Compound, Direction, ENERGY, EnergyHandler, Host, HostTransaction, Identifier,
-    ItemStack, ModContainer, ModEnergyBuffer, Registrar, RegistrationContext, ServerHost, Tag,
+    BlockSide, Capability, CommandSource, Compound, Direction, ENERGY, EnergyHandler, Hand, Host,
+    HostTransaction, Identifier, ItemComponentHandler, ItemPlace, ItemStack, ModContainer,
+    ModEnergyBuffer, Registrar, RegistrationContext, ResourceHandler, ServerHost, Tag, Transaction,
 };
 
+use crate::chemical::{CHEMICAL, Chemical, ITEM_CHEMICAL, ITEM_COMPONENT};
 use crate::runtime::{
-    CABLE_CAPACITY, CHAMBER_CAPACITY, CHAMBER_OPERATION, CHAMBER_TICKS, CRUSHER_CAPACITY,
-    CRUSHER_OPERATION, CRUSHER_TICKS, CUBE_CAPACITY, CUBE_RATE, IdleReason, ItemAmount, Machine,
-    MachineRecipe, Operation, Outcome, SMELTER_CAPACITY, SMELTER_OPERATION, SMELTER_TICKS,
-    clamp_energy, crushing, energy_after_extract, energy_after_insert, enriching, process_tick,
-    smelting,
+    CABLE_CAPACITY, CHAMBER_CAPACITY, CHAMBER_OPERATION, CHAMBER_TICKS, CHEMICALS,
+    CRUSHER_CAPACITY, CRUSHER_OPERATION, CRUSHER_TICKS, CUBE_CAPACITY, CUBE_RATE, DROPPER_CAPACITY,
+    EMPTY_CHEMICAL, IdleReason, ItemAmount, Machine, MachineRecipe, Operation, Outcome,
+    SMELTER_CAPACITY, SMELTER_OPERATION, SMELTER_TICKS, TANK_CAPACITY, Tank, clamp_energy,
+    crushing, dropper_move, energy_after_extract, energy_after_insert, enriching, extract_chemical,
+    insert_chemical, process_tick, smelting,
 };
 
 /// The five blocks of slices 1-3.
@@ -26,6 +29,11 @@ pub(crate) const CABLE: &str = "mekanism:basic_universal_cable";
 pub(crate) const CHAMBER: &str = "mekanism:enrichment_chamber";
 pub(crate) const CRUSHER: &str = "mekanism:crusher";
 
+/// Slice 4's one block and one item: the Basic Chemical Tank, whose one tank
+/// answers [`CHEMICAL`], and the Gauge Dropper, the mod's own chemical container.
+pub(crate) const CHEMICAL_TANK: &str = "mekanism:basic_chemical_tank";
+pub(crate) const GAUGE_DROPPER: &str = "mekanism:gauge_dropper";
+
 /// The five block entity types, in this mod's namespace (`/mekanism` has no
 /// bearing on them). One type per block, as the retired bundle's
 /// `block_entity` hook named the block it was asked about.
@@ -34,6 +42,7 @@ const CUBE_TYPE: &str = "basic_energy_cube";
 const CABLE_TYPE: &str = "basic_universal_cable";
 const CHAMBER_TYPE: &str = "enrichment_chamber";
 const CRUSHER_TYPE: &str = "crusher";
+const TANK_TYPE: &str = "basic_chemical_tank";
 
 /// A machine's menu slots: input, unused (the furnace menu's fuel slot) and
 /// output.
@@ -123,6 +132,20 @@ pub(crate) fn declare(registrar: &mut dyn Registrar, context: &RegistrationConte
     if let Err(error) = registrar.block_entity_part(&kind, CablePart) {
         context.refuse(&error.to_string());
     }
+    // Slice 4: one block entity holding one tank of one chemical, answered
+    // through the port's own capability, and the item that carries a chemical.
+    // No container, no energy buffer and no tick: nothing here moves on its own,
+    // so a capability call is the only writer (no tick write-back to lose it to).
+    let kind = registrar
+        .block_entity_type(TANK_TYPE)
+        .blocks(&[TANK_TYPE])
+        .build();
+    registrar.block_entity_capability(&CHEMICAL, &kind, |_, at| {
+        Some(Box::new(ChemicalTank(at)) as Box<dyn ResourceHandler<Chemical>>)
+    });
+    registrar.item_capability(&ITEM_CHEMICAL, GAUGE_DROPPER, |_, place| {
+        Some(Box::new(ItemChemicalTank(place.clone())) as Box<dyn ResourceHandler<Chemical>>)
+    });
 }
 
 /// The smelter's and the chamber's container: three slots every face reaches,
@@ -496,6 +519,446 @@ fn to_u32(amount: i32) -> u32 {
     u32::try_from(amount.max(0)).unwrap_or(0)
 }
 
+// ---------------------------------------------------------------------------
+// Slice 4: the chemical capability's two handlers and its readouts
+// ---------------------------------------------------------------------------
+
+/// A tank as the saved compound holds it: `chemical` and `amount`, the empty
+/// chemical at 0 for an empty tank (the shape `ChemicalStack`'s codec writes for
+/// an empty stack).
+pub(crate) fn read_tank(saved: &Tag) -> Tank {
+    let chemical = match saved.get("chemical") {
+        Some(Tag::String(id)) => Some(id.to_string_lossy()),
+        _ => None,
+    };
+    let amount = u32::try_from(int(saved, "amount").max(0)).unwrap_or(0);
+    match chemical {
+        Some(id) if amount > 0 && id != EMPTY_CHEMICAL => Tank {
+            chemical: Some(id),
+            amount,
+        },
+        _ => Tank::default(),
+    }
+}
+
+/// Write a tank into a saved compound: both keys, so an emptied tank names the
+/// empty chemical at 0 rather than leaving a stale id behind.
+pub(crate) fn write_tank(saved: &mut Tag, tank: &Tank) {
+    if let Tag::Compound(nbt) = saved {
+        let (chemical, amount) = tank.held().unwrap_or((EMPTY_CHEMICAL, 0));
+        nbt.insert("chemical".into(), Tag::String(chemical.into()));
+        nbt.insert(
+            "amount".into(),
+            Tag::Int(i32::try_from(amount).unwrap_or(i32::MAX)),
+        );
+    }
+}
+
+/// The saved-data patch that writes `tank`, as [`write_tank`] would.
+fn tank_patch(tank: &Tank) -> Compound {
+    let mut saved = Tag::Compound(Compound::new());
+    write_tank(&mut saved, tank);
+    match saved {
+        Tag::Compound(nbt) => nbt,
+        _ => Compound::new(),
+    }
+}
+
+/// The chemical capability for one block entity: its one tank, kept in the
+/// entity's saved compound (`chemical` + `amount`), as the SDK's `test:chemical`
+/// fixture keeps a tank.
+///
+/// Nothing formal goes in a field: each call reads the entity and writes it back
+/// through `merge_data`, so a call from another mod, from a command or from
+/// automation all see the saved data, and the chunk is marked changed.
+pub(crate) struct ChemicalTank(BlockSide);
+
+impl ChemicalTank {
+    /// What the block entity here holds; empty for a stale or missing one.
+    fn held(&self, host: &mut dyn ServerHost) -> Tank {
+        let Some(entity) = host.block_entity(self.0.level, self.0.pos) else {
+            return Tank::default();
+        };
+        let Some(saved) = entity.data(&*host) else {
+            return Tank::default();
+        };
+        read_tank(&Tag::Compound(saved))
+    }
+
+    /// Write `tank` into the block entity here: whether it loaded.
+    fn store(&self, host: &mut dyn ServerHost, tank: &Tank) -> bool {
+        let Some(entity) = host.block_entity(self.0.level, self.0.pos) else {
+            return false;
+        };
+        entity
+            .merge_data(host, tank_patch(tank))
+            .ok()
+            .is_some_and(|loaded| loaded)
+    }
+}
+
+impl ResourceHandler<Chemical> for ChemicalTank {
+    fn size(&self, _: &mut dyn ServerHost) -> usize {
+        1
+    }
+
+    fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<Chemical> {
+        let held = self.held(host).held().filter(|_| index == 0)?.0.to_owned();
+        Chemical::new(&held)
+    }
+
+    fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32 {
+        if index == 0 {
+            self.held(host).amount
+        } else {
+            0
+        }
+    }
+
+    fn capacity(&self, _: &mut dyn ServerHost, index: usize, _: &Chemical) -> u32 {
+        if index == 0 { TANK_CAPACITY } else { 0 }
+    }
+
+    fn insert(
+        &self,
+        host: &mut dyn ServerHost,
+        _: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index != 0 {
+            return 0;
+        }
+        let mut tank = self.held(host);
+        match insert_chemical(&mut tank, chemical.as_str(), amount, TANK_CAPACITY) {
+            Ok(0) => 0,
+            Ok(went) if self.store(host, &tank) => went,
+            Ok(_) => 0,
+            // A chemical Mekanism does not register: the handler has no way to
+            // name it back, so it answers 0 (`/mekanism chemical insert` is what
+            // reports the id).
+            Err(_) => 0,
+        }
+    }
+
+    fn extract(
+        &self,
+        host: &mut dyn ServerHost,
+        _: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index != 0 {
+            return 0;
+        }
+        let mut tank = self.held(host);
+        let came = extract_chemical(&mut tank, chemical.as_str(), amount);
+        match came {
+            0 => 0,
+            came if self.store(host, &tank) => came,
+            _ => 0,
+        }
+    }
+}
+
+/// The chemical capability for the item at one place: the Gauge Dropper's one
+/// tank, kept in the stack's `mekanism:chemical` component (`{id, amount}`,
+/// `ChemicalStack`'s own shape) and rewritten through an exchange of one, so a
+/// filled dropper splits off a stack of them as a bucket does.
+///
+/// Its capacity and per-call transfer are upstream's `GearConfig` defaults
+/// (`gaugeDropperCapacity` 16,000, `gaugeDroppedTransferRate` 250).
+pub(crate) struct ItemChemicalTank(ItemPlace);
+
+impl ItemChemicalTank {
+    /// The component handler for the stack here; `None` for an id the game would
+    /// refuse, which cannot happen for the constant this port names.
+    fn item(&self) -> Option<ItemComponentHandler> {
+        Some(ItemComponentHandler::new(
+            self.0.clone(),
+            mod_api::ComponentId::new(ITEM_COMPONENT)?,
+        ))
+    }
+
+    fn held(&self, host: &mut dyn ServerHost) -> Tank {
+        let Some(item) = self.item() else {
+            return Tank::default();
+        };
+        let Some(Tag::Compound(content)) = item.read(host) else {
+            return Tank::default();
+        };
+        let chemical = match content.get(&"id".into()) {
+            Some(Tag::String(id)) => Some(id.to_string_lossy()),
+            _ => None,
+        };
+        let amount = match content.get(&"amount".into()) {
+            Some(&Tag::Int(amount)) => u32::try_from(amount).unwrap_or(0),
+            _ => 0,
+        };
+        match chemical {
+            Some(id) if amount > 0 && id != EMPTY_CHEMICAL => Tank {
+                chemical: Some(id),
+                amount,
+            },
+            _ => Tank::default(),
+        }
+    }
+
+    fn store(&self, host: &mut dyn ServerHost, tx: &Transaction, tank: &Tank) -> bool {
+        let Some(item) = self.item() else {
+            return false;
+        };
+        let value = match tank.held() {
+            None => None,
+            Some((chemical, amount)) => {
+                let mut content = Compound::new();
+                content.insert("id".into(), Tag::String(chemical.into()));
+                content.insert(
+                    "amount".into(),
+                    Tag::Int(i32::try_from(amount).unwrap_or(i32::MAX)),
+                );
+                Some(Tag::Compound(content))
+            }
+        };
+        item.write(host, tx, value)
+    }
+}
+
+impl ResourceHandler<Chemical> for ItemChemicalTank {
+    fn size(&self, _: &mut dyn ServerHost) -> usize {
+        1
+    }
+
+    fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<Chemical> {
+        let held = self.held(host).held().filter(|_| index == 0)?.0.to_owned();
+        Chemical::new(&held)
+    }
+
+    fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32 {
+        if index == 0 {
+            self.held(host).amount
+        } else {
+            0
+        }
+    }
+
+    fn capacity(&self, _: &mut dyn ServerHost, index: usize, _: &Chemical) -> u32 {
+        if index == 0 { DROPPER_CAPACITY } else { 0 }
+    }
+
+    fn insert(
+        &self,
+        host: &mut dyn ServerHost,
+        tx: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index != 0 {
+            return 0;
+        }
+        let mut tank = self.held(host);
+        match insert_chemical(
+            &mut tank,
+            chemical.as_str(),
+            dropper_move(amount),
+            DROPPER_CAPACITY,
+        ) {
+            Ok(0) => 0,
+            Ok(went) if self.store(host, tx, &tank) => went,
+            Ok(_) => 0,
+            Err(_) => 0,
+        }
+    }
+
+    fn extract(
+        &self,
+        host: &mut dyn ServerHost,
+        tx: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index != 0 {
+            return 0;
+        }
+        let mut tank = self.held(host);
+        let came = extract_chemical(&mut tank, chemical.as_str(), dropper_move(amount));
+        match came {
+            0 => 0,
+            came if self.store(host, tx, &tank) => came,
+            _ => 0,
+        }
+    }
+}
+
+/// What a chemical handler at `pos` answers: the tank's own word, through the
+/// capability (not through this port's block ids), and who answered it.
+pub(crate) fn chemical_readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
+    let Some(level) = host.level(host.dimension()) else {
+        return format!("chemical: no level for {pos:?}");
+    };
+    let block = level
+        .block(&*host, pos)
+        .map_or_else(|| "nothing".to_owned(), |id| id.id(&*host));
+    let Some(handler) = level.capability(host, &CHEMICAL, pos, None) else {
+        return format!(
+            "chemical: no chemical handler at {} {} {}",
+            pos[0], pos[1], pos[2]
+        );
+    };
+    let owner = handler.owner();
+    let held = handler.resource(host, 0);
+    let amount = handler.amount(host, 0);
+    // The capacity the handler itself answers, asked with a probe chemical so an
+    // empty tank can report it too.
+    let probe = Chemical::new(CHEMICALS[0]).expect("a registered chemical");
+    let capacity = handler.capacity(host, 0, &probe);
+    match held {
+        Some(chemical) => {
+            format!("chemical: {block} holds {chemical} {amount}/{capacity} (answered by {owner})")
+        }
+        None => format!("chemical: {block} holds nothing 0/{capacity} (answered by {owner})"),
+    }
+}
+
+/// `/mekanism chemical list`: the chemicals this port knows and the block
+/// capabilities the game publishes, by name (the table another mod's crate asks).
+pub(crate) fn chemical_list(host: &mut dyn ServerHost) -> String {
+    let capabilities = mod_api::block_capability_names(&*host).join(", ");
+    // The id is looked up in the table, so the answer claims a member, not a size:
+    // a table without it would say "none" and the check would fail.
+    let hydrogen = crate::runtime::known_chemical("mekanism:hydrogen").unwrap_or("none");
+    format!(
+        "chemical: {} chemicals, {hydrogen} among them; published capabilities {capabilities}",
+        CHEMICALS.len()
+    )
+}
+
+/// `/mekanism chemical insert <amount> <id> <pos>`: put a chemical into the
+/// tank through the capability, as another mod's crate would.
+pub(crate) fn chemical_insert(
+    host: &mut dyn ServerHost,
+    pos: [i32; 3],
+    id: &str,
+    amount: u32,
+) -> String {
+    let Some(level) = host.level(host.dimension()) else {
+        return format!("chemical: no level for {pos:?}");
+    };
+    let block = level
+        .block(&*host, pos)
+        .map_or_else(|| "nothing".to_owned(), |id| id.id(&*host));
+    let Some(handler) = level.capability(host, &CHEMICAL, pos, None) else {
+        return format!(
+            "chemical: no chemical handler at {} {} {}",
+            pos[0], pos[1], pos[2]
+        );
+    };
+    let Some(chemical) = Chemical::new(id) else {
+        return format!("chemical: {id} is not a chemical id");
+    };
+    // The port's registry check, by name: the id a caller asked for is the id
+    // the answer names, whether it is unknown or the tank refuses it.
+    if crate::runtime::known_chemical(id).is_none() {
+        return format!("chemical: unknown chemical {id}");
+    }
+    let went =
+        host.transaction(|host, tx| Ok::<u32, ()>(handler.insert(host, tx, 0, &chemical, amount)));
+    let went = went.unwrap_or(0);
+    let held = handler.amount(host, 0);
+    let capacity = handler.capacity(host, 0, &chemical);
+    format!("chemical: inserted {went} {id} into {block} ({held}/{capacity})")
+}
+
+/// `/mekanism chemical drain <amount> <pos>`: take a chemical out of the tank
+/// through the capability and put it into the gauge dropper in the caller's main
+/// hand through the item capability, moving at most the dropper's transfer rate.
+pub(crate) fn chemical_drain(
+    host: &mut dyn ServerHost,
+    source: &CommandSource,
+    pos: [i32; 3],
+    amount: u32,
+) -> String {
+    let CommandSource::Player { player, .. } = source else {
+        return "chemical: draining needs a player holding the gauge dropper".to_owned();
+    };
+    let Some(level) = host.level(host.dimension()) else {
+        return format!("chemical: no level for {pos:?}");
+    };
+    let Some(handler) = level.capability(host, &CHEMICAL, pos, None) else {
+        return format!(
+            "chemical: no chemical handler at {} {} {}",
+            pos[0], pos[1], pos[2]
+        );
+    };
+    let Some(held) = handler.resource(host, 0) else {
+        return "chemical: the tank holds nothing to drain".to_owned();
+    };
+    let place = ItemPlace::PlayerHand {
+        player: player.uuid(),
+        hand: Hand::Main,
+    };
+    let Some(item) = place.capability(host, &ITEM_CHEMICAL) else {
+        return "chemical: no gauge dropper in the main hand".to_owned();
+    };
+    let asked = dropper_move(amount);
+    let moved = host.transaction(|host, tx| {
+        let came = handler.extract(host, tx, 0, &held, asked);
+        if came == 0 {
+            return Ok::<u32, ()>(0);
+        }
+        let went = item.insert(host, tx, 0, &held, came);
+        // What the dropper would not take goes back: never lose a chemical to a
+        // refused insert.
+        if went < came {
+            let _ = handler.insert(host, tx, 0, &held, came - went);
+        }
+        Ok(went)
+    });
+    let moved = moved.unwrap_or(0);
+    let tank = handler.amount(host, 0);
+    let tank_capacity = handler.capacity(host, 0, &held);
+    let dropper = item.amount(host, 0);
+    format!(
+        "chemical: drained {moved} {held} into the gauge dropper \
+         (tank {tank}/{tank_capacity}, dropper {dropper}/{DROPPER_CAPACITY})"
+    )
+}
+
+/// `/mekanism chemical dropper`: what the gauge dropper in the caller's main
+/// hand holds, read through the item capability.
+pub(crate) fn chemical_dropper(host: &mut dyn ServerHost, source: &CommandSource) -> String {
+    let CommandSource::Player { player, .. } = source else {
+        return "chemical: the dropper is read from a player's hand".to_owned();
+    };
+    let place = ItemPlace::PlayerHand {
+        player: player.uuid(),
+        hand: Hand::Main,
+    };
+    let Some(item) = place.capability(host, &ITEM_CHEMICAL) else {
+        return "chemical: no gauge dropper in the main hand".to_owned();
+    };
+    match item.resource(host, 0) {
+        Some(chemical) => {
+            let amount = item.amount(host, 0);
+            format!("chemical: the gauge dropper holds {chemical} {amount}/{DROPPER_CAPACITY}")
+        }
+        None => format!("chemical: the gauge dropper holds nothing 0/{DROPPER_CAPACITY}"),
+    }
+}
+
+/// Whether one of this port's chemical tanks stands at `pos`: `/mekanism info`
+/// answers its tank rather than claiming there is no block entity where there is
+/// one (the tank has no FE buffer to report).
+pub(crate) fn is_chemical_tank(host: &mut dyn ServerHost, pos: [i32; 3]) -> bool {
+    host.level(host.dimension())
+        .and_then(|level| level.block(&*host, pos))
+        .is_some_and(|id| id.id(&*host) == CHEMICAL_TANK)
+}
+
 /// The id and buffer capacity of one of this port's blocks at `pos`: `None`
 /// when nothing stands there or the block is not one of the four.
 fn our_block_at(host: &mut dyn ServerHost, pos: [i32; 3]) -> Option<(String, i32)> {
@@ -569,6 +1032,78 @@ pub(crate) fn set_energy(host: &mut dyn ServerHost, pos: [i32; 3], amount: i32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tank's saved shape: `chemical` + `amount`, the empty chemical at 0 for
+    /// an empty tank, and nothing else invented.
+    #[test]
+    fn the_saved_chemical_and_amount_read_back() {
+        let mut saved = Tag::Compound(Compound::new());
+        write_tank(&mut saved, &Tank::new("mekanism:hydrogen", 4_000));
+        assert_eq!(
+            saved.get("chemical"),
+            Some(&Tag::String("mekanism:hydrogen".into())),
+            "the saved chemical is the id a reader sees with `/data get block`"
+        );
+        assert_eq!(saved.get("amount"), Some(&Tag::Int(4_000)));
+        assert_eq!(
+            read_tank(&saved),
+            Tank::new("mekanism:hydrogen", 4_000),
+            "and it reads back as the tank it was"
+        );
+        let expected = match &saved {
+            Tag::Compound(nbt) => nbt.clone(),
+            _ => unreachable!("a compound was just written"),
+        };
+        assert_eq!(
+            tank_patch(&Tank::new("mekanism:hydrogen", 4_000)),
+            expected,
+            "the patch a write merges is the same two keys"
+        );
+        // An emptied tank names the empty chemical at 0 rather than a stale id.
+        write_tank(&mut saved, &Tank::default());
+        assert_eq!(
+            saved.get("chemical"),
+            Some(&Tag::String(EMPTY_CHEMICAL.into()))
+        );
+        assert_eq!(saved.get("amount"), Some(&Tag::Int(0)));
+        assert_eq!(read_tank(&saved), Tank::default(), "and reads as empty");
+        // A compound with no chemical at all (a fresh block entity) reads empty.
+        assert_eq!(read_tank(&Tag::Compound(Compound::new())), Tank::default());
+        // An unknown id saved by a later version still reads back: the registry
+        // check belongs to a write, not to a read.
+        let mut future = Tag::Compound(Compound::new());
+        if let Tag::Compound(nbt) = &mut future {
+            nbt.insert(
+                "chemical".into(),
+                Tag::String("mekanism:unobtainium".into()),
+            );
+            nbt.insert("amount".into(), Tag::Int(7));
+        }
+        assert_eq!(read_tank(&future).held(), Some(("mekanism:unobtainium", 7)));
+    }
+
+    /// Slice 4 is one block and one item, and the tank takes the value its tier
+    /// gives it.
+    #[test]
+    fn the_chemical_family_is_one_block_one_item_and_one_tank() {
+        assert_eq!(
+            CHEMICAL_TANK, "mekanism:basic_chemical_tank",
+            "/mekanism info answers the tank at this id"
+        );
+        assert_eq!(GAUGE_DROPPER, "mekanism:gauge_dropper");
+        assert_eq!(TANK_TYPE, "basic_chemical_tank");
+        assert_eq!(TANK_CAPACITY, 64_000, "ChemicalTankTier.BASIC");
+        assert_eq!(DROPPER_CAPACITY, 16_000, "GearConfig.gaugeDropperCapacity");
+        assert_eq!(
+            machine_capacity(CHEMICAL_TANK),
+            None,
+            "the tank has no energy buffer (its /mekanism info line is its tank's)"
+        );
+        assert!(
+            !CHEMICALS.is_empty() && CHEMICALS.contains(&"mekanism:hydrogen"),
+            "the id table the commands validate against is Mekanism's"
+        );
+    }
 
     #[test]
     fn the_machines_declare_three_slots_with_input_and_output_on_every_face() {
