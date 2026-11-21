@@ -20,11 +20,14 @@ translated. See `FINDINGS.md` for the files read and the numbers.
 **LOCAL-ONLY** until the maintainer approves publishing (ARCHITECTURE.md §8).
 MIT is licence rank 0 (permissive); the approval is still required.
 
-Status: **slices 1–3 implemented and verified in-game** — an Energized Smelter
+Status: **slices 1–5 implemented and verified in-game** — an Energized Smelter
 (50 FE/t × 200 t, 20,000 FE buffer), an Enrichment Chamber on the same machine
 core (ore → two dust, raw ore 3 → 4, raw block 1 → 12, plus the jar's other
 recipes over items the port registers), a Crusher on the same core (the jar's
-145 `mekanism:crushing` rows this port can finish), a Basic Energy Cube
+145 `mekanism:crushing` rows this port can finish), a Chemical Injection Chamber
+(400 FE/t × 200 t, 160,000 FE buffer, a 210-unit gas tank it fills from a
+neighbour through `mekanism:chemical`, the jar's 72 `mekanism:injecting` rows this
+port can finish), a Basic Energy Cube
 (4,000,000 FE) and a Basic Universal Cable (8,000 FE/t). Everything else in
 Mekanism is a planned gap (below).
 
@@ -184,9 +187,11 @@ The three dusts are plain items on the `minecraft:gunpowder` template (stack
 
 ## Gaps / deviations
 
-1. **The rest of Mekanism.** Ore processing beyond smelting, enriching and
-   crushing (Purification, Ore Washer, Chemical Injection — all three need a
-   gas), factories, the
+1. **The rest of Mekanism.** Ore processing beyond smelting, enriching,
+   crushing and injection (Purification and the Ore Washer — both need a second
+   gas/fluid input — plus factories and the rest of the chain from the shards
+   onward: the shards → clumps → dirty dust → dust steps need the purification
+   chamber and the crusher on this port's items), factories, the
    advanced/elite/ultimate tiers, the creative cube, upgrades, side
    configuration, redstone control, ejectors, the Configurator, the gas system,
    the Metallurgic Infuser, thermal distillation, the Digital Miner, the
@@ -1265,3 +1270,314 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > `5e304608de3b1094a2b9ce62b5fe9245299cc0587e4bacc44201b303cf8fd989`; `check` exit 0; `fits` `made
 > for` at the pin and `fits` at `0b14f8a`; 63 tests, clippy `-D warnings` clean; in game `PASS` +
 > `EXIT:0`, the unmodded game `EXIT:1`, `SELFTEST=1` `EXIT:1`, `NOCABLE=1` `PASS` + `EXIT:0`.
+
+## Slice 5 — the Chemical Injection Chamber (0.2.4, 2026-11-21)
+
+### The scope authority, quoted
+
+The slice-4 report named the consumer as the next slice, and the port's own gap list says the same
+(`notes.md` "Gaps / deviations" item 1 and `FINDINGS.md` "Next slices" 1):
+
+> Ore processing beyond smelting, enriching and crushing (Purification, Ore Washer, Chemical
+> Injection — all three need a gas), …
+
+and `FINDINGS.md`'s refinement after slice 4:
+
+> the **gas capability they were blocked on now exists** (`mekanism:chemical`), so the Purification
+> Chamber, Ore Washer and Chemical Injection Chamber are unblocked on the capability and blocked
+> only on their own machines and on the chemicals as items.
+
+**Chosen: the Chemical Injection Chamber** (`mekanism:injecting`), the **consumer** half of the
+capability slice 4 published: a machine that holds its own gas tank *and* pulls a chemical from a
+neighbour's tank **through `mekanism:chemical`** on its tick. It reuses the shared machine core the
+Smelter, Enrichment Chamber and Crusher run (block entity, energy buffer, 200 ticks, three slots,
+furnace menu) with one extra input: a gas amount per operation. It fits the **`deep` tier** as a
+machines-shaped feature — one block entity with its own saved state, a container, an energy balance
+and a capability consumer; no entity, renderer, dimension or custom vanilla hook.
+
+### What the jar says (upstream truth, read from `v1.21.1-10.7.19.85`)
+
+| value | source | port |
+|---|---|---|
+| usage **400 FE/t** | `UsageConfig.java:64` (`chemicalInjectionChamber`, default `400L`) | `INJECTION_USAGE = 400` |
+| storage **160,000 FE** | `StorageConfig.java:76-77` (`chemicalInjectionChamber`, `160_000L, 1`) | `INJECTION_CAPACITY = 160_000` |
+| 200 ticks per operation, so **80,000 FE** | `TileEntityChemicalInjectionChamber` → `TileEntityAdvancedElectricMachine(BASE_TICKS_REQUIRED)` | `INJECTION_OPERATION = { 200, 400 }` |
+| the machine's **own gas tank is 210 units** | `TileEntityAdvancedElectricMachine.java:66` (`MAX_GAS = 210`) | `INJECTION_TANK = 210` |
+| insert-only for automation | `getInitialChemicalTanks` → `ConstantPredicates.notExternal()` when `randomizedConsumption` (the default, `true`) makes `allowExtractingChemical()` false | the chamber answers `mekanism:chemical` with `insert_chemical` capped at 210 and its own `extract` taking nothing from a foreign asker |
+| **the gas is spent per tick, `chemical_input.amount` each** | `chemicalInputHandler = InputHelper.getConstantInputHandler`; `ItemStackConstantChemicalToObjectCachedRecipe.useResources` → `use(recipeChemical, operations × multiplier)` with `ChemicalUsageMultiplier.constantUse(BASE_TICKS_REQUIRED, …)` = 1 per tick | `per_tick` per operating tick, so a whole operation takes `per_tick × 200` |
+| no gas (or a gas the recipe does not take) **holds** the progress | the constant-usage handler overrides `resetProgress` to `tracker.updateOperations(0)` | `IdleReason::NoChemical` (held, no energy spent) |
+| recipe type `mekanism:injecting` | `TileEntityChemicalInjectionChamber.getRecipeType()` | `runtime::injecting` |
+| block 3.5 / 16, `facing`×`active` | `MekanismBlockTypes.chemicalInjectionChamber` (`createMachine`), `blockstates/chemical_injection_chamber.json` | barrel template (3.5/16, `facing`×`open`), the same recorded deviation as the other machines |
+
+The per-tick reading matters and is easy to get wrong: the jar writes `per_tick_usage: true` on all
+91 injecting recipes, `baseTotalUsage` is the machine's **tick count** (200) and the multiplier is
+**1 per tick**, which is then multiplied by the recipe's `chemical_input.amount`. So water vapour at
+`amount: 1` costs 200 units an operation and a coral block at `amount: 5` costs 1,000 — not 1 and 5.
+
+### The recipe table: 72 of the jar's 91 injecting recipes
+
+`tools/gen_injecting.py` reads every `"type": "mekanism:injecting"` file in the jar and keeps a row
+where both sides exist in this port:
+
+- **item tags expanded to their 26.3 members** (`c:ores/{iron,gold,copper}`, `c:raw_materials/*`,
+  `c:storage_blocks/raw_*`), each expansion its own row;
+- **the chemical side is a list**: the jar writes either one id (`mekanism:oxygen`,
+  `mekanism:hydrogen_chloride`) or a chemical **tag** — `mekanism:water_vapor` holds
+  `mekanism:water_vapor` and `mekanism:steam`, and `recipe.test` accepts either, so one row names
+  both and the machine runs on a tank of either;
+- **22 skipped, each printed**: `c:bricks/normal`, `c:gunpowders` (output `mekanism:dust_sulfur`),
+  `c:crystals/*` (no crystal item), the lead/osmium/tin/uranium ore and raw tags (no item), the
+  plutonium pellet, and `from_crystal` rows — all items or outputs this port does not register.
+
+Families carried: **copper oxidising** (27 rows: block, chiseled, bulb, door, grate, trapdoor, cut
+copper and its slab/stairs, all three stages), **concrete solidifying** (16 coloured powders →
+concrete), **coral reviving** (15 dead corals, blocks and fans), **dirt → mud**, **terracotta → clay**,
+and the **shards** — `c:ores/{iron,gold,copper}` → 4 shards, `c:raw_materials/*` ×3 → 8, raw blocks
+×1 (+2 gas) → 24, for the three materials, with the three `mekanism:shard_*` items carried.
+
+### The consumer, in the port's three layers
+
+- **`src/runtime.rs`** — `InjectionRecipe { input, chemical: &'static [&'static str], per_tick,
+  output }`, `injecting::{recipe_for, lookup, ROW_COUNT}`, `process_injection_tick` (the shared
+  machine rules plus the gas gates) and `injection_pull(recipe, tank) -> Option<(&'static str, u32)>`
+  — **one tick's gas**, the chemical to ask for and how much. `Tank::spend` and `room_for` are the
+  two helpers it shares with the older machines (`room_for` is the refactor of `process_tick`'s slot
+  arithmetic, so both machines use one copy).
+- **`src/support.rs`** — `InjectionPart`: `top_up_tank` (asks a neighbour through `CHEMICAL`, only
+  when this tick could work) and `pull_chemical` (each move measured, each neighbour asked only when
+  it holds the wanted chemical, the whole draw inside one `host.transaction`), then
+  `process_injection_tick`, then `write_state` + `write_tank` into the payload. The chamber also
+  **answers** `mekanism:chemical` with `ChemicalTank { capacity: 210 }` — the same handler the tank
+  block uses, with the machine's capacity — so another mod can fill the machine directly, and its
+  own `/mekanism chemical read` shows `0/210`.
+- **Content** — `mekanism:chemical_injection_chamber` (barrel template 3.5/16, the upstream
+  blockstate's `facing`×`open`, the upstream model, `_active` model and all 11 textures), the three
+  `mekanism:shard_{iron,gold,copper}` items (the jar's `item/generated` models and textures), loot,
+  the shaped recipe (vanilla stand-ins: 4 gold + 3 iron + iron block + copper block, the upstream
+  pattern over ingredients this port has), the pickaxe tag, the creative tab and the lang keys.
+
+The one structural choice worth naming, because it is a **deviation**: upstream's machine does not
+pull. Its tank is filled by automation *pushing* into the chemical capability, and the machine only
+runs when its tank already holds ≥ one operation's `per_tick` amount. This port's machine **pulls**
+the gas it needs, one tick at a time, because that is the behaviour the slice is about (a consumer of
+the capability) and because it makes the conservation provable: a whole operation draws exactly
+`200 × per_tick` units from the neighbour and leaves the machine's own tank empty. Upstream's
+buffer-plus-push model is reachable through the same capability (the chamber answers inserts), so no
+behaviour is lost — only the automation direction differs.
+
+### Red → green
+
+The runtime rules and the glue's shape were written as tests first and ran red on the untouched tree
+(`../_shared/evidence/mekanism/slice5-unit-red.log`):
+
+```
+error[E0432]: unresolved imports `crate::runtime::INJECTION_CAPACITY`, `crate::runtime::INJECTION_OPERATION`, `crate::runtime::INJECTION_TANK`, `crate::runtime::INJECTION_TICKS`, `crate::runtime::injecting`, `crate::runtime::injection_pull`, `crate::runtime::process_injection_tick`, `crate::runtime::room_for`
+  --> src/support.rs:19:21
+   |
+19 |     EMPTY_CHEMICAL, INJECTION_CAPACITY, INJECTION_OPERATION, INJECTION_TANK, INJECTION_TICKS,
+   |                     ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^ no `INJECTION_TICKS` in `runtime`
+```
+
+then the constants, the generator's table, the two runtime functions and the Part made the crate
+green: **72 tests** (was 63) — 8 new `runtime::injection_tests`, 2 `support::tests`. One test-only
+mistake was caught by the red run itself (the mid-operation "gas ran out" assertion fired on the
+tick that emptied the tank, not the next one) and fixed in the test, not the rule.
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the Chemical Injection Chamber block, block entity, 160,000 FE buffer, three slots, furnace menu | **tested** | `A1`/`A2` (give/place/read back), `B2` (loot), `B1` (crafts), `G1` (`0/160000 FE, …` and the machine's own line) |
+| one injection operation: 80,000 FE, 200 ticks, the input consumed, the jar's output stack | **tested** | `G1`: `raw_iron x3` → `mekanism:shard_iron x8`, `energy … eq 80000` |
+| the gas is pulled **through the capability** from a neighbour, one tick's worth per tick | **tested** | `G1`: tank `3,800/64,000` after `4,000`, machine's own tank `0`, `holds nothing 0/210 (answered by mekanism)` |
+| no tank beside it → no progress, no FE spent | **tested** | `G2` (4,66,12): `progress 0/200, input minecraft:raw_iron x3`, `eq 160000` |
+| a gas the recipe does not take → no progress, no FE, nothing drawn | **tested** | `G2` (7/8,66,12): oxygen tank, same idle line, tank still `4000/64000`; sweep control: a hydrogen tank at a raw-iron chamber, `5000/64000` unchanged |
+| **all 72 carried injecting recipes** (input count, output id and count, input consumed, the tank short exactly `200 × per_tick`) | **tested** | `H`: `rows injected: 72 of 72` (`tools/inject_sweep.py`, six pairs per batch) |
+| the iron/gold/copper shards: items, models, textures, give-able | **tested** | `A1` (give-able, 3 items) |
+| the eight carried shaped recipes (the chamber's added) | **tested** | `B1` (`tools/craft_check.py`): eight crafts + five wrong-ingredient controls |
+| the seven blocks' loot tables | **tested** | `B2`: each block drops its own item |
+| `c:crystals/*` shard recipes, lead/osmium/tin/uranium shards, gunpowder → sulfur, plutonium pellets | **not ported** | those items are not registered; the generator prints each skipped file |
+| the `active` front texture and the `_active` model | **not ported** | carried in `assets/`, unused: the block template's `open` state stands in for `active` (the other machines' recorded deviation) |
+| factories (injecting factory), speed/energy/chemical upgrades, side configuration, the machine's own GUI | **not ported** | out of this slice (the same gaps as the other machines) |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| runtime + glue tests (RED) | `cargo test --offline` on the untouched tree | **`error[E0432]`**, the new API missing (`slice5-unit-red.log`) |
+| tests | `cargo test --offline` | **72 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` | clean (`sdk-fmt.log`) |
+| recipe tables | `gen_smelting.py --check`, `gen_enriching.py --check`, `gen_crushing.py --check`, `gen_injecting.py --check` | 163 / 129 / 145 / **72** rows (`sdk-recipe-tables.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` | `Built ./target/horizon-mod/mekanism.hmod` (`sdk-build.log`) |
+| same package twice | the same again | **`cmp` identical** (`sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | `mekanism 0.2.4 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **105,226 B, SHA-256 `dc37efbc…9dac6c`**, exit 0 (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, `FIT-PIN-EXIT:0` (`sdk-fits.log`, sha printed first) |
+| fits, **a different build** | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, `FIT-OTHER-EXIT:0` (`sdk-fits.log`) — the run that proves something |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (122 entries, no packed `Cargo.lock`) |
+| archive shape | `unzip -l mekanism.hmod` | 122 files, no `Cargo.lock` (`sdk-entries.txt`) |
+
+The launcher build (`launcher-game.sh build mekanism`, in a lease) printed `Compiling mekanism (1 of
+1)` and produced `native-0a875da-8480d1934f65`, which is the trap's check that the binary under test
+carries this package.
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`../_shared/evidence/mekanism-e2e/e2e-package.log` → `PASS` + `EXIT:0`, quoted from phase G:
+
+```
+== G1: a neighbour tank's gas reaches the chamber through the capability, and one operation takes exactly 200 of it ==
+  chemical insert 4000 mekanism:hydrogen_chloride 0 66 12: chemical: inserted 4000 mekanism:hydrogen_chloride into mekanism:basic_chemical_tank (4000/64000)
+  info(1,66,12): mekanism:chemical_injection_chamber: 0/160000 FE, progress 0/200, input minecraft:raw_iron x3, output empty x0
+  energy(1,66,12): 157200
+  info(1,66,12): mekanism:chemical_injection_chamber: 80000/160000 FE, progress 0/200, input empty x0, output mekanism:shard_iron x8
+  energy(1,66,12): 80000
+  chemical read 0 66 12: chemical: mekanism:basic_chemical_tank holds mekanism:hydrogen_chloride 3800/64000 (answered by mekanism)
+  data get block 0 66 12 amount: 0, 66, 12 has the following block data: 3800
+  data get block 1 66 12 amount: 1, 66, 12 has the following block data: 0
+  chemical read 1 66 12: chemical: mekanism:chemical_injection_chamber holds nothing 0/210 (answered by mekanism)
+== G2: without a tank beside it the chamber makes no progress and spends no FE ==
+  chemical insert 4000 mekanism:oxygen 7 66 12: chemical: inserted 4000 mekanism:oxygen into mekanism:basic_chemical_tank (4000/64000)
+  info(4,66,12): mekanism:chemical_injection_chamber: 160000/160000 FE, progress 0/200, input minecraft:raw_iron x3, output empty x0
+  energy(4,66,12): 160000
+  info(8,66,12): mekanism:chemical_injection_chamber: 160000/160000 FE, progress 0/200, input minecraft:raw_iron x3, output empty x0
+  energy(8,66,12): 160000
+  chemical read 7 66 12: chemical: mekanism:basic_chemical_tank holds mekanism:oxygen 4000/64000 (answered by mekanism)
+```
+
+and from phase H, the sweep (`tools/inject_sweep.py`) and its control:
+
+```
+== H: every carried injecting recipe in a real Chemical Injection Chamber ==
+  rows from the jar's mekanism:injecting data: 72
+  minecraft:black_concrete_powder x1 + mekanism:water_vapor x1/t -> {"count": 1, "item": "minecraft:black_concrete"} (chemical: mekanism:basic_chemical_tank holds mekanism:water_vapor 4800/64000 (answered by mekanism))
+  ...
+  minecraft:copper_block x1 + mekanism:oxygen x1/t -> {"count": 1, "item": "minecraft:exposed_copper"} (chemical: … holds mekanism:oxygen 4800/64000 …)
+  minecraft:deepslate_iron_ore x1 + mekanism:hydrogen_chloride x1/t -> {"count": 4, "item": "mekanism:shard_iron"} (chemical: … holds mekanism:hydrogen_chloride 4800/64000 …)
+  minecraft:dirt x1 + mekanism:water_vapor x1/t -> {"count": 1, "item": "minecraft:mud"} (chemical: … holds mekanism:water_vapor 4800/64000 …)
+  ...
+  minecraft:raw_copper_block x1 + mekanism:hydrogen_chloride x2/t -> {"count": 24, "item": "mekanism:shard_copper"} (chemical: … holds mekanism:hydrogen_chloride 4600/64000 …)
+  minecraft:raw_iron x3 + mekanism:hydrogen_chloride x1/t -> {"count": 8, "item": "mekanism:shard_iron"} (chemical: … holds mekanism:hydrogen_chloride 4800/64000 …)
+  minecraft:raw_iron_block x1 + mekanism:hydrogen_chloride x2/t -> {"count": 24, "item": "mekanism:shard_iron"} (chemical: … holds mekanism:hydrogen_chloride 4600/64000 …)
+  ...
+rows injected: 72 of 72
+sweep PASS: all 72 carried injecting recipes ran in a real chamber with their declared input count and output stack, the input was consumed, and the neighbour tank lost exactly the gas the operation spent
+== control: a tank of a chemical the recipe does not take moves nothing ==
+  gas: chemical: mekanism:basic_chemical_tank holds mekanism:hydrogen 5000/64000 (answered by mekanism)
+  machine: [{"count": 3, "item": "minecraft:raw_iron"}], 160000 FE
+  control PASS: the raw iron is still there, nothing was made and no gas was drawn
+```
+
+What the numbers prove:
+
+- **the gas came through the capability, not from the chamber**: the tank beside the chamber read
+  `4,000` before the operation and `3,800` after, through `/mekanism chemical read` (the key, not the
+  block id), and the two `/data get block` reads are the same fact from the saved data on **both**
+  sides — the neighbour's `amount: 3800` and the machine's `amount: 0`. A machine that had made its
+  own gas, or over-drawn a buffer, could not produce that pair;
+- **the operation is exactly one operation**: 200 ticks × 400 FE = 80,000 FE, half of the 160,000
+  buffer, and the input went from three raw iron to none while slot 2 gained the jar's **eight**
+  `mekanism:shard_iron` (the `per_tick_usage` recipe `raw_ore ×3 + 1 hydrogen chloride → 8 shards`);
+- **the gas cost is the recipe's, per tick**: every one of the 72 rows left its tank at exactly
+  `5,000 − 200 × per_tick` — 4,800 for a one-unit row, 4,600 for the two-unit raw-block row, and
+  4,000/3,500 for the three- and five-unit coral rows — so the table's `per_tick` column is what the
+  machine spent, not a guess;
+- **the controls are two-sided**: with no tank the machine held its progress at 0 and its 160,000 FE
+  intact; with a tank of **oxygen** beside a raw-iron operation nothing moved either; and in the
+  sweep's control a tank of **hydrogen** (a chemical the port knows, and the one the slice-4 report
+  happened to name) was not drawn from at all, because the jar's raw-iron recipe takes
+  `hydrogen_chloride`. The same phase with the tank present turns three raw iron into eight shards,
+  so the absence is the machine's rule, not a broken harness.
+
+| leg | result | evidence |
+|---|---|---|
+| package (default) | **`PASS` + `EXIT:0`** | `e2e-package.log` |
+| unmodded game (`GAME=$CONTROL_GAME CONTROL=0`) | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** | `e2e-control.log` |
+| fail-capable (`SELFTEST=1`) | **`FAIL: expected /mekanism info at 1,66,12 to say 'output empty x0', got 'mekanism:chemical_injection_chamber: 80000/160000 FE, progress 0/200, input empty x0, output mekanism:shard_iron x8'` + `EXIT:1`** | `e2e-selftest.log` |
+| differential (`NOCABLE=1`) | **`PASS` + `EXIT:0`** (phase G passes with no cable too) | `e2e-nocable.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+
+The `SELFTEST=1` flip moved to **this** slice's assertion (it was the chemical insert in slice 4):
+the newest family is the one that has to prove it can fail, and it fails on the chamber's output
+assertion, which runs before the crafting and machine phases.
+
+### What the harness taught this slice
+
+1. **A new member of the `BLOCKS` array moves every hard-coded probe.** Adding the chamber shifted
+   the A2 "unknown block id is refused" probe onto the Basic Chemical Tank's slot, and the phase
+   failed on a *correct* block. The probe now stands at `8,64,26`, past the array. The same class as
+   the End portal's bedrock: a harness constant that a content change invalidates.
+2. **A charged machine has already started.** `expect_contains … "160000/160000 FE, progress 0/200"`
+   after `mekanism energy` is a race the machine wins: by the next `/mekanism info` it had run 64
+   ticks. The charged state is asserted as `gt 0`, and the exact 80,000 after the operation.
+3. **`ctl container` may elide empty trailing slots** (a machine holding only its input answered one
+   slot, not three), so every slot assertion indexes defensively (`held[2] if len(held) > 2 else
+   None`) instead of assuming a length.
+4. `E2E_TMP` is now honoured: the scratch home goes under the launcher's `~/.cache/horizon-e2e/scratch`
+   when the leg exports it, instead of a 7.5 GB `/tmp` tmpfs that has been 100 % full.
+
+### Gaps after slice 5
+
+Everything in *Gaps / deviations*, *Gaps after the migration*, *Gaps after slice 3* and *Gaps after
+slice 4* still stands. Changed: the **injection chamber is ported**, so the ore-processing chain is
+now smelter · enrichment · crusher · injection, and the port ships the three shards as items. Still
+missing for the rest of the chain: the Purification Chamber (oxygen, still unported) and the
+Ore Washer (water), the clumps/crystals/slurries, the factories, and the chemicals as items.
+
+### `## Upstream defects fixed`
+
+None found in this slice. Two upstream numbers were **misread first and then read correctly from the
+source**, which is worth recording because a port that guessed would have shipped them wrong:
+
+- `UsageConfig.chemicalInjectionChamber` is **400 FE/t** (not the 50 of the three simpler machines),
+  so an operation costs 80,000 FE and the buffer is 160,000;
+- the per-tick gas usage is `recipe.amount × 1/tick` for 200 ticks (`constantUse`), not the
+  `chemical_input.amount` as a flat per-operation cost — which is why a coral block's `amount: 5`
+  row costs 1,000 units.
+
+### Deviations this slice records
+
+- **The machine pulls its gas; upstream is pushed into.** Upstream's tank is a 210-unit buffer that
+  automation fills through the chemical capability; the machine runs only when the tank already holds
+  a tick's worth. This port keeps the buffer (210, insert-only, answered through
+  `mekanism:chemical`) *and* lets the machine pull one tick's gas from an adjacent handler through
+  the same key, because the slice is the capability's consumer. A whole operation therefore draws
+  exactly `200 × per_tick` from the neighbour and leaves the machine's tank empty. A push-driven
+  setup still works: the tank accepts inserts up to 210.
+- **`randomizedConsumption` is not modelled.** Upstream's default (`true`) makes the gas usage
+  statistical (a Poisson mean around one unit per tick); the port has no config, so it spends the
+  deterministic `constantUse` amount — the same expected cost, exactly reproducible.
+- **The chamber's own tank is not shown in `/mekanism info`** (the line stays the six-field machine
+  line the other machines answer); it is read through `mekanism:chemical`
+  (`/mekanism chemical read <pos>` → `0/210`) and through its saved `chemical`/`amount`.
+- **The block is the barrel template** (`facing`×`open`, the idle front), not upstream's
+  `facing`×`active` blockstate; the `_active` model and textures are carried, unused.
+- **No upgrades, no factory, no ejector, no side configuration** — the same recorded gaps as the
+  other machines.
+- **The pull resolves because the provider is this same crate.** A capability lookup downcasts by the
+  handler's **Rust type**, so `LevelRef::capability(host, &CHEMICAL, …)` answers only when the
+  provider is this crate's `ChemicalTank` behind this crate's `Chemical` type — the limit
+  `HANDOVER.md` §9k measured with `mekanisticrouters` (a second crate's same-named key and its own
+  `Chemical` type is passed over). That is exactly the case here, so the consumer half works; a
+  *third-party* consumer would need the shared `ChemicalResource` §9k asks `horizon-mod-vocab` for,
+  and this slice deliberately does not try to solve it.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+### Changelog (0.2.4) — supersedes 0.2.3
+
+> **0.2.4 — the Chemical Injection Chamber, the chemical capability's first consumer.** A new machine
+> on the shared recipe-machine core with a gas input: **400 FE/t × 200 ticks (80,000 FE an
+> operation)**, a **160,000 FE** insert-only buffer, a **210-unit gas tank of its own** (insert-only,
+> answered through `mekanism:chemical`), the same three slots and vanilla furnace menu, and the jar's
+> `mekanism:injecting` table over the items this port has — **72 rows**: copper oxidising, concrete
+> solidifying, coral reviving, dirt → mud, terracotta → clay, and ore/raw ore/raw block →
+> **shards** for iron, gold and copper, with the three `mekanism:shard_*` items carried (models,
+> textures, tab, lang). The machine **pulls one tick's gas at a time from a neighbour's tank through
+> `mekanism:chemical`** and spends exactly `200 × per_tick` units an operation, leaving its own tank
+> empty — the capability's consumer half, proven in game with the operation's FE, the product and the
+> neighbour tank's delta all asserted, with no-tank and wrong-gas controls. Package: **122 entries,
+> 105,226 B**, sha256 `dc37efbcea33fc5e7c0feb26fa2a126f947b107aa566dd90dc9cd91df49dac6c`; `check`
+> exit 0; `fits` `made for` at the pin and `fits` at `0b14f8a`; 72 tests, clippy `-D warnings` clean;
+> in game `PASS` + `EXIT:0` with all 72 injecting rows, the unmodded game `EXIT:1`, `SELFTEST=1`
+> `EXIT:1`, `NOCABLE=1` `PASS` + `EXIT:0`.

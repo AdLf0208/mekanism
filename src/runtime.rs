@@ -77,6 +77,30 @@ pub const CRUSHER_OPERATION: Operation = Operation {
     usage: CRUSHER_USAGE,
 };
 
+/// Ticks one Chemical Injection Chamber operation takes
+/// (`TileEntityAdvancedElectricMachine.BASE_TICKS_REQUIRED`).
+pub const INJECTION_TICKS: i32 = 200;
+
+/// Energy one Chemical Injection Chamber operating tick costs
+/// (`UsageConfig.chemicalInjectionChamber`, default 400).
+pub const INJECTION_USAGE: i32 = 400;
+
+/// The Chemical Injection Chamber's energy buffer
+/// (`StorageConfig.chemicalInjectionChamber`, default 160,000).
+pub const INJECTION_CAPACITY: i32 = 160_000;
+
+/// The Chemical Injection Chamber's own gas tank
+/// (`TileEntityAdvancedElectricMachine.MAX_GAS`): one operation of a one-unit
+/// recipe, and no more — the machine is a consumer, not a reservoir.
+pub const INJECTION_TANK: u32 = 210;
+
+/// The Chemical Injection Chamber's operation: the jar's 400 FE/t over the
+/// shared 200 ticks, so one operation costs 80,000 FE.
+pub const INJECTION_OPERATION: Operation = Operation {
+    ticks: INJECTION_TICKS,
+    usage: INJECTION_USAGE,
+};
+
 /// One Basic Energy Cube's storage (`EnergyCubeTier.BASIC`).
 pub const CUBE_CAPACITY: i32 = 4_000_000;
 
@@ -1562,6 +1586,10 @@ pub enum IdleReason {
     NotEnoughInput,
     /// Less than one tick's energy is stored (the progress is held).
     NoEnergy,
+    /// The tank holds none of the chemical the recipe takes, or less than one
+    /// operating tick of it (the progress is held: upstream's constant-usage
+    /// handler pauses rather than resetting).
+    NoChemical,
     /// The output slot has no room for the recipe's result (held).
     NoOutputSpace,
 }
@@ -1596,6 +1624,20 @@ pub fn clamp_energy(energy: i32, capacity: i32) -> i32 {
     energy.clamp(0, capacity.max(0))
 }
 
+/// How many of a recipe's output item the output slot still takes: the whole
+/// stack when the slot is empty, the room left when it holds the same item, and
+/// none when it holds another.
+#[must_use]
+pub fn room_for(output: &ItemAmount, recipe_output: &ItemAmount, max_stack: u32) -> u32 {
+    if output.is_empty() {
+        max_stack
+    } else if output.item == recipe_output.item {
+        max_stack.saturating_sub(output.count)
+    } else {
+        0
+    }
+}
+
 /// One tick of a recipe machine (`CachedRecipe.process`).
 ///
 /// `lookup` answers the recipe for an input item id, `None` when nothing
@@ -1625,14 +1667,7 @@ pub fn process_tick(
         machine.progress = 0;
         return Outcome::Idle(IdleReason::NotEnoughInput);
     }
-    let room = if output.is_empty() {
-        max_stack
-    } else if output.item == recipe.output.item {
-        max_stack.saturating_sub(output.count)
-    } else {
-        0
-    };
-    if room < recipe.output.count {
+    if room_for(output, &recipe.output, max_stack) < recipe.output.count {
         return Outcome::Idle(IdleReason::NoOutputSpace);
     }
     if machine.energy < operation.usage {
@@ -1905,6 +1940,17 @@ impl Tank {
             _ => None,
         }
     }
+
+    /// Takes `amount` out of the tank and answers how much came out; a tank that
+    /// runs dry is empty (`default`), not a chemical at 0.
+    pub fn spend(&mut self, amount: u32) -> u32 {
+        let came = amount.min(self.amount);
+        self.amount -= came;
+        if self.amount == 0 {
+            *self = Self::default();
+        }
+        came
+    }
 }
 
 /// Why a chemical did not go into a tank.
@@ -1953,15 +1999,752 @@ pub fn insert_chemical(
 /// Takes up to `amount` of `chemical` out of `tank`: how much came out; nothing
 /// of another chemical than the one it holds, and nothing from an empty tank.
 pub fn extract_chemical(tank: &mut Tank, chemical: &str, amount: u32) -> u32 {
-    let Some((held, stored)) = tank.held() else {
-        return 0;
-    };
-    if held != chemical {
+    if tank.held().is_none_or(|(held, _)| held != chemical) {
         return 0;
     }
-    let came = amount.min(stored);
-    *tank = Tank::new(held, stored - came);
-    came
+    tank.spend(amount)
+}
+
+// ---------------------------------------------------------------------------
+// Slice 5: the Chemical Injection Chamber — a consumer of the capability
+// ---------------------------------------------------------------------------
+
+/// One `mekanism:injecting` recipe as the machine runs it: the items one
+/// operation consumes, the chemicals its gas input accepts (the jar writes
+/// either one id or a chemical tag), how much of that gas **one operating tick**
+/// takes, and what it produces.
+///
+/// `per_tick` is the jar's `chemical_input.amount` under `per_tick_usage: true`.
+/// Upstream spends it through `ChemicalUsageMultiplier.constantUse`, so a whole
+/// operation takes `per_tick × 200` units.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InjectionRecipe {
+    /// Items taken from the input slot when the operation finishes.
+    pub input: u32,
+    /// The chemicals the gas input accepts (a tag expands to its members).
+    pub chemical: &'static [&'static str],
+    /// Units of it one operating tick spends.
+    pub per_tick: u32,
+    /// The result, a stack of the recipe's item and count.
+    pub output: ItemAmount,
+}
+
+impl InjectionRecipe {
+    /// Whether the recipe takes `chemical`.
+    #[must_use]
+    pub fn accepts(&self, chemical: &str) -> bool {
+        self.chemical.contains(&chemical)
+    }
+}
+
+/// The jar's `mekanism:injecting` recipes over the items and chemicals this port
+/// registers, generated into `src/runtime.rs` by `tools/gen_injecting.py`.
+pub mod injecting {
+    use super::{InjectionRecipe, ItemAmount};
+
+    /// How many rows the table holds.
+    pub const ROW_COUNT: usize = TABLE.len();
+
+    /// The recipe for `item`, whatever the machine's tank holds.
+    #[must_use]
+    pub fn recipe_for(item: &str) -> Option<InjectionRecipe> {
+        TABLE.iter().find(|row| row.0 == item).map(row_recipe)
+    }
+
+    /// The recipe for `item`, only when it takes `chemical`.
+    #[must_use]
+    pub fn lookup(item: &str, chemical: &str) -> Option<InjectionRecipe> {
+        recipe_for(item).filter(|recipe| recipe.accepts(chemical))
+    }
+
+    fn row_recipe(row: &Row) -> InjectionRecipe {
+        InjectionRecipe {
+            input: row.1,
+            chemical: row.2,
+            per_tick: row.3,
+            output: ItemAmount::new(row.4, row.5),
+        }
+    }
+
+    /// `(input item, items consumed, accepted chemicals, per-tick units, output
+    /// item, output count)`.
+    type Row = (
+        &'static str,
+        u32,
+        &'static [&'static str],
+        u32,
+        &'static str,
+        u32,
+    );
+
+    // BEGIN GENERATED INJECTING TABLE (tools/gen_injecting.py)
+    // Generated from the jar's `mekanism:injecting` recipes by
+    // `tools/gen_injecting.py`; do not edit by hand. Each row is
+    // `(input item, items consumed, accepted chemicals, per-tick units,
+    // output item, output count)`; an item tag is expanded to the members
+    // 26.3 has and a chemical tag to the chemicals this port knows (see the
+    // tool's ITEM_TAGS/CHEMICAL_TAGS), and a recipe whose output the port
+    // does not register is left out.
+    // Source recipes: 91. Rows: 72. Skipped: 22.
+    static TABLE: &[Row] = &[
+        (
+            "minecraft:black_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:black_concrete",
+            1,
+        ),
+        (
+            "minecraft:blue_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:blue_concrete",
+            1,
+        ),
+        (
+            "minecraft:brown_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:brown_concrete",
+            1,
+        ),
+        (
+            "minecraft:chiseled_copper",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:exposed_chiseled_copper",
+            1,
+        ),
+        (
+            "minecraft:copper_block",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:exposed_copper",
+            1,
+        ),
+        (
+            "minecraft:copper_bulb",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:exposed_copper_bulb",
+            1,
+        ),
+        (
+            "minecraft:copper_door",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:exposed_copper_door",
+            1,
+        ),
+        (
+            "minecraft:copper_grate",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:exposed_copper_grate",
+            1,
+        ),
+        (
+            "minecraft:copper_ore",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_copper",
+            4,
+        ),
+        (
+            "minecraft:copper_trapdoor",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:exposed_copper_trapdoor",
+            1,
+        ),
+        (
+            "minecraft:cut_copper",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:exposed_cut_copper",
+            1,
+        ),
+        (
+            "minecraft:cut_copper_slab",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:exposed_cut_copper_slab",
+            1,
+        ),
+        (
+            "minecraft:cut_copper_stairs",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:exposed_cut_copper_stairs",
+            1,
+        ),
+        (
+            "minecraft:cyan_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:cyan_concrete",
+            1,
+        ),
+        (
+            "minecraft:dead_brain_coral",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            3,
+            "minecraft:brain_coral",
+            1,
+        ),
+        (
+            "minecraft:dead_brain_coral_block",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            5,
+            "minecraft:brain_coral_block",
+            1,
+        ),
+        (
+            "minecraft:dead_brain_coral_fan",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            3,
+            "minecraft:brain_coral_fan",
+            1,
+        ),
+        (
+            "minecraft:dead_bubble_coral",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            3,
+            "minecraft:bubble_coral",
+            1,
+        ),
+        (
+            "minecraft:dead_bubble_coral_block",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            5,
+            "minecraft:bubble_coral_block",
+            1,
+        ),
+        (
+            "minecraft:dead_bubble_coral_fan",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            3,
+            "minecraft:bubble_coral_fan",
+            1,
+        ),
+        (
+            "minecraft:dead_fire_coral",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            3,
+            "minecraft:fire_coral",
+            1,
+        ),
+        (
+            "minecraft:dead_fire_coral_block",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            5,
+            "minecraft:fire_coral_block",
+            1,
+        ),
+        (
+            "minecraft:dead_fire_coral_fan",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            3,
+            "minecraft:fire_coral_fan",
+            1,
+        ),
+        (
+            "minecraft:dead_horn_coral",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            3,
+            "minecraft:horn_coral",
+            1,
+        ),
+        (
+            "minecraft:dead_horn_coral_block",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            5,
+            "minecraft:horn_coral_block",
+            1,
+        ),
+        (
+            "minecraft:dead_horn_coral_fan",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            3,
+            "minecraft:horn_coral_fan",
+            1,
+        ),
+        (
+            "minecraft:dead_tube_coral",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            3,
+            "minecraft:tube_coral",
+            1,
+        ),
+        (
+            "minecraft:dead_tube_coral_block",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            5,
+            "minecraft:tube_coral_block",
+            1,
+        ),
+        (
+            "minecraft:dead_tube_coral_fan",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            3,
+            "minecraft:tube_coral_fan",
+            1,
+        ),
+        (
+            "minecraft:deepslate_copper_ore",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_copper",
+            4,
+        ),
+        (
+            "minecraft:deepslate_gold_ore",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_gold",
+            4,
+        ),
+        (
+            "minecraft:deepslate_iron_ore",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_iron",
+            4,
+        ),
+        (
+            "minecraft:dirt",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:mud",
+            1,
+        ),
+        (
+            "minecraft:exposed_chiseled_copper",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:weathered_chiseled_copper",
+            1,
+        ),
+        (
+            "minecraft:exposed_copper",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:weathered_copper",
+            1,
+        ),
+        (
+            "minecraft:exposed_copper_bulb",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:weathered_copper_bulb",
+            1,
+        ),
+        (
+            "minecraft:exposed_copper_door",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:weathered_copper_door",
+            1,
+        ),
+        (
+            "minecraft:exposed_copper_grate",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:weathered_copper_grate",
+            1,
+        ),
+        (
+            "minecraft:exposed_copper_trapdoor",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:weathered_copper_trapdoor",
+            1,
+        ),
+        (
+            "minecraft:exposed_cut_copper",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:weathered_cut_copper",
+            1,
+        ),
+        (
+            "minecraft:exposed_cut_copper_slab",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:weathered_cut_copper_slab",
+            1,
+        ),
+        (
+            "minecraft:exposed_cut_copper_stairs",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:weathered_cut_copper_stairs",
+            1,
+        ),
+        (
+            "minecraft:gold_ore",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_gold",
+            4,
+        ),
+        (
+            "minecraft:gray_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:gray_concrete",
+            1,
+        ),
+        (
+            "minecraft:green_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:green_concrete",
+            1,
+        ),
+        (
+            "minecraft:iron_ore",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_iron",
+            4,
+        ),
+        (
+            "minecraft:light_blue_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:light_blue_concrete",
+            1,
+        ),
+        (
+            "minecraft:light_gray_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:light_gray_concrete",
+            1,
+        ),
+        (
+            "minecraft:lime_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:lime_concrete",
+            1,
+        ),
+        (
+            "minecraft:magenta_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:magenta_concrete",
+            1,
+        ),
+        (
+            "minecraft:orange_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:orange_concrete",
+            1,
+        ),
+        (
+            "minecraft:pink_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:pink_concrete",
+            1,
+        ),
+        (
+            "minecraft:purple_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:purple_concrete",
+            1,
+        ),
+        (
+            "minecraft:raw_copper",
+            3,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_copper",
+            8,
+        ),
+        (
+            "minecraft:raw_copper_block",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            2,
+            "mekanism:shard_copper",
+            24,
+        ),
+        (
+            "minecraft:raw_gold",
+            3,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_gold",
+            8,
+        ),
+        (
+            "minecraft:raw_gold_block",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            2,
+            "mekanism:shard_gold",
+            24,
+        ),
+        (
+            "minecraft:raw_iron",
+            3,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_iron",
+            8,
+        ),
+        (
+            "minecraft:raw_iron_block",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            2,
+            "mekanism:shard_iron",
+            24,
+        ),
+        (
+            "minecraft:red_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:red_concrete",
+            1,
+        ),
+        (
+            "minecraft:terracotta",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:clay",
+            1,
+        ),
+        (
+            "minecraft:weathered_chiseled_copper",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:oxidized_chiseled_copper",
+            1,
+        ),
+        (
+            "minecraft:weathered_copper",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:oxidized_copper",
+            1,
+        ),
+        (
+            "minecraft:weathered_copper_bulb",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:oxidized_copper_bulb",
+            1,
+        ),
+        (
+            "minecraft:weathered_copper_door",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:oxidized_copper_door",
+            1,
+        ),
+        (
+            "minecraft:weathered_copper_grate",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:oxidized_copper_grate",
+            1,
+        ),
+        (
+            "minecraft:weathered_copper_trapdoor",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:oxidized_copper_trapdoor",
+            1,
+        ),
+        (
+            "minecraft:weathered_cut_copper",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:oxidized_cut_copper",
+            1,
+        ),
+        (
+            "minecraft:weathered_cut_copper_slab",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:oxidized_cut_copper_slab",
+            1,
+        ),
+        (
+            "minecraft:weathered_cut_copper_stairs",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "minecraft:oxidized_cut_copper_stairs",
+            1,
+        ),
+        (
+            "minecraft:white_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:white_concrete",
+            1,
+        ),
+        (
+            "minecraft:yellow_concrete_powder",
+            1,
+            &["mekanism:water_vapor", "mekanism:steam"],
+            1,
+            "minecraft:yellow_concrete",
+            1,
+        ),
+    ];
+    // END GENERATED INJECTING TABLE
+}
+
+/// The gas the machine pulls from a neighbour for the tick it is about to run:
+/// the chemical to ask for and how much of it, or `None` when its own tank
+/// already holds a tick's worth or a chemical the recipe does not take.
+///
+/// Exactly one tick's worth is asked for, so a neighbour loses the gas the
+/// operation spends and no more: the machine's tank is a buffer, not a
+/// reservoir.
+#[must_use]
+pub fn injection_pull(recipe: &InjectionRecipe, tank: &Tank) -> Option<(&'static str, u32)> {
+    let chemical = match tank.held() {
+        Some((held, _)) if recipe.accepts(held) => {
+            *recipe.chemical.iter().find(|it| **it == held)?
+        }
+        Some(_) => return None,
+        None => recipe.chemical.first().copied()?,
+    };
+    let want = recipe.per_tick.saturating_sub(tank.amount);
+    (want > 0).then_some((chemical, want))
+}
+
+/// One tick of a Chemical Injection Chamber (`TileEntityAdvancedElectricMachine`
+/// through `ItemStackConstantChemicalToObjectCachedRecipe`).
+///
+/// `lookup` answers the recipe for an input item id. Each operating tick costs
+/// `operation.usage` energy **and** `recipe.per_tick` units of the gas, and adds
+/// one progress tick; on `operation.ticks` the recipe's input count is consumed
+/// and its result goes into the output. A tank of another chemical, or one with
+/// less than a tick's gas, **holds** the progress and spends nothing (upstream's
+/// constant-usage handler pauses instead of resetting); so do no energy and no
+/// output room. An empty input, an input without a recipe or too few items reset
+/// it, exactly as the other machines do.
+pub fn process_injection_tick(
+    machine: &mut Machine,
+    operation: Operation,
+    tank: &mut Tank,
+    input: &mut ItemAmount,
+    output: &mut ItemAmount,
+    max_stack: u32,
+    lookup: &dyn Fn(&str) -> Option<InjectionRecipe>,
+) -> Outcome {
+    if input.is_empty() {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoInput);
+    }
+    let Some(recipe) = lookup(&input.item).filter(|recipe| !recipe.output.is_empty()) else {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoRecipe);
+    };
+    if input.count < recipe.input.max(1) {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NotEnoughInput);
+    }
+    if tank
+        .held()
+        .is_none_or(|(held, stored)| !recipe.accepts(held) || stored < recipe.per_tick)
+    {
+        return Outcome::Idle(IdleReason::NoChemical);
+    }
+    if room_for(output, &recipe.output, max_stack) < recipe.output.count {
+        return Outcome::Idle(IdleReason::NoOutputSpace);
+    }
+    if machine.energy < operation.usage {
+        return Outcome::Idle(IdleReason::NoEnergy);
+    }
+    machine.energy -= operation.usage;
+    machine.progress += 1;
+    tank.spend(recipe.per_tick);
+    if machine.progress < operation.ticks {
+        return Outcome::Working;
+    }
+    machine.progress = 0;
+    input.count -= recipe.input.max(1);
+    if output.is_empty() {
+        *output = recipe.output;
+    } else {
+        output.count += recipe.output.count;
+    }
+    Outcome::Produced
 }
 
 #[cfg(test)]
@@ -2921,6 +3704,252 @@ mod chemical_tests {
             insert_chemical(&mut dropper, "mekanism:hydrogen", 99_999, DROPPER_CAPACITY),
             Ok(DROPPER_CAPACITY - 1_000),
             "and its capacity is 16,000"
+        );
+    }
+}
+
+#[cfg(test)]
+mod injection_tests {
+    use super::*;
+
+    /// A charged Chemical Injection Chamber with raw ore in its input and the
+    /// gas its recipe needs in its own tank.
+    fn injection(gas: u32) -> (Machine, Tank, ItemAmount, ItemAmount) {
+        (
+            Machine {
+                energy: INJECTION_CAPACITY,
+                progress: 0,
+            },
+            Tank::new("mekanism:hydrogen_chloride", gas),
+            ItemAmount::new("minecraft:raw_iron", 3),
+            ItemAmount::default(),
+        )
+    }
+
+    /// The table is the jar's `mekanism:injecting` data over the items and
+    /// chemicals this port registers: 91 recipes in the jar, 72 rows here (a
+    /// chemical tag is one row naming every chemical it accepts, an item tag one
+    /// row per member).
+    #[test]
+    fn the_injection_table_is_the_jar_s_recipes_over_this_port_s_items() {
+        let shards = injecting::recipe_for("minecraft:raw_iron").expect("raw iron is injected");
+        assert_eq!(shards.input, 3, "from_raw_ore takes three raw ore");
+        assert_eq!(shards.output, ItemAmount::new("mekanism:shard_iron", 8));
+        assert_eq!(shards.per_tick, 1, "the jar's per_tick_usage amount");
+        assert!(shards.accepts("mekanism:hydrogen_chloride"));
+        assert!(!shards.accepts("mekanism:oxygen"));
+        let ore = injecting::recipe_for("minecraft:deepslate_iron_ore").expect("an iron ore");
+        assert_eq!(ore.output, ItemAmount::new("mekanism:shard_iron", 4));
+        // The water-vapour family accepts the jar's tag, both of its members.
+        let mud = injecting::recipe_for("minecraft:dirt").expect("dirt is injected");
+        assert_eq!(mud.output, ItemAmount::new("minecraft:mud", 1));
+        assert!(mud.accepts("mekanism:water_vapor") && mud.accepts("mekanism:steam"));
+        assert!(!mud.accepts("mekanism:hydrogen_chloride"));
+        // The jar's oxygen half (copper oxidising) is carried as it is.
+        let oxidised = injecting::recipe_for("minecraft:copper_block").expect("copper oxidises");
+        assert_eq!(
+            oxidised.output,
+            ItemAmount::new("minecraft:exposed_copper", 1)
+        );
+        assert!(oxidised.accepts("mekanism:oxygen"));
+        assert_eq!(
+            injecting::ROW_COUNT,
+            72,
+            "the rows the generator keeps from the jar's 91 injecting recipes"
+        );
+    }
+
+    /// One tick of the operation: the gas the recipe declares is taken per tick,
+    /// one progress tick is added, and 400 FE (the jar's
+    /// `UsageConfig.chemicalInjectionChamber`) is spent.
+    #[test]
+    fn one_injection_tick_spends_fe_one_progress_and_the_tick_s_gas() {
+        let (mut machine, mut tank, mut input, mut output) = injection(200);
+        let outcome = process_injection_tick(
+            &mut machine,
+            INJECTION_OPERATION,
+            &mut tank,
+            &mut input,
+            &mut output,
+            64,
+            &injecting::recipe_for,
+        );
+        assert_eq!(outcome, Outcome::Working);
+        assert_eq!(machine.progress, 1);
+        assert_eq!(
+            machine.energy,
+            INJECTION_CAPACITY - INJECTION_USAGE,
+            "400 FE for one tick"
+        );
+        assert_eq!(tank.held(), Some(("mekanism:hydrogen_chloride", 199)));
+        assert_eq!(
+            input.count, 3,
+            "the input is consumed when the operation ends"
+        );
+        assert!(output.is_empty());
+        assert_eq!(
+            INJECTION_TANK, 210,
+            "TileEntityAdvancedElectricMachine.MAX_GAS"
+        );
+    }
+
+    /// A missing gas, or a gas the recipe does not take, holds the progress and
+    /// spends nothing: upstream's constant-usage handler pauses instead of
+    /// resetting, and no energy is taken when no operation runs.
+    #[test]
+    fn a_missing_or_wrong_gas_holds_the_progress_and_spends_nothing() {
+        for gas in [Tank::default(), Tank::new("mekanism:oxygen", 4_000)] {
+            let (mut machine, mut input, mut output) = {
+                let (machine, _tank, input, output) = injection(0);
+                (machine, input, output)
+            };
+            machine.progress = 41;
+            let mut tank = gas.clone();
+            let outcome = process_injection_tick(
+                &mut machine,
+                INJECTION_OPERATION,
+                &mut tank,
+                &mut input,
+                &mut output,
+                64,
+                &injecting::recipe_for,
+            );
+            assert_eq!(outcome, Outcome::Idle(IdleReason::NoChemical), "{gas:?}");
+            assert_eq!(
+                machine,
+                Machine {
+                    energy: INJECTION_CAPACITY,
+                    progress: 41
+                }
+            );
+            assert_eq!(tank, gas, "a held tick moves no gas");
+        }
+    }
+
+    /// A whole operation: 200 ticks, 80,000 FE, 200 units of the gas, three raw
+    /// ore in and the jar's eight shards out.
+    #[test]
+    fn an_injection_operation_consumes_its_input_and_yields_the_jar_s_stack() {
+        let (mut machine, mut tank, mut input, mut output) = injection(200);
+        let mut last = Outcome::Working;
+        for _ in 0..INJECTION_TICKS {
+            last = process_injection_tick(
+                &mut machine,
+                INJECTION_OPERATION,
+                &mut tank,
+                &mut input,
+                &mut output,
+                64,
+                &injecting::recipe_for,
+            );
+        }
+        assert_eq!(last, Outcome::Produced);
+        assert_eq!(machine.progress, 0, "a finished operation starts over");
+        assert_eq!(
+            machine.energy,
+            INJECTION_CAPACITY - 80_000,
+            "200 ticks x 400 FE"
+        );
+        assert_eq!(tank, Tank::default(), "all 200 units went into the shards");
+        assert!(
+            input.is_empty(),
+            "the operation consumed its three raw iron"
+        );
+        assert_eq!(output, ItemAmount::new("mekanism:shard_iron", 8));
+    }
+
+    /// The gas is spent every tick: a tank with half an operation's gas runs
+    /// half the operation and then holds, with the FE it did not spend intact.
+    #[test]
+    fn the_gas_runs_out_mid_operation_and_the_machine_holds() {
+        let (mut machine, mut tank, mut input, mut output) = injection(100);
+        let mut last = Outcome::Working;
+        for _ in 0..INJECTION_TICKS {
+            last = process_injection_tick(
+                &mut machine,
+                INJECTION_OPERATION,
+                &mut tank,
+                &mut input,
+                &mut output,
+                64,
+                &injecting::recipe_for,
+            );
+        }
+        assert_eq!(
+            last,
+            Outcome::Idle(IdleReason::NoChemical),
+            "the gas ran out at tick 100, so the last tick had nothing to burn"
+        );
+        assert_eq!(machine.progress, 100, "the progress is held, not reset");
+        assert_eq!(
+            machine.energy,
+            INJECTION_CAPACITY - 40_000,
+            "100 ticks of 400"
+        );
+        assert_eq!(tank, Tank::default());
+        assert!(output.is_empty(), "no operation finished");
+        assert_eq!(input.count, 3, "and no input was consumed");
+    }
+
+    /// The machine asks a neighbour for exactly the gas its next tick spends:
+    /// nothing when its tank already holds a tick's worth, and never more than
+    /// that, so a whole operation draws 200 units and leaves none behind.
+    #[test]
+    fn the_top_up_asks_for_exactly_the_tick_s_gas() {
+        let recipe = injecting::recipe_for("minecraft:raw_iron").expect("a recipe");
+        assert_eq!(
+            injection_pull(&recipe, &Tank::default()),
+            Some(("mekanism:hydrogen_chloride", 1)),
+            "an empty tank asks for one tick's gas"
+        );
+        assert_eq!(
+            injection_pull(&recipe, &Tank::new("mekanism:hydrogen_chloride", 1)),
+            None,
+            "a tank holding the tick's gas asks for nothing"
+        );
+        assert_eq!(
+            injection_pull(&recipe, &Tank::new("mekanism:hydrogen_chloride", 200)),
+            None
+        );
+        assert_eq!(
+            injection_pull(&recipe, &Tank::new("mekanism:oxygen", 4_000)),
+            None,
+            "a tank of another chemical is not topped up with this one"
+        );
+        let coral = injecting::recipe_for("minecraft:dead_tube_coral").expect("a coral recipe");
+        assert_eq!(coral.per_tick, 3);
+        assert_eq!(
+            injection_pull(&coral, &Tank::new("mekanism:steam", 1)),
+            Some(("mekanism:steam", 2)),
+            "a tag's second member is pulled under its own name"
+        );
+        assert_eq!(
+            injection_pull(&coral, &Tank::default()),
+            Some(("mekanism:water_vapor", 3)),
+            "an empty tank asks for the tag's first chemical"
+        );
+    }
+
+    /// The machine is the jar's: 400 FE/t, a 160,000 FE buffer, a 210-unit gas
+    /// buffer, and the shared 200-tick operation.
+    #[test]
+    fn the_injection_machine_is_the_jar_s_energy_and_gas() {
+        assert_eq!(INJECTION_USAGE, 400, "UsageConfig.chemicalInjectionChamber");
+        assert_eq!(
+            INJECTION_CAPACITY, 160_000,
+            "StorageConfig.chemicalInjectionChamber"
+        );
+        assert_eq!(INJECTION_TICKS, 200, "TileEntityAdvancedElectricMachine");
+        assert_eq!(INJECTION_OPERATION.usage, INJECTION_USAGE);
+        assert_eq!(INJECTION_OPERATION.ticks, INJECTION_TICKS);
+        assert_eq!(
+            room_for(
+                &ItemAmount::default(),
+                &ItemAmount::new("mekanism:shard_iron", 8),
+                64
+            ),
+            64,
+            "an empty output takes the stack"
         );
     }
 }

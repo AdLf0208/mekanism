@@ -1,5 +1,47 @@
 # Validation
 
+## 0.2.4 — the Chemical Injection Chamber, slice 5 (2026-11-21)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`).
+
+| Check | Command | Result |
+|---|---|---|
+| runtime + glue rules, RED first | `cargo test --offline` on the untouched tree | **`error[E0432]`**, the new API missing (`slice5-unit-red.log`) |
+| tests | `cargo test --offline` | **72 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`sdk-fmt.log`) |
+| recipe tables | `gen_smelting.py --check`, `gen_enriching.py --check`, `gen_crushing.py --check`, `gen_injecting.py --check` | 163 / 129 / 145 / **72** rows (`sdk-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **105,226 B**, `cmp` identical, sha256 `dc37efbcea33fc5e7c0feb26fa2a126f947b107aa566dd90dc9cd91df49dac6c` (`sdk-build.log`, `sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.4 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 122 entries (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`sdk-fits.log`, sha printed beside it) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`sdk-fits.log`) |
+| archive | `unzip -l mekanism.hmod` | 122 entries, no `Cargo.lock` (`sdk-entries.txt`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (`sdk-verify-package.log`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 1,66,12 to say 'output empty x0', got '… output mekanism:shard_iron x8'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+| launcher build | `launcher-game.sh build mekanism` (in a lease) | `Compiling mekanism (1 of 1)`, `native-0a875da-8480d1934f65` (`slice5-launcher-build.log`) |
+
+The in-game leg proves, per the parity rule: the seven blocks and seven items are give-able and
+placeable, an unknown id is refused, the **eight** carried shaped recipes craft (id, count,
+ingredients consumed, five wrong-ingredient controls empty), the seven blocks' loot tables drop the
+block, every carried crushing recipe (145) runs in a real crusher, the machines' chain and
+persistence hold, the chemical capability moves and refuses as before — and **its consumer**: a
+Chemical Injection Chamber beside a tank of hydrogen chloride pulls the gas **through
+`mekanism:chemical`**, turns three raw iron into the jar's eight `mekanism:shard_iron` for exactly
+80,000 FE, and leaves the neighbour tank at 4,000 − 200 with its own tank empty; with no tank beside
+it, with a tank of oxygen, and with a tank of hydrogen (a gas the raw-iron recipe does not take) it
+makes no progress, spends no FE and draws nothing — and **all 72 carried injecting rows** run in a
+real chamber with their declared input count, output stack and gas cost. See [notes.md](notes.md)
+§"Slice 5 — the Chemical Injection Chamber" for the transcript.
+
 ## 0.2.3 — the chemical capability, slice 4 (2026-11-21)
 
 Validated on Linux against the campaign pin **Horizon

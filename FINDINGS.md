@@ -173,11 +173,12 @@ entity's NBT and the cable still balances it on its own tick.
 ## Next slices (planned gap list)
 
 1. **Ore processing chain (the rest of the tier)**: the **Enrichment
-   Chamber** (slice 2) and the **Crusher** (slice 3, `mekanism:crushing`, the
-   same `ItemStackToItemStackRecipe` machine shape) are done; next are the
-   Purification Chamber (needs oxygen, a gas system), Ore Washer (needs water)
-   and Chemical Injection Chamber (gases). The gas-based ones need a gas
-   capability that does not exist at the pin.
+   Chamber** (slice 2), the **Crusher** (slice 3) and the **Chemical Injection
+   Chamber** (slice 5, `mekanism:injecting`, on the chemical capability slice 4
+   published) are done; next are the Purification Chamber (needs oxygen) and the
+   Ore Washer (needs water as a gas). Both are `ItemStackChemicalToItemStack`
+   machines of the same shape, so each is a slice like this one — with its own
+   recipe table and a second gas id the table already validates against.
 2. **Factories** (`basic_smelting_factory` etc.): the same recipe in parallel,
    hearts of the `TileEntityFactory` family; needs multi-operation-per-tick
    (`operationsPerTick`) and a larger energy buffer.
@@ -248,3 +249,44 @@ Refinement of "Next slices" 1 and 6: the **gas capability they were blocked on n
 (`mekanism:chemical`), so the Purification Chamber, Ore Washer and Chemical Injection Chamber
 are unblocked on the capability and blocked only on their own machines and on the chemicals as
 items; the Metallurgic Infuser and Electrolytic Separator likewise.
+
+## Slice 5 — the Chemical Injection Chamber (upstream analysis)
+
+Read for this slice (analysis only; the Rust is a clean-room rewrite):
+
+| Area | Files |
+|---|---|
+| the machine | `common/tile/machine/TileEntityChemicalInjectionChamber.java`, `common/tile/prefab/TileEntityAdvancedElectricMachine.java` |
+| the per-tick gas | `src/api/java/mekanism/api/recipes/cache/ItemStackConstantChemicalToObjectCachedRecipe.java` (`ChemicalUsageMultiplier.constantUse`), `src/api/java/mekanism/api/recipes/inputs/InputHelper.java` (`getConstantInputHandler`, `ChemicalInputHandler`) |
+| the recipe | `src/api/java/mekanism/api/recipes/ItemStackChemicalToItemStackRecipe.java` (`per_tick_usage`), the jar's `data/mekanism/recipe/injecting/**` and `processing/<material>/shard/**` |
+| the numbers | `common/config/UsageConfig.java` (`chemicalInjectionChamber`, `400L`), `common/config/StorageConfig.java` (`160_000L, 1`) |
+| the block | `common/registries/MekanismBlockTypes.java` (`createMachine`), `assets/mekanism/blockstates/chemical_injection_chamber.json` |
+
+Numbers carried: **400 FE/t** usage, **160,000 FE** storage, the shared **200**-tick operation
+(**80,000 FE** each), and the machine's own **210**-unit gas tank (`MAX_GAS`). The gas is spent
+**per tick** — `recipe.chemical_input.amount × 1` each tick for 200 ticks — because the jar's
+constant-usage multiplier starts at `baseTotalUsage (= ticks required) / remaining ticks = 1` and
+that multiplier is then multiplied by the recipe's amount. A gas the recipe does not take, or less
+than one tick of it, **holds** the progress (the constant-usage handler overrides `resetProgress` to
+`updateOperations(0)`); it does not reset it.
+
+Where the rewrite differs (and why):
+
+- upstream's tank is filled by automation **pushing** into the chemical capability and the machine
+  only runs from its buffer; the port keeps the same 210-unit insert-only buffer and lets the machine
+  **pull** one tick's gas from an adjacent handler through `mekanism:chemical` — the slice is the
+  capability's consumer, and pulling makes the draw exactly `200 × per_tick`;
+- `randomizedConsumption` (upstream default `true`, a statistical gas usage) is not modelled: the
+  port has no config and spends the deterministic `constantUse` amount — same expected cost;
+- the block is the barrel template's `facing`×`open` rather than `facing`×`active` (the other
+  machines' recorded deviation); the `_active` model and textures are carried, unused.
+
+Recipe table: the jar's **91** injecting recipes, **72** carried — an item tag expands per member
+and a chemical tag is one row naming every member (`mekanism:water_vapor` = water vapour **or**
+steam). The **22** skipped are printed by `tools/gen_injecting.py`: `c:bricks/normal`,
+`c:gunpowders` (its output `mekanism:dust_sulfur` is not registered), `c:crystals/*`, the
+lead/osmium/tin/uranium ore and raw tags, the plutonium pellet, and the `from_crystal` rows — every
+one an item or an output this port does not register.
+
+The slice closes the "injection chamber" half of *Next slices* 1; the purification chamber and ore
+washer remain, and the shards → clumps → dirty dust → dust path from here needs exactly those two.

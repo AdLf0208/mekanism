@@ -1,4 +1,4 @@
-# Mekanism for Horizon — slices 1–4
+# Mekanism for Horizon — slices 1–5
 
 One flat **SDK package** (`horizon-mod.toml`, `api = "0.2"`) for Mekanism
 10.7.19.85 (MIT), the exact ATM10 jar. The carried blocks, items, models,
@@ -17,6 +17,12 @@ here; the behaviour is `src/lib.rs` (one `impl mod_api::Hooks`) and
   buffer and the same three-slot menu; the jar's 145 `mekanism:crushing` rows
   this port can finish (cobblestone → gravel, gravel → sand, wool → string,
   ingots → dusts, the stone/deepslate/tuff/copper conversions and more);
+- `mekanism:chemical_injection_chamber` — 400 FE/t, 200 ticks per operation
+  (80,000 FE), a 160,000 FE buffer and a **210-unit gas tank of its own** that
+  it tops up from a neighbouring tank **through `mekanism:chemical`**; the jar's
+  72 `mekanism:injecting` rows this port can finish (ore and raw ore → shards,
+  copper oxidising, concrete solidifying, coral reviving, dirt → mud,
+  terracotta → clay), with the `mekanism:shard_{iron,gold,copper}` items;
 - `mekanism:basic_energy_cube` — 4,000,000 FE at 4,000 FE/t;
 - `mekanism:basic_universal_cable` — moves 8,000 FE/t between the block
   entities beside it, on its own tick;
@@ -41,11 +47,12 @@ upstream analysis (the numbers and the files read from tag
 
 The recipe tables are generated into `src/runtime.rs` by
 `tools/gen_smelting.py` (the 26.3 vanilla smelting recipes),
-`tools/gen_enriching.py` and `tools/gen_crushing.py` (the jar's
-`mekanism:enriching` and `mekanism:crushing` recipes over the items the port
-registers); all three have `--check`, and `gen_crushing.py --rows` feeds the
-in-game sweep (`tools/crush_sweep.py`) so the scenario and the table cannot
-drift apart.
+`tools/gen_enriching.py`, `tools/gen_crushing.py` and `tools/gen_injecting.py`
+(the jar's `mekanism:enriching`, `mekanism:crushing` and `mekanism:injecting`
+recipes over the items the port registers); all four have `--check`, and
+`gen_crushing.py --rows` / `gen_injecting.py --rows` feed the in-game sweeps
+(`tools/crush_sweep.py`, `tools/inject_sweep.py`) so the scenario and the table
+cannot drift apart.
 
 ```sh
 # the pure rules and the glue's declarations, on the host target

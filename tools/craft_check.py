@@ -235,6 +235,22 @@ def main() -> int:
         ],
         "mekanism:basic_universal_cable", 8, "minecraft:redstone",
     )
+    check(
+        "chemical injection chamber: 4 gold + 3 iron + iron block + copper block",
+        [
+            ("minecraft:gold_ingot", 4),
+            ("minecraft:iron_ingot", 3),
+            ("minecraft:iron_block", 1),
+            ("minecraft:copper_block", 1),
+        ],
+        [
+            ("minecraft:gold_ingot", every(100, 102, 106, 108)),
+            ("minecraft:iron_ingot", every(101, 103, 105)),
+            ("minecraft:iron_block", every(104)),
+            ("minecraft:copper_block", every(107)),
+        ],
+        "mekanism:chemical_injection_chamber", 1, "minecraft:copper_block",
+    )
 
     # --- controls: a wrong ingredient leaves the result empty -------------
     empty_control(
@@ -289,6 +305,21 @@ def main() -> int:
             ("minecraft:iron_block", every(104)),
         ],
     )
+    empty_control(
+        "injection chamber with a stick where the iron block goes",
+        [
+            ("minecraft:gold_ingot", 4),
+            ("minecraft:iron_ingot", 3),
+            ("minecraft:stick", 1),
+            ("minecraft:copper_block", 1),
+        ],
+        [
+            ("minecraft:gold_ingot", every(100, 102, 106, 108)),
+            ("minecraft:iron_ingot", every(101, 103, 105)),
+            ("minecraft:stick", every(104)),
+            ("minecraft:copper_block", every(107)),
+        ],
+    )
 
     run("close")
     wait(3)
@@ -296,7 +327,7 @@ def main() -> int:
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)
         return 1
-    print("recipe PASS: all seven carried shaped recipes craft with their declared id and "
+    print("recipe PASS: all eight carried shaped recipes craft with their declared id and "
           "count, their ingredients are consumed, and every wrong-ingredient control leaves "
           "the result empty")
     return 0
