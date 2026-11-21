@@ -1,18 +1,10 @@
 {
   "category": "misc",
   "key": {
-    "A": {
-      "item": "minecraft:iron_ingot"
-    },
-    "E": {
-      "item": "minecraft:redstone_block"
-    },
-    "I": {
-      "item": "minecraft:copper_ingot"
-    },
-    "P": {
-      "item": "minecraft:iron_block"
-    }
+    "A": "minecraft:iron_ingot",
+    "E": "minecraft:redstone_block",
+    "I": "minecraft:copper_ingot",
+    "P": "minecraft:iron_block"
   },
   "pattern": [
     "AEA",

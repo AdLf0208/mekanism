@@ -1,0 +1,19 @@
+{
+  "category": "misc",
+  "key": {
+    "B": "minecraft:magma_block",
+    "C": "minecraft:copper_ingot",
+    "R": "minecraft:redstone",
+    "X": "minecraft:iron_block"
+  },
+  "pattern": [
+    "RCR",
+    "BXB",
+    "RCR"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:crusher"
+  },
+  "type": "minecraft:crafting_shaped"
+}

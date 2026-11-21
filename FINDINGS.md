@@ -173,11 +173,11 @@ entity's NBT and the cable still balances it on its own tick.
 ## Next slices (planned gap list)
 
 1. **Ore processing chain (the rest of the tier)**: the **Enrichment
-   Chamber** is done (slice 2); next are the Crusher (`mekanism:crushing`,
-   the same `ItemStackToItemStackRecipe` machine shape), Purification Chamber
-   (needs oxygen, a gas system), Ore Washer (needs water) and Chemical
-   Injection Chamber (gases). The first fits the shared machine core directly;
-   the gas-based ones need a gas capability that does not exist at the pin.
+   Chamber** (slice 2) and the **Crusher** (slice 3, `mekanism:crushing`, the
+   same `ItemStackToItemStackRecipe` machine shape) are done; next are the
+   Purification Chamber (needs oxygen, a gas system), Ore Washer (needs water)
+   and Chemical Injection Chamber (gases). The gas-based ones need a gas
+   capability that does not exist at the pin.
 2. **Factories** (`basic_smelting_factory` etc.): the same recipe in parallel,
    hearts of the `TileEntityFactory` family; needs multi-operation-per-tick
    (`operationsPerTick`) and a larger energy buffer.

@@ -1,6 +1,42 @@
 # Validation
 
-## 0.2.0 — the SDK package (current, 2026-11-18)
+## 0.2.2 — the Crusher, slice 3 (2026-11-21)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`).
+
+| Check | Command | Result |
+|---|---|---|
+| tests, RED first | `cargo test --offline` before the feature | **31 errors**, the new API missing (`slice3-unit-red.log`) |
+| tests | `cargo test --offline` | **52 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`sdk-fmt.log`) |
+| recipe tables | `gen_smelting.py --check`, `gen_enriching.py --check`, `gen_crushing.py --check` | 163 / 129 / **145** rows (`sdk-recipe-tables.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` twice | **68,652 B**, `cmp` identical, sha256 `d52219f7…7d38f6` (`sdk-build.log`, `sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `native-mod`, 26.3, 82 entries (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`sdk-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`sdk-fits.log`) |
+| archive | `unzip -l mekanism.hmod` | 82 entries, no `Cargo.lock` (`sdk-entries.txt`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** |
+| in game | `ports/tools/launcher-game.sh run mekanism` | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: … 'output empty x0', got '… output minecraft:gravel x1'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+
+The in-game leg proves, per the parity rule: the five carried shaped recipes craft (id,
+count, ingredients consumed, two wrong-ingredient controls empty), the five blocks' loot
+tables drop the block, every carried block and item is give-able and placeable, an
+unknown id is refused, the crusher runs one operation for exactly 10,000 FE and does
+nothing without energy or without a recipe, its menu opens, and **all 145 carried
+crushing rows** run in a real crusher with their declared input count and output stack.
+See [notes.md](notes.md) §"Slice 3 — the Crusher" for the transcript.
+
+## 0.2.0 — the SDK package (2026-11-18, historical)
 
 Validated on Linux with rustc 1.97.0 against the pinned SDK nightly
 `0b14f8acfd97fa2c750e42795249dcc981178ca4` (`package_format` 6, `content_api`

@@ -1,4 +1,4 @@
-//! The glue: the four block entity types, their containers and energy buffers,
+//! The glue: the five block entity types, their containers and energy buffers,
 //! the machines' tick, the cable's transfers and the `/mekanism` command bodies.
 //!
 //! Every rule lives in [`crate::runtime`] (the retired bundle's `runtime.rs`,
@@ -12,25 +12,28 @@ use mod_api::{
 };
 
 use crate::runtime::{
-    CABLE_CAPACITY, CHAMBER_CAPACITY, CHAMBER_OPERATION, CHAMBER_TICKS, CUBE_CAPACITY, CUBE_RATE,
-    IdleReason, Machine, Operation, Outcome, Recipe, SMELTER_CAPACITY, SMELTER_OPERATION,
-    SMELTER_TICKS, Stack, clamp_energy, energy_after_extract, energy_after_insert, enriching,
-    process_tick, smelting,
+    CABLE_CAPACITY, CHAMBER_CAPACITY, CHAMBER_OPERATION, CHAMBER_TICKS, CRUSHER_CAPACITY,
+    CRUSHER_OPERATION, CRUSHER_TICKS, CUBE_CAPACITY, CUBE_RATE, IdleReason, ItemAmount, Machine,
+    MachineRecipe, Operation, Outcome, SMELTER_CAPACITY, SMELTER_OPERATION, SMELTER_TICKS,
+    clamp_energy, crushing, energy_after_extract, energy_after_insert, enriching, process_tick,
+    smelting,
 };
 
-/// The four blocks of slices 1-2.
+/// The five blocks of slices 1-3.
 pub(crate) const SMELTER: &str = "mekanism:energized_smelter";
 pub(crate) const CUBE: &str = "mekanism:basic_energy_cube";
 pub(crate) const CABLE: &str = "mekanism:basic_universal_cable";
 pub(crate) const CHAMBER: &str = "mekanism:enrichment_chamber";
+pub(crate) const CRUSHER: &str = "mekanism:crusher";
 
-/// The four block entity types, in this mod's namespace (`/mekanism` has no
+/// The five block entity types, in this mod's namespace (`/mekanism` has no
 /// bearing on them). One type per block, as the retired bundle's
 /// `block_entity` hook named the block it was asked about.
 const SMELTER_TYPE: &str = "energized_smelter";
 const CUBE_TYPE: &str = "basic_energy_cube";
 const CABLE_TYPE: &str = "basic_universal_cable";
 const CHAMBER_TYPE: &str = "enrichment_chamber";
+const CRUSHER_TYPE: &str = "crusher";
 
 /// A machine's menu slots: input, unused (the furnace menu's fuel slot) and
 /// output.
@@ -55,12 +58,12 @@ struct MachineDecl {
     kind: &'static str,
     operation: Operation,
     capacity: i32,
-    lookup: fn(&str) -> Option<Recipe>,
+    lookup: fn(&str) -> Option<MachineRecipe>,
 }
 
-/// Declare the four blocks: the two machines' containers and buffers, the cube's
-/// and the cable's buffers, and a block entity type each. The three that tick
-/// carry a Part; the cube is storage only.
+/// Declare the five blocks: the three machines' containers and buffers, the
+/// cube's and the cable's buffers, and a block entity type each. The four that
+/// tick carry a Part; the cube is storage only.
 pub(crate) fn declare(registrar: &mut dyn Registrar, context: &RegistrationContext) {
     let machines = [
         MachineDecl {
@@ -76,6 +79,13 @@ pub(crate) fn declare(registrar: &mut dyn Registrar, context: &RegistrationConte
             operation: CHAMBER_OPERATION,
             capacity: CHAMBER_CAPACITY,
             lookup: enriching::lookup,
+        },
+        MachineDecl {
+            block: CRUSHER,
+            kind: CRUSHER_TYPE,
+            operation: CRUSHER_OPERATION,
+            capacity: CRUSHER_CAPACITY,
+            lookup: crushing::lookup,
         },
     ];
     for machine in machines {
@@ -167,6 +177,7 @@ pub(crate) fn machine_capacity(id: &str) -> Option<i32> {
     match id {
         SMELTER => Some(SMELTER_CAPACITY),
         CHAMBER => Some(CHAMBER_CAPACITY),
+        CRUSHER => Some(CRUSHER_CAPACITY),
         CUBE => Some(CUBE_CAPACITY),
         CABLE => Some(CABLE_CAPACITY),
         _ => None,
@@ -178,6 +189,7 @@ pub(crate) fn machine_ticks(id: &str) -> Option<i32> {
     match id {
         SMELTER => Some(SMELTER_TICKS),
         CHAMBER => Some(CHAMBER_TICKS),
+        CRUSHER => Some(CRUSHER_TICKS),
         _ => None,
     }
 }
@@ -232,10 +244,10 @@ pub(crate) fn info_text(
     capacity: i32,
     ticks: i32,
     machine: Machine,
-    input: &Stack,
-    output: &Stack,
+    input: &ItemAmount,
+    output: &ItemAmount,
 ) -> String {
-    fn name(stack: &Stack) -> String {
+    fn name(stack: &ItemAmount) -> String {
         if stack.is_empty() {
             "empty".to_owned()
         } else {
@@ -256,16 +268,16 @@ pub(crate) fn info_text(
 }
 
 /// A slot as the pure core's stack, empty when the slot is empty.
-fn slot_stack(host: &dyn Host, slot: Option<&ItemStack>) -> Stack {
+fn slot_stack(host: &dyn Host, slot: Option<&ItemStack>) -> ItemAmount {
     match slot {
-        Some(stack) if stack.count() > 0 => Stack::new(&stack.item().id(host), stack.count()),
-        _ => Stack::default(),
+        Some(stack) if stack.count() > 0 => ItemAmount::new(&stack.item().id(host), stack.count()),
+        _ => ItemAmount::default(),
     }
 }
 
 /// Write the pure core's stack back into `slot`, keeping the previous stack's
 /// components when it is the same item.
-fn set_slot(host: &dyn Host, items: &mut [Option<ItemStack>], slot: usize, value: &Stack) {
+fn set_slot(host: &dyn Host, items: &mut [Option<ItemStack>], slot: usize, value: &ItemAmount) {
     if slot >= items.len() {
         return;
     }
@@ -290,7 +302,7 @@ fn set_slot(host: &dyn Host, items: &mut [Option<ItemStack>], slot: usize, value
 
 /// How many of the output's item one slot holds (`Item.getDefaultMaxStackSize`),
 /// the vanilla 64 for an unknown item or an empty slot.
-fn stack_limit(host: &dyn Host, output: &Stack) -> u32 {
+fn stack_limit(host: &dyn Host, output: &ItemAmount) -> u32 {
     if output.is_empty() {
         return DEFAULT_STACK_LIMIT;
     }
@@ -322,14 +334,14 @@ fn write_menu_data(
     data[3] = operation.ticks;
 }
 
-/// The smelter's and the chamber's behaviour: a ticked block entity.
+/// A machine's behaviour (smelter, chamber or crusher): a ticked block entity.
 pub(crate) struct MachinePart {
     /// The operation this machine runs.
     pub(crate) operation: Operation,
     /// Its buffer's capacity.
     pub(crate) capacity: i32,
-    /// The recipe table it reads (`smelting` or `enriching`).
-    pub(crate) lookup: fn(&str) -> Option<Recipe>,
+    /// The recipe table it reads (`smelting`, `enriching` or `crushing`).
+    pub(crate) lookup: fn(&str) -> Option<MachineRecipe>,
 }
 
 #[mod_api::horizon_part]
@@ -616,16 +628,47 @@ mod tests {
     }
 
     #[test]
-    fn only_the_four_blocks_have_a_capacity_and_only_the_machines_a_length() {
+    fn only_the_five_blocks_have_a_capacity_and_only_the_machines_a_length() {
         assert_eq!(machine_capacity(SMELTER), Some(SMELTER_CAPACITY));
         assert_eq!(machine_capacity(CHAMBER), Some(CHAMBER_CAPACITY));
+        assert_eq!(machine_capacity(CRUSHER), Some(CRUSHER_CAPACITY));
         assert_eq!(machine_capacity(CUBE), Some(CUBE_CAPACITY));
         assert_eq!(machine_capacity(CABLE), Some(CABLE_CAPACITY));
         assert_eq!(machine_capacity("minecraft:chest"), None);
         assert_eq!(machine_ticks(SMELTER), Some(200));
         assert_eq!(machine_ticks(CHAMBER), Some(200));
+        assert_eq!(machine_ticks(CRUSHER), Some(200));
         assert_eq!(machine_ticks(CUBE), None, "the cube runs no operation");
         assert_eq!(machine_ticks(CABLE), None);
+    }
+
+    /// The crusher is a machine in the same shape as the smelter and the
+    /// chamber: a three-slot container, an insert-only 20,000 FE buffer and a
+    /// 200-tick operation, differing in its recipe table.
+    #[test]
+    fn the_crusher_is_a_machine_with_the_same_shape_as_the_other_two() {
+        let container = container();
+        assert_eq!(
+            container.slots, MENU_SLOTS,
+            "the crusher shows the same three-slot furnace menu"
+        );
+        let buffer = machine_battery(CRUSHER_CAPACITY);
+        assert_eq!((buffer.capacity, buffer.max_extract), (20_000, 0));
+        assert_eq!(
+            info_text(
+                CRUSHER,
+                CRUSHER_CAPACITY,
+                CRUSHER_OPERATION.ticks,
+                Machine {
+                    energy: 10_000,
+                    progress: 0
+                },
+                &ItemAmount::default(),
+                &ItemAmount::new("minecraft:gravel", 1)
+            ),
+            "mekanism:crusher: 10000/20000 FE, progress 0/200, input empty x0, \
+             output minecraft:gravel x1"
+        );
     }
 
     #[test]
@@ -687,7 +730,7 @@ mod tests {
 
     #[test]
     fn the_info_line_is_the_one_the_e2e_asserts() {
-        let empty = Stack::default();
+        let empty = ItemAmount::default();
         assert_eq!(
             info_text(
                 SMELTER,
@@ -709,8 +752,8 @@ mod tests {
                 CHAMBER_CAPACITY,
                 CHAMBER_OPERATION.ticks,
                 Machine::default(),
-                &Stack::new("minecraft:iron_ore", 1),
-                &Stack::new("mekanism:dust_iron", 2)
+                &ItemAmount::new("minecraft:iron_ore", 1),
+                &ItemAmount::new("mekanism:dust_iron", 2)
             ),
             "mekanism:enrichment_chamber: 0/20000 FE, progress 0/200, input minecraft:iron_ore x1, \
              output mekanism:dust_iron x2"

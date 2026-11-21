@@ -1,4 +1,4 @@
-# Mekanism → Horizon, slices 1–2 (smelter, enrichment chamber, cube, cable)
+# Mekanism → Horizon, slices 1–3 (smelter, enrichment chamber, crusher, cube, cable)
 
 > **0.2.0 (2026-11-18): migrated to the flat SDK package** (`api = "0.2"`, one
 > `impl mod_api::Hooks`, `src/runtime.rs` byte-identical, content at the package
@@ -20,12 +20,13 @@ translated. See `FINDINGS.md` for the files read and the numbers.
 **LOCAL-ONLY** until the maintainer approves publishing (ARCHITECTURE.md §8).
 MIT is licence rank 0 (permissive); the approval is still required.
 
-Status: **slices 1–2 implemented and verified in-game** — an Energized Smelter
+Status: **slices 1–3 implemented and verified in-game** — an Energized Smelter
 (50 FE/t × 200 t, 20,000 FE buffer), an Enrichment Chamber on the same machine
 core (ore → two dust, raw ore 3 → 4, raw block 1 → 12, plus the jar's other
-recipes over items the port registers), a Basic Energy Cube (4,000,000 FE) and
-a Basic Universal Cable (8,000 FE/t). Everything else in Mekanism is a planned
-gap (below).
+recipes over items the port registers), a Crusher on the same core (the jar's
+145 `mekanism:crushing` rows this port can finish), a Basic Energy Cube
+(4,000,000 FE) and a Basic Universal Cable (8,000 FE/t). Everything else in
+Mekanism is a planned gap (below).
 
 ## Class + tier, approach, licence
 
@@ -183,8 +184,9 @@ The three dusts are plain items on the `minecraft:gunpowder` template (stack
 
 ## Gaps / deviations
 
-1. **The rest of Mekanism.** Ore processing beyond smelting and enriching
-   (Crusher, Purification, Ore Washer, Chemical Injection), factories, the
+1. **The rest of Mekanism.** Ore processing beyond smelting, enriching and
+   crushing (Purification, Ore Washer, Chemical Injection — all three need a
+   gas), factories, the
    advanced/elite/ultimate tiers, the creative cube, upgrades, side
    configuration, redstone control, ejectors, the Configurator, the gas system,
    the Metallurgic Infuser, thermal distillation, the Digital Miner, the
@@ -724,3 +726,267 @@ vanilla furnace menu, the plain models), not defects.
 | Skills line | `python3 ports/tools/check-skills.py --notes ports/mekanism --strict` | PASS |
 
 Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices,rust-port
+
+## Review fixes (2026-11-18)
+
+`var/review-all/1231-mekanism.md`, the one finding fixed; version **0.2.1** (58,950 B, sha256
+`2cf935e4b568d876535fafec9f0eb7c7aaf8c851ff30f424e1931b993ec76c5a`).
+
+- **Info disclosure (src/support.rs:502, src/lib.rs:47).** `/mekanism info` read a loaded
+  machine's input/output item ids and counts at player-selected coordinates, bypassing reach and
+  the GUI. It now needs an operator (permission ≥ 2) or a player in the same level within 8
+  blocks; any other caller gets a generic refusal. Rule: `runtime::may_inspect`, pinned by
+  `a_readout_needs_an_operator_reach_or_the_same_level`.
+
+### In-game harness corrections (documented)
+
+- The control leg probed 0,64,0, which is the End exit portal's bedrock in this world; an unknown
+  block id leaves bedrock in place, so it now probes 4,64,4 and 6,64,4.
+- Under `--headless` a mod container screen opens but `ctl screen`/`close`/`quit` never answer
+  while it is open (no screen tick). The menu step now reads `.screen` from the `ctl interact`
+  reply, runs last, and `cleanup` ends the captured game pid; the three slots stay pinned by the
+  container unit test, and item movement is exercised in-game through the same slots by `item
+  replace`.
+- The canonical leg was re-run through `launcher-game.sh run mekanism` after the scenario fixes
+  and passes (`PASS` + `EXIT:0`); an earlier attempt stopped in `e2e-guard.sh` with
+  `p: unbound variable` after the chamber section (a guard bug, not the port).
+- `runtime.rs` gained the reach rule and its test (43 tests); it is no longer byte-identical to the
+  retired bundle.
+
+Ladder: `cargo test` 43 passed; `cargo clippy --all-targets -- -D warnings` exit 0;
+`cargo fmt --check` clean; `cargo horizon-mod build` twice byte-identical; `check` and `fits`
+exit 0. In-game: `PASS` + `EXIT:0` (`ports/_shared/evidence/mekanism-e2e/e2e-launcher.log`);
+`GAME=$CONTROL_GAME CONTROL=0` → `FAIL` (`Unknown block type`) + `EXIT:1`.
+
+## Slice 3 — the Crusher (0.2.2, 2026-11-21)
+
+### The scope authority, quoted
+
+The port's own gap list said (verbatim, `FINDINGS.md`, "Next slices (planned gap list)" item 1):
+
+> **Ore processing chain (the rest of the tier)**: the **Enrichment
+> Chamber** is done (slice 2); next are the Crusher (`mekanism:crushing`,
+> the same `ItemStackToItemStackRecipe` machine shape), Purification Chamber
+> (needs oxygen, a gas system), Ore Washer (needs water) and Chemical
+> Injection Chamber (gases). The first fits the shared machine core directly;
+> the gas-based ones need a gas capability that does not exist at the pin.
+
+and `notes.md`'s own gap 1 lists "Crusher" first among the machines that are not ported.
+
+**Chosen: the Crusher.** It is the next machine in the jar's processing chain and the only one of the
+four that needs no new capability: purification, washing and injection all need a **gas** (oxygen,
+water as a gas, chemical injection), which the pin has no capability for, while crushing is the same
+`ItemStackToItemStackRecipe` machine the smelter and chamber already run. It fits the tier as a
+**machines-shaped feature inside the `deep` row**: one block entity, its saved state, a container and
+menu, and its energy balance in its own tick — no entity, renderer, dimension or custom vanilla hook,
+so the slice does not grow past the tier.
+
+### What the jar says (upstream truth, read from `v1.21.1-10.7.19.85`)
+
+| value | source | port |
+|---|---|---|
+| usage 50 FE/t | `UsageConfig.java:54` (`crusher`, default `50L`) | `CRUSHER_USAGE = 50` |
+| storage 20,000 FE | `StorageConfig.java:57` (`crusher`, `20_000L, 1`) | `CRUSHER_CAPACITY = 20_000` |
+| 200 ticks per operation | `TileEntityCrusher` → `TileEntityElectricMachine(BASE_TICKS_REQUIRED)` | `CRUSHER_TICKS = 200` (10,000 FE per operation) |
+| recipe type `mekanism:crushing` | `TileEntityCrusher.getRecipeType()` → `MekanismRecipeType.CRUSHING` | `runtime::crushing` |
+| the same progress rules | `TileEntityRecipeMachine`/`CachedRecipe` (shared with the other two) | `runtime::process_tick`, unchanged |
+| block 3.5 / 16, `facing`×`active` | `BlockFactoryMachine`, `blockstates/crusher.json` | barrel template (3.5/16, `facing`×`open`), the same recorded deviation as the other two machines |
+
+### The recipe table: 145 of the jar's 313 crushing recipes
+
+`tools/gen_crushing.py` reads every `"type": "mekanism:crushing"` file in the jar and keeps a row where
+both sides exist in this port:
+
+- **tags expanded to their 26.3 members** (`c:cobblestones/normal`, `c:gravels`,
+  `c:sandstone/{uncolored,red}_blocks`, `minecraft:wool` ×16, `c:rods/{blaze,breeze}`,
+  `c:ingots/{iron,gold,copper}`, `c:obsidians/normal`), and `neoforge:compound` unions
+  (`polished_or_smooth_basalt_to_basalt`);
+- **312 recipes with `neoforge:conditions`** (AE2, Biomes O' Plenty, Biomes We've Gone) are another
+  mod's items and are not carried; **190 rows are skipped in total**, each printed by the generator:
+  the bio-fuel family (`mekanism:bio_fuel`/`block_bio_fuel` are not registered), clumps
+  (`c:clumps/*` — purification, which needs oxygen, is not ported), the gem/coal/charcoal/obsidian
+  dusts (`mekanism:dust_{diamond,emerald,lapis_lazuli,quartz,coal,charcoal,obsidian,netherite}` are
+  not registered), and bronze/steel/lead/tin/uranium (no items).
+
+Families carried: cobblestone→gravel→sand, the stone/deepslate/tuff/blackstone/quartz/prismarine
+building-block conversions, the dewax family (40 waxed→plain copper rows), wool→string ×4,
+bone→bone meal ×6, bone block→×9, blaze rod→4 powder, breeze rod→6 wind charge, prismarine→shards,
+dripstone block→4 pointed dripstone, honeycomb block→4 honeycomb, music disc 5→9 fragments,
+flint→gunpowder, and the three ingots→dusts (iron, gold, copper).
+
+### The two defects this slice found and fixed
+
+**1. Every carried shaped recipe was in the 1.21.1 dialect and could never craft.** The four recipes
+0.2.0/0.2.1 shipped (and the new crusher's) wrote a key ingredient as `{"item": "minecraft:iron_ingot"}`,
+which is the NeoForge 1.21.1 shape. 26.3's shaped-recipe parser takes a **bare item id**
+(`data/minecraft/recipe/iron_block.json`: `"#": "minecraft:iron_ingot"`), and rejects the object —
+the server log at the recipe phase said it plainly:
+
+```
+[Server thread/ERROR]: recipes: invalid ingredient (unresolved tag or malformed input): {"item":"minecraft:iron_ingot"}
+[Server thread/ERROR]: recipes: invalid ingredient (unresolved tag or malformed input): {"item":"minecraft:copper_ingot"}
+```
+
+The grid was filled correctly and the result slot stayed empty, so the recipes were dead data — a
+defect `check`, `fits` and the unit tests all pass, which is exactly the class the parity rule was
+written for. **Fixed:** all five carried recipes use bare item ids. Proven in game by
+`tools/craft_check.py` (each recipe crafts its declared id and count, the grid empties, the
+distinctive ingredient is consumed, and two wrong-ingredient controls leave the result empty).
+
+**2. The port's own `Stack`/`Recipe` shadowed the SDK's types and made `fits` claim a break.**
+`cargo horizon-mod` records a package's struct literals against the SDK type of the same name, so
+`uses.json` claimed `type:Recipe` (with the SDK's nine fields) and `type:Stack` for the pure core's
+`Recipe { input, output }` and `Stack { item, count }` — types the package does not use. `fits
+--build 0b14f8a` then failed with *"the type `Recipe` can no longer be built with a literal"*, a
+dependency the port never had (`HANDOVER.md:782` records the same class of false positive on other
+ports' `Item`/`Config`). **Fixed:** the pure-core types are `MachineRecipe` and `ItemAmount`;
+`uses.json` no longer lists either, and `fits` against `0b14f8a` prints `fits`.
+
+### Red → green
+
+The tests were written first and ran red on the untouched tree
+(`../_shared/evidence/mekanism/slice3-unit-red.log`):
+
+```
+error[E0425]: cannot find value `CRUSHER` in this scope
+   --> src/support.rs:622:37
+622 |         assert_eq!(machine_capacity(CRUSHER), Some(CRUSHER_CAPACITY));
+    |                                     ^^^^^^^ not found in this scope
+...
+error[E0433]: cannot find module or crate `crushing` in this scope
+    --> src/runtime.rs:1930:20
+1930|         assert_eq!(crushing::lookup("minecraft:dirt"), None);
+error: could not compile `mekanism` (lib test) due to 31 previous errors
+```
+
+Then the table generator, the constants, the module and the third `MachineDecl` made them green:
+**52 tests** (was 43).
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the Crusher block, its block entity, 20,000 FE buffer, three slots, furnace menu | **tested** | `C` line `mekanism:crusher: 0/20000 FE, ...`, the menu opens (`ctl interact` → `screen: container`) |
+| one crushing operation: 10,000 FE, 200 ticks, input consumed, output in slot 2 | **tested** | `C`: cobblestone → gravel and `energy(0,64,22): 0` after one operation |
+| no energy → nothing happens (progress held) | **tested** | `C`: the uncharged crusher at 2,64,22 stays `progress 0/200, input minecraft:cobblestone x1` |
+| an input with no recipe → nothing, no energy spent | **tested** | `D` control: dirt still in slot 0 after 225 ticks, slot 2 empty |
+| **all 145 carried crushing recipes** (input count, output id and count, input consumed) | **tested** | `D`: `rows crushed: 145 of 145` (`tools/crush_sweep.py`, ten crushers per batch) |
+| the five carried shaped recipes | **tested** | `B1` (`tools/craft_check.py`): five crafts + two wrong-ingredient controls |
+| the five blocks' loot tables | **tested** | `B2`: each block drops its own item (`ctl break` → `.drops`) |
+| the five blocks and three dusts give/place/read back; an unknown id refused | **tested** | `A1`/`A2` |
+| clumps → dirty dust (the crusher's ore-processing role) | **not ported** | needs the Purification Chamber (oxygen, a gas capability) |
+| gem/coal/charcoal/obsidian/netherite dusts from crushing | **not ported** | those `mekanism:dust_*` items are not registered; the rows are dropped and printed by the generator |
+| bio fuel | **not ported** | `mekanism:bio_fuel`/`block_bio_fuel` are not registered |
+| the `active` front texture and the `crusher_active` model | **not ported** | carried in `assets/`, unused: the block template's `open` state stands in for `active` (the smelter's/chamber's recorded deviation) |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| runtime + glue tests (RED) | `cargo test --offline` on the untouched tree | **31 errors** (`slice3-unit-red.log`) |
+| tests | `cargo test --offline` | **52 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` | clean (`sdk-fmt.log`) |
+| recipe tables | `gen_smelting.py --check`, `gen_enriching.py --check`, `gen_crushing.py --check` | 163 / 129 / **145** rows (`sdk-recipe-tables.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` | `Built ./target/horizon-mod/mekanism.hmod` (`sdk-build.log`) |
+| same package twice | the same again | **`cmp` identical** (`sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | `mekanism 0.2.2 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **68,652 B, SHA-256 `d52219f7…7d38f6`**, exit 0 (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, `EXIT:0` (`sdk-fits.log`) |
+| fits, **a different build** | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, `EXIT:0` (`sdk-fits.log`) — the run that proves something |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (`82 entries`, no packed `Cargo.lock`) |
+| archive shape | `unzip -l mekanism.hmod` | 82 files, no `Cargo.lock` (`sdk-entries.txt`) |
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`ports/tools/launcher-game.sh run mekanism` → `PASS` + `EXIT:0`
+(`../_shared/evidence/mekanism-e2e/e2e-package.log`), quoted from the new phases:
+
+```
+== A1: every carried block and item is give-able ==
+  5 blocks and 3 items are give-able
+== A2: every block stands where it is put, and an unknown id is refused ==
+  5 blocks place and read back; an unknown id is refused
+== B1: the five carried shaped recipes in a real crafting table ==
+  energized smelter: 4 iron + 2 redstone + 2 glass + iron block -> {"count": 1, "item": "mekanism:energized_smelter"}
+  enrichment chamber: 4 iron + 2 redstone + 2 gold + iron block -> {"count": 1, "item": "mekanism:enrichment_chamber"}
+  crusher: 4 redstone + 2 copper + 2 magma + iron block -> {"count": 1, "item": "mekanism:crusher"}
+  basic energy cube: 4 iron + 2 redstone blocks + 2 copper + iron block -> {"count": 1, "item": "mekanism:basic_energy_cube"}
+  basic universal cable: 2 iron + redstone, eight at a time -> {"count": 8, "item": "mekanism:basic_universal_cable"}
+  smelter with a stick where the glass goes -> null
+  crusher with a stick where the magma goes -> null
+recipe PASS: all five carried shaped recipes craft with their declared id and count, their ingredients are consumed, and both wrong-ingredient controls leave the result empty
+== B2: every block's loot table drops the block ==
+  5 blocks each dropped their own item
+== C: the crusher crushes for exactly 10,000 FE, and not without energy ==
+  info(0,64,22): mekanism:crusher: 0/20000 FE, progress 0/200, input minecraft:cobblestone x1, output empty x0
+  info(0,64,22): mekanism:crusher: 0/20000 FE, progress 0/200, input empty x0, output minecraft:gravel x1
+  energy(0,64,22): 0
+  info(2,64,22): mekanism:crusher: 0/20000 FE, progress 0/200, input minecraft:cobblestone x1, output empty x0
+  energy(2,64,22): 0
+  the crusher opens its three-slot menu
+== D: every carried crushing recipe in a real crusher ==
+  rows from the jar's mekanism:crushing data: 145
+  minecraft:cobblestone x1 -> {"count": 1, "item": "minecraft:gravel"}
+  minecraft:iron_ingot x1 -> {"count": 1, "item": "mekanism:dust_iron"}
+  minecraft:waxed_copper_block x1 -> {"count": 1, "item": "minecraft:copper_block"}
+  minecraft:white_wool x1 -> {"count": 4, "item": "minecraft:string"}
+  ...
+rows crushed: 145 of 145
+sweep PASS: all 145 carried crushing recipes ran in a real crusher with their declared input count and output stack, and the input was consumed
+== control: a crusher with no recipe for its input crushes nothing ==
+  crushed dirt: [{"count": 1, "item": "minecraft:dirt"}, null, null]
+  control PASS: the dirt is still in the input and nothing was made
+```
+
+What the numbers prove: 20,000 FE was set and **10,000 left after one operation**, so the cost is
+exactly 200 ticks × 50 FE/t; the crusher beside it, never charged, kept its cobblestone and made
+nothing (the energy is what crushes); the dirt stayed put after the same 225 ticks (no recipe, no
+spend); and all 145 rows produced exactly the jar's output stack with the input consumed.
+
+The rest of the leg (slices 1–2) is unchanged and still passes: the cube→cable→chamber→smelter chain,
+the five controls, the three-slot menus and the save/relaunch round trip.
+
+| leg | result | evidence |
+|---|---|---|
+| package (default) | **`PASS` + `EXIT:0`** | `e2e-package.log` |
+| unmodded game (`GAME=$CONTROL_GAME`) | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** | `e2e-control.log` |
+| fail-capable (`SELFTEST=1`) | **`FAIL: expected /mekanism info at 0,64,22 to say 'output empty x0', got 'mekanism:crusher: 0/20000 FE, progress 0/200, input empty x0, output minecraft:gravel x1'` + `EXIT:1`** | `e2e-selftest.log` |
+| differential (`NOCABLE=1`) | **`PASS` + `EXIT:0`** (no energy reaches the smelter or chamber) | `e2e-nocable.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+
+### Pin
+
+Slice 3 is built and run at the campaign pin **Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`**
+(Nightly 2026-11-20, `package_format` 6, `content_api` 0.2, toolchain 1.99.1) + mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`** (unchanged). The `[native]` block carries it,
+`.horizon/sdk` is the SDK release's `api-source.tar.xz` (SHA-256 verified against its `SHA256SUMS`),
+and `fits` is green against both this pin and the previous one (`0b14f8a`).
+
+### Gaps after slice 3
+
+Everything in *Gaps / deviations* and *Gaps after the migration* above still stands. Changed by this
+slice: the crusher is ported (the ore-processing chain is now smelter, chamber, crusher); the five
+block recipes are craftable in-game now that their dialect is fixed, which closes most of gap 6 (the
+machines' other ingredients — steel casing, alloys, circuits — are still represented by vanilla
+stand-ins, a recorded deviation); the dusts a crusher would make (`diamond`, `emerald`, `lapis`,
+`quartz`, `coal`, `charcoal`, `obsidian`, `netherite`) are not registered, so those rows are dropped.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,verification-before-completion; BeautifulRust/rust-best-practices
+
+### Changelog (0.2.2) — supersedes 0.2.1
+
+> **0.2.2 — the Crusher, and the carried recipes actually craft.** One new machine on the shared
+> recipe-machine core: 50 FE/t, 200 ticks per operation (10,000 FE), a 20,000 FE insert-only buffer,
+> the same three slots and vanilla furnace menu, running the jar's `mekanism:crushing` table over the
+> items this port has — **145 rows** (cobblestone→gravel→sand, the stone/deepslate/tuff/blackstone/
+> quartz/prismarine conversions, the 40 waxed→plain copper rows, wool→4 string, bone→6 bone meal,
+> blaze rod→4 powder, breeze rod→6 wind charge, prismarine shards, and iron/gold/copper ingots → their
+> dusts). Two defects fixed: every carried shaped recipe used the 1.21.1 `{"item": …}` ingredient
+> shape, which 26.3 rejects (`recipes: invalid ingredient`), leaving all five uncraftable — they now
+> use bare item ids and craft in game; and the pure core's `Stack`/`Recipe` shadowed the SDK's types
+> in `uses.json`, making `fits` report a break the package did not have — they are `ItemAmount` and
+> `MachineRecipe` now. Pin moved to SDK **`0a875da9…`** (mixins unchanged). Package: **82 entries,
+> 68,652 B**, sha256 `d52219f7f369bded568a031d8a8e31d8e0a8a2cb8b0fc19bafe43112187d38f6`;
+> `check` exit 0; `fits` `made for` at the pin and `fits` at `0b14f8a`; 52 tests, clippy
+> `-D warnings` clean; in game `PASS` + `EXIT:0` with all 145 crushing rows and the five recipes
+> proven, the unmodded game `EXIT:1`, `SELFTEST=1` `EXIT:1`, `NOCABLE=1` `PASS` + `EXIT:0`.

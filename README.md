@@ -1,67 +1,63 @@
-# Mekanism — a Horizon port
+# Mekanism for Horizon — slices 1–3
 
-**Mekanism** is a Minecraft mod. A mod for Minecraft. This repository is a **port of it to [Horizon](https://github.com/horizon-rust/horizon)**, the Rust engine for Minecraft Java 26.3. It carries the complete source of the port plus the content files it ships, and installs as a single `.hmod` package.
+One flat **SDK package** (`horizon-mod.toml`, `api = "0.2"`) for Mekanism
+10.7.19.85 (MIT), the exact ATM10 jar. The carried blocks, items, models,
+textures, blockstates, recipes, loot, tag and lang are the `assets/` and `data/`
+here; the behaviour is `src/lib.rs` (one `impl mod_api::Hooks`) and
+`src/support.rs` (the Parts and the command bodies), with the rules in
+`src/runtime.rs`, which also builds and tests standalone.
 
-Upstream: [mekanism/Mekanism](https://github.com/mekanism/Mekanism) — licence **MIT**.
+- `mekanism:energized_smelter` — 50 FE/t, 200 ticks per operation (10,000 FE),
+  20,000 FE buffer, three slots and the vanilla furnace menu;
+- `mekanism:enrichment_chamber` — 50 FE/t, 200 ticks per operation (10,000 FE),
+  20,000 FE buffer, the same three-slot menu; ore → two dust over the jar's
+  `mekanism:enriching` recipes (raw ore 3 → 4, raw block 1 → 12), and
+  `mekanism:dust_{iron,gold,copper}` for the smelter's dust → ingot recipes;
+- `mekanism:crusher` — 50 FE/t, 200 ticks per operation (10,000 FE), 20,000 FE
+  buffer and the same three-slot menu; the jar's 145 `mekanism:crushing` rows
+  this port can finish (cobblestone → gravel, gravel → sand, wool → string,
+  ingots → dusts, the stone/deepslate/tuff/copper conversions and more);
+- `mekanism:basic_energy_cube` — 4,000,000 FE at 4,000 FE/t;
+- `mekanism:basic_universal_cable` — moves 8,000 FE/t between the block
+  entities beside it, on its own tick.
 
-| | |
-|---|---|
-| Upstream mod | Mekanism ([source](https://github.com/mekanism/Mekanism)) |
-| Ported to | Horizon 0b14f8a, Minecraft Java 26.3, mod API `0.2` |
-| Package | `mekanism.hmod` (install it with the Horizon launcher) |
-| Licence | **MIT** — the upstream mod's licence; see [Licence and credit](#licence-and-credit) |
+Read [notes.md](notes.md) for the slice boundary, the deviations, the gap list
+and the migration to the SDK format, and [FINDINGS.md](FINDINGS.md) for the
+upstream analysis (the numbers and the files read from tag
+`v1.21.1-10.7.19.85`).
 
-## What this port implements
+The recipe tables are generated into `src/runtime.rs` by
+`tools/gen_smelting.py` (the 26.3 vanilla smelting recipes),
+`tools/gen_enriching.py` and `tools/gen_crushing.py` (the jar's
+`mekanism:enriching` and `mekanism:crushing` recipes over the items the port
+registers); all three have `--check`, and `gen_crushing.py --rows` feeds the
+in-game sweep (`tools/crush_sweep.py`) so the scenario and the table cannot
+drift apart.
 
-- **Reviewer:** [P1] the four machines cannot be crafted: recipes need unregistered items/tags, and the cube used the unimplemented `mekanism:mek_data` type
-- **Reviewer:** [P2] the cube's menu and side configuration are advertised but not implemented
-- **Reviewer:** licence notice
-- **Reviewer:** registry artifact delivery
-- **The cable's moves are measured, not planned.** 0.1.0 asked `native_energy` for each neighbour's
-- **The machines' slots are sized from the container** rather than resized defensively on every tick:
-- **`/mekanism` filters by block id.** The old read was this mod's entities only; the new one asks the
+```sh
+# the pure rules and the glue's declarations, on the host target
+cargo test --offline
+cargo clippy --all-targets --offline -- -D warnings
+cargo fmt --check                 # NOT `--all`: that would check the fetched SDK
 
-## Not yet ported
-
-- **The rest of Mekanism.** Ore processing beyond smelting and enriching
-- **The enrichment table is the jar's recipes over the items this port
-- **No pipes or hoppers in the check**: the chamber's two dust are read out of
-- **The machines' GUIs** are the vanilla furnace menu (3 slots, flame and
-- **The cube and the cable models** are plain replacements for upstream's
-- **Recipes are not craftable**: the carried recipes need
-- **One cable call moves at most 4,000 FE per side for the cube** (the tier
-- **No energy item**: the machines' energy slot is unused and there is no
-
-## Installing
-
-1. Install the [Horizon launcher](https://github.com/horizon-rust/horizon/releases) (0.2.70 or newer).
-2. Add `mekanism.hmod` to the instance's mods.
-3. The package is pinned to a specific Horizon build; the launcher checks that pin.
-
-## Licence and credit
-
-Mekanism was created by its upstream authors; the code, models and assets in the original mod
-remain theirs and are used here under **MIT**. The Rust in this repository is a clean-room
-rewrite for Horizon, not a translation of the original source.
-
-- `LICENSE` — the upstream licence text.
-- `LICENSE-NOTICE.md` — what this port carries and where it came from.
-- The upstream project: https://github.com/mekanism/Mekanism
-
-## Technical details
-
-```
-horizon-mod.toml   package manifest (id, version, api, [native] pin)
-Cargo.toml         the crate; depends on `horizon-mod-api` from the fetched SDK
-src/               lib.rs (the one `impl Hooks`), runtime.rs (pure logic + tests), glue
-assets/ data/      the content the package ships
-tools/             content generators and the e2e scenario
+# the package: `cargo horizon-mod` fetches .horizon/sdk/ (gitignored) on first use
+rm -f Cargo.lock                  # a packed lock changes the artifact's sha256
+cargo horizon-mod build           # -> target/horizon-mod/mekanism.hmod
+cp target/horizon-mod/mekanism.hmod ./mekanism.hmod
+cargo horizon-mod check mekanism.hmod
+cargo horizon-mod fits mekanism.hmod --build 0a875da   # the pin: `made for`
+cargo horizon-mod fits mekanism.hmod --build 0b14f8a   # a different build: `fits`
 ```
 
-- Build: `cargo horizon-mod build` (packages; it does not compile against the game).
-- Test: `cargo test`, `cargo clippy --all-targets -- -D warnings`.
-- In-game: `ports/tools/launcher-game.sh run mekanism` in the campaign tree, or install the
-  `.hmod` and play; the harness scenario is `tools/e2e.sh`.
+`cargo horizon-mod build` **packs**; it does not compile the game crate. The
+native compile is a launcher step (`horizon-launcher native-build .`), so the
+in-game check needs a launcher-built game:
 
-This repository is generated from the campaign's port at `ports/mekanism/`; the port's own
-`notes.md` is the full record (decisions, traps, evidence).
+```sh
+ports/tools/launcher-game.sh run mekanism      # builds the game and runs the leg
+```
+
+Run every build and every game leg through the campaign's slot registry
+(`../tools/build-slot.sh`), never a bare `cargo` in a port. Requirements: Linux,
+a Rust toolchain (the pinned SDK is rust 1.99.1; this crate also builds on
+1.97.0), Python 3.12+, and `jq` for the e2e.

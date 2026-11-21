@@ -1,4 +1,4 @@
-//! Mekanism for Horizon — slices 1–2, one flat SDK package (mod API 0.2).
+//! Mekanism for Horizon — slices 1–3, one flat SDK package (mod API 0.2).
 //!
 //! The carried blocks, items, models, textures, recipes, loot, tag and lang are
 //! the `assets/` and `data/` at the package root; the behaviour is the one
@@ -14,21 +14,50 @@
 //! no successor: one `.hmod` carries the content and the code, which is what
 //! that helper existed to work around.
 use mod_api::{
-    self, Command, CommandArgumentValue, Flow, Hooks, RegisterCommandsEvent, Registrar,
-    RegistrationContext, RunModCommandEvent, ServerHost, Text,
+    self, Command, CommandArgumentValue, CommandSource, Flow, Hooks, LevelRef,
+    RegisterCommandsEvent, Registrar, RegistrationContext, RunModCommandEvent, ServerHost, Text,
 };
 
 mod support;
 
 pub mod runtime;
 
+/// Whether this command source may read the machine at `pos`: an operator
+/// (permission ≥ 2), or a player in the same level within
+/// [`runtime::INSPECT_RANGE`] of the block.
+fn may_read(host: &dyn ServerHost, source: &CommandSource, level: LevelRef, pos: [i32; 3]) -> bool {
+    let op = source.permission().level() >= runtime::LEVEL_ADMINS;
+    match source {
+        CommandSource::Player { player, .. } => {
+            let same_level = player.level(host) == Some(level);
+            let distance = player
+                .entity()
+                .position(host)
+                .map(|at| {
+                    let block = [
+                        f64::from(pos[0]) + 0.5,
+                        f64::from(pos[1]) + 0.5,
+                        f64::from(pos[2]) + 0.5,
+                    ];
+                    (0..3)
+                        .map(|axis| (at[axis] - block[axis]).powi(2))
+                        .sum::<f64>()
+                        .sqrt()
+                })
+                .unwrap_or(f64::MAX);
+            runtime::may_inspect(op, same_level, distance)
+        }
+        _ => op,
+    }
+}
+
 #[derive(Default)]
 struct Mod;
 
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
-    /// Declare the four blocks: the two machines' containers and buffers, the
-    /// cube's and the cable's buffers, and a block entity type each.
+    /// Declare the five blocks: the three machines' containers and buffers,
+    /// the cube's and the cable's buffers, and a block entity type each.
     ///
     /// The retired bundle wrote each of these into a hook's shared output
     /// (`block_entity`, `block_entity_ticks`, `block_entity_container`,
@@ -68,8 +97,21 @@ impl Hooks for Mod {
             return Flow::Continue;
         };
         let line = match literals.as_slice() {
-            ["mekanism", "info"] => support::info_line(host, *pos)
-                .unwrap_or_else(|| "No block entity there.".to_owned()),
+            ["mekanism", "info"] => {
+                let Some(level) = host.level(host.dimension()) else {
+                    return Flow::Continue;
+                };
+                if !may_read(&*host, event.source, level, *pos) {
+                    let line = format!(
+                        "You must be an operator or within {:.0} blocks of the machine.",
+                        runtime::INSPECT_RANGE
+                    );
+                    let _ = host.commands().feedback(Text::literal(line));
+                    return Flow::Cancel;
+                }
+                support::info_line(host, *pos)
+                    .unwrap_or_else(|| "No block entity there.".to_owned())
+            }
             ["mekanism", "energy"] => {
                 let Some(CommandArgumentValue::Integer(amount)) = event.command.argument("amount")
                 else {

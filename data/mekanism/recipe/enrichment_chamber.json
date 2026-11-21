@@ -1,18 +1,10 @@
 {
   "category": "misc",
   "key": {
-    "A": {
-      "item": "minecraft:iron_ingot"
-    },
-    "C": {
-      "item": "minecraft:redstone"
-    },
-    "I": {
-      "item": "minecraft:gold_ingot"
-    },
-    "X": {
-      "item": "minecraft:iron_block"
-    }
+    "A": "minecraft:iron_ingot",
+    "C": "minecraft:redstone",
+    "I": "minecraft:gold_ingot",
+    "X": "minecraft:iron_block"
   },
   "pattern": [
     "ACA",
