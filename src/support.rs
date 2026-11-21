@@ -16,11 +16,12 @@ use crate::chemical::{CHEMICAL, Chemical, ITEM_CHEMICAL, ITEM_COMPONENT};
 use crate::runtime::{
     CABLE_CAPACITY, CHAMBER_CAPACITY, CHAMBER_OPERATION, CHAMBER_TICKS, CHEMICALS,
     CRUSHER_CAPACITY, CRUSHER_OPERATION, CRUSHER_TICKS, CUBE_CAPACITY, CUBE_RATE, DROPPER_CAPACITY,
-    EMPTY_CHEMICAL, INJECTION_CAPACITY, INJECTION_OPERATION, INJECTION_TANK, INJECTION_TICKS,
-    IdleReason, ItemAmount, Machine, MachineRecipe, Operation, Outcome, SMELTER_CAPACITY,
+    EMPTY_CHEMICAL, GasRecipe, INJECTION_CAPACITY, INJECTION_OPERATION, INJECTION_TANK,
+    INJECTION_TICKS, IdleReason, ItemAmount, Machine, MachineRecipe, Operation, Outcome,
+    PURIFY_CAPACITY, PURIFY_OPERATION, PURIFY_TANK, PURIFY_TICKS, SMELTER_CAPACITY,
     SMELTER_OPERATION, SMELTER_TICKS, TANK_CAPACITY, Tank, clamp_energy, crushing, dropper_move,
-    energy_after_extract, energy_after_insert, enriching, extract_chemical, injecting,
-    injection_pull, insert_chemical, process_injection_tick, process_tick, room_for, smelting,
+    energy_after_extract, energy_after_insert, enriching, extract_chemical, gas_pull, injecting,
+    insert_chemical, process_gas_tick, process_tick, purifying, room_for, smelting,
 };
 
 /// The five blocks of slices 1-3.
@@ -38,7 +39,10 @@ pub(crate) const GAUGE_DROPPER: &str = "mekanism:gauge_dropper";
 /// Slice 5's machine: the consumer of the chemical capability.
 pub(crate) const INJECTION: &str = "mekanism:chemical_injection_chamber";
 
-/// The six block entity types, in this mod's namespace (`/mekanism` has no
+/// Slice 6's machine: the same gas machine on oxygen.
+pub(crate) const PURIFICATION: &str = "mekanism:purification_chamber";
+
+/// The block entity types, in this mod's namespace (`/mekanism` has no
 /// bearing on them). One type per block, as the retired bundle's
 /// `block_entity` hook named the block it was asked about.
 const SMELTER_TYPE: &str = "energized_smelter";
@@ -48,6 +52,7 @@ const CHAMBER_TYPE: &str = "enrichment_chamber";
 const CRUSHER_TYPE: &str = "crusher";
 const TANK_TYPE: &str = "basic_chemical_tank";
 const INJECTION_TYPE: &str = "chemical_injection_chamber";
+const PURIFICATION_TYPE: &str = "purification_chamber";
 
 /// A machine's menu slots: input, unused (the furnace menu's fuel slot) and
 /// output.
@@ -73,6 +78,22 @@ struct MachineDecl {
     operation: Operation,
     capacity: i32,
     lookup: fn(&str) -> Option<MachineRecipe>,
+}
+
+/// One gas machine's registration: the block, its block entity type's path, its
+/// operation, its buffer's capacity, its own tank's capacity and its table.
+///
+/// The Chemical Injection Chamber and the Purification Chamber differ only in
+/// these values, so they are declared as two rows of one table (a five-field
+/// tuple trips `clippy::type_complexity`, and the loop then reads as the table
+/// it is).
+struct GasDecl {
+    block: &'static str,
+    kind: &'static str,
+    operation: Operation,
+    capacity: i32,
+    tank: u32,
+    recipe_for: fn(&str) -> Option<GasRecipe>,
 }
 
 /// Declare the five blocks: the three machines' containers and buffers, the
@@ -160,21 +181,52 @@ pub(crate) fn declare(registrar: &mut dyn Registrar, context: &RegistrationConte
     // capability and is topped up from a neighbour on its tick. A machine is an
     // insert-only chemical handler upstream (`ConstantPredicates.notExternal()`),
     // so a foreign extract at it takes nothing.
-    let key = registrar.block_key(INJECTION);
-    registrar.block_container(&key, container());
-    registrar.block_energy(&key, machine_battery(INJECTION_CAPACITY));
-    let kind = registrar
-        .block_entity_type(INJECTION_TYPE)
-        .blocks(&[INJECTION_TYPE])
-        .build();
-    registrar.block_entity_capability(&CHEMICAL, &kind, |_, at| {
-        Some(Box::new(ChemicalTank {
-            side: at,
-            capacity: INJECTION_TANK,
-        }) as Box<dyn ResourceHandler<Chemical>>)
-    });
-    if let Err(error) = registrar.block_entity_part(&kind, InjectionPart) {
-        context.refuse(&error.to_string());
+    //
+    // Slice 6: the Purification Chamber is that machine again — the same
+    // upstream class and recipe type — on oxygen, with its own constants and
+    // its own table. One part declaration serves both.
+    let gas_machines = [
+        GasDecl {
+            block: INJECTION,
+            kind: INJECTION_TYPE,
+            operation: INJECTION_OPERATION,
+            capacity: INJECTION_CAPACITY,
+            tank: INJECTION_TANK,
+            recipe_for: injecting::recipe_for,
+        },
+        GasDecl {
+            block: PURIFICATION,
+            kind: PURIFICATION_TYPE,
+            operation: PURIFY_OPERATION,
+            capacity: PURIFY_CAPACITY,
+            tank: PURIFY_TANK,
+            recipe_for: purifying::recipe_for,
+        },
+    ];
+    for machine in gas_machines {
+        let key = registrar.block_key(machine.block);
+        registrar.block_container(&key, container());
+        registrar.block_energy(&key, machine_battery(machine.capacity));
+        let kind = registrar
+            .block_entity_type(machine.kind)
+            .blocks(&[machine.kind])
+            .build();
+        let tank = machine.tank;
+        registrar.block_entity_capability(&CHEMICAL, &kind, move |_, at| {
+            Some(Box::new(ChemicalTank {
+                side: at,
+                capacity: tank,
+            }) as Box<dyn ResourceHandler<Chemical>>)
+        });
+        let part = GasPart {
+            operation: machine.operation,
+            capacity: machine.capacity,
+            tank: machine.tank,
+            recipe_for: machine.recipe_for,
+        };
+        if let Err(error) = registrar.block_entity_part(&kind, part) {
+            context.refuse(&error.to_string());
+        }
     }
 }
 
@@ -232,6 +284,7 @@ pub(crate) fn machine_capacity(id: &str) -> Option<i32> {
         CHAMBER => Some(CHAMBER_CAPACITY),
         CRUSHER => Some(CRUSHER_CAPACITY),
         INJECTION => Some(INJECTION_CAPACITY),
+        PURIFICATION => Some(PURIFY_CAPACITY),
         CUBE => Some(CUBE_CAPACITY),
         CABLE => Some(CABLE_CAPACITY),
         _ => None,
@@ -245,6 +298,7 @@ pub(crate) fn machine_ticks(id: &str) -> Option<i32> {
         CHAMBER => Some(CHAMBER_TICKS),
         CRUSHER => Some(CRUSHER_TICKS),
         INJECTION => Some(INJECTION_TICKS),
+        PURIFICATION => Some(PURIFY_TICKS),
         _ => None,
     }
 }
@@ -540,21 +594,28 @@ impl BlockEntityPart for CablePart {
     }
 }
 
-/// The Chemical Injection Chamber's behaviour: the shared machine tick plus a
-/// gas input — the machine's own tank, topped up from a neighbour through the
-/// chemical capability, and one tick's gas spent per operating tick.
+/// A gas machine's behaviour — the Chemical Injection Chamber and the
+/// Purification Chamber: the shared machine tick plus a gas input, the machine's
+/// own tank topped up from a neighbour through the chemical capability, and one
+/// tick's gas spent per operating tick.
 ///
 /// This is the **consumer** half of slice 4's capability: the tank beside it is
 /// asked through [`CHEMICAL`] by name (never by this port's block ids), exactly
 /// as another mod's crate would ask, and what the handler gives is what the
-/// machine spends.
-pub(crate) struct InjectionPart;
+/// machine spends. Slice 6 is the same machine on oxygen, so the two carry one
+/// Part and differ only in the values [`GasDecl`] gives it.
+pub(crate) struct GasPart {
+    operation: Operation,
+    capacity: i32,
+    tank: u32,
+    recipe_for: fn(&str) -> Option<GasRecipe>,
+}
 
 #[mod_api::horizon_part]
-impl BlockPart for InjectionPart {}
+impl BlockPart for GasPart {}
 
 #[mod_api::horizon_part]
-impl BlockEntityPart for InjectionPart {
+impl BlockEntityPart for GasPart {
     fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
         event.ticks = true;
     }
@@ -570,23 +631,30 @@ impl BlockEntityPart for InjectionPart {
             event.entity.items.resize(MENU_SLOTS, None);
         }
         let mut saved = Tag::Compound(event.entity.nbt.clone());
-        let mut machine = read_machine(&saved, INJECTION_CAPACITY);
-        machine.progress = machine
-            .progress
-            .clamp(0, (INJECTION_OPERATION.ticks - 1).max(0));
+        let mut machine = read_machine(&saved, self.capacity);
+        machine.progress = machine.progress.clamp(0, (self.operation.ticks - 1).max(0));
         let mut tank = read_tank(&saved);
         let mut input = slot_stack(&*host, event.entity.items[INPUT_SLOT].as_ref());
         let mut output = slot_stack(&*host, event.entity.items[OUTPUT_SLOT].as_ref());
         let limit = stack_limit(&*host, &output);
-        let pulled = top_up_tank(host, event.pos, &mut tank, &input, &output, limit, machine);
-        let outcome = process_injection_tick(
+        let pulled = {
+            let mut tick = GasTick {
+                machine,
+                tank: &mut tank,
+                input: &input,
+                output: &output,
+                limit,
+            };
+            top_up_tank(self, host, event.pos, &mut tick)
+        };
+        let outcome = process_gas_tick(
             &mut machine,
-            INJECTION_OPERATION,
+            self.operation,
             &mut tank,
             &mut input,
             &mut output,
             limit,
-            &injecting::recipe_for,
+            &self.recipe_for,
         );
         write_state(&mut saved, machine.energy, machine.progress);
         write_tank(&mut saved, &tank);
@@ -599,8 +667,8 @@ impl BlockEntityPart for InjectionPart {
             &mut event.entity.data,
             machine.energy,
             machine.progress,
-            INJECTION_OPERATION,
-            INJECTION_CAPACITY,
+            self.operation,
+            self.capacity,
         );
         let idle = matches!(
             outcome,
@@ -614,6 +682,16 @@ impl BlockEntityPart for InjectionPart {
     }
 }
 
+/// The state one gas-machine tick works on, bundled so the top-up and the
+/// operation read the same view of it.
+struct GasTick<'a> {
+    machine: Machine,
+    tank: &'a mut Tank,
+    input: &'a ItemAmount,
+    output: &'a ItemAmount,
+    limit: u32,
+}
+
 /// Top the machine's own tank up for the tick it is about to run: the recipe's
 /// gas, one tick's worth, taken from an adjacent chemical handler through the
 /// capability. How much the neighbour gave.
@@ -622,33 +700,30 @@ impl BlockEntityPart for InjectionPart {
 /// output room, no recipe, a tank of another chemical), so a stalled machine
 /// does not siphon a neighbour it cannot use.
 fn top_up_tank(
+    part: &GasPart,
     host: &mut dyn ServerHost,
     pos: [i32; 3],
-    tank: &mut Tank,
-    input: &ItemAmount,
-    output: &ItemAmount,
-    limit: u32,
-    machine: Machine,
+    tick: &mut GasTick<'_>,
 ) -> u32 {
-    if input.is_empty() || machine.energy < INJECTION_OPERATION.usage {
+    if tick.input.is_empty() || tick.machine.energy < part.operation.usage {
         return 0;
     }
-    let Some(recipe) = injecting::recipe_for(&input.item) else {
+    let Some(recipe) = (part.recipe_for)(&tick.input.item) else {
         return 0;
     };
-    if room_for(output, &recipe.output, limit) < recipe.output.count {
+    if room_for(tick.output, &recipe.output, tick.limit) < recipe.output.count {
         return 0;
     }
-    let Some((chemical, want)) = injection_pull(&recipe, tank) else {
+    let Some((chemical, want)) = gas_pull(&recipe, tick.tank) else {
         return 0;
     };
-    let room = INJECTION_TANK.saturating_sub(tank.amount);
+    let room = part.tank.saturating_sub(tick.tank.amount);
     let want = want.min(room);
     if want == 0 {
         return 0;
     }
     let pulled = pull_chemical(host, pos, chemical, want);
-    let _ = insert_chemical(tank, chemical, pulled, INJECTION_TANK);
+    let _ = insert_chemical(tick.tank, chemical, pulled, part.tank);
     pulled
 }
 
@@ -1151,7 +1226,7 @@ pub(crate) fn is_chemical_tank(host: &mut dyn ServerHost, pos: [i32; 3]) -> bool
 }
 
 /// The id and buffer capacity of one of this port's blocks at `pos`: `None`
-/// when nothing stands there or the block is not one of the four.
+/// when nothing stands there or the block gives no buffer.
 fn our_block_at(host: &mut dyn ServerHost, pos: [i32; 3]) -> Option<(String, i32)> {
     let level = host.level(host.dimension())?;
     let id = level.block(&*host, pos)?.id(&*host);
@@ -1320,6 +1395,32 @@ mod tests {
         assert_eq!(container().slots, MENU_SLOTS, "the same three-slot menu");
     }
 
+    /// The Purification Chamber is the same machine shape with the jar's own
+    /// numbers: an 80,000 FE insert-only buffer, a 210-unit oxygen tank, the
+    /// same three slots and a 200-tick operation.
+    #[test]
+    fn the_purification_machine_is_the_jar_s_200_fe_a_tick_and_its_gas_buffer() {
+        assert_eq!(machine_capacity(PURIFICATION), Some(PURIFY_CAPACITY));
+        assert_eq!(PURIFY_CAPACITY, 80_000, "StorageConfig.purificationChamber");
+        assert_eq!(machine_ticks(PURIFICATION), Some(PURIFY_TICKS));
+        assert_eq!(
+            PURIFY_OPERATION.usage, 200,
+            "UsageConfig.purificationChamber"
+        );
+        let buffer = machine_battery(PURIFY_CAPACITY);
+        assert_eq!(
+            (buffer.max_insert, buffer.max_extract),
+            (PURIFY_CAPACITY, 0)
+        );
+        assert_eq!(PURIFY_TANK, 210, "MAX_GAS");
+        assert_eq!(
+            purifying::lookup("minecraft:iron_ore", "mekanism:oxygen")
+                .map(|recipe| recipe.output.count),
+            Some(3),
+            "the machine's table is the jar's purifying one"
+        );
+    }
+
     /// The machine's saved compound carries its gas beside its FE and progress,
     /// and each reads back without disturbing the others.
     #[test]
@@ -1399,16 +1500,20 @@ mod tests {
     }
 
     #[test]
-    fn only_the_five_blocks_have_a_capacity_and_only_the_machines_a_length() {
+    fn every_buffer_block_has_a_capacity_and_only_the_machines_a_length() {
         assert_eq!(machine_capacity(SMELTER), Some(SMELTER_CAPACITY));
         assert_eq!(machine_capacity(CHAMBER), Some(CHAMBER_CAPACITY));
         assert_eq!(machine_capacity(CRUSHER), Some(CRUSHER_CAPACITY));
+        assert_eq!(machine_capacity(INJECTION), Some(INJECTION_CAPACITY));
+        assert_eq!(machine_capacity(PURIFICATION), Some(PURIFY_CAPACITY));
         assert_eq!(machine_capacity(CUBE), Some(CUBE_CAPACITY));
         assert_eq!(machine_capacity(CABLE), Some(CABLE_CAPACITY));
         assert_eq!(machine_capacity("minecraft:chest"), None);
         assert_eq!(machine_ticks(SMELTER), Some(200));
         assert_eq!(machine_ticks(CHAMBER), Some(200));
         assert_eq!(machine_ticks(CRUSHER), Some(200));
+        assert_eq!(machine_ticks(INJECTION), Some(200));
+        assert_eq!(machine_ticks(PURIFICATION), Some(200));
         assert_eq!(machine_ticks(CUBE), None, "the cube runs no operation");
         assert_eq!(machine_ticks(CABLE), None);
     }

@@ -55,16 +55,25 @@ TAGS: dict[str, list[str]] = {
     "c:gravels": ["minecraft:gravel"],
     "c:sands": ["minecraft:sand", "minecraft:red_sand"],
     "c:gunpowders": ["minecraft:gunpowder"],
+    "c:dirty_dusts/copper": ["mekanism:dirty_dust_copper"],
+    "c:dirty_dusts/gold": ["mekanism:dirty_dust_gold"],
+    "c:dirty_dusts/iron": ["mekanism:dirty_dust_iron"],
 }
 
-# The items the port registers: vanilla's own, plus the three dusts this slice
-# declares in `content/data/mekanism/horizon/item/`.
+# The items the port registers: vanilla's own, plus the three dusts of slices
+# 1-3 and the dirty dusts of slice 6, all declared in
+# `data/mekanism/horizon/item/`.
 DUSTS = ["mekanism:dust_copper", "mekanism:dust_gold", "mekanism:dust_iron"]
+DIRTY_DUSTS = [
+    "mekanism:dirty_dust_copper",
+    "mekanism:dirty_dust_gold",
+    "mekanism:dirty_dust_iron",
+]
 
 
 def registered_items() -> set[str]:
-    """The non-vanilla items this slice registers (its three dusts)."""
-    return set(DUSTS)
+    """The non-vanilla items this port registers (its dusts and dirty dusts)."""
+    return set(DUSTS) | set(DIRTY_DUSTS)
 
 
 def ingredient_inputs(ingredient: dict) -> list[str]:

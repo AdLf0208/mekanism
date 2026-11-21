@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# In-game check for Mekanism slices 1-5: Energized Smelter, Enrichment Chamber,
+# In-game check for Mekanism slices 1-6: Energized Smelter, Enrichment Chamber,
 # Crusher, Basic Energy Cube, Basic Universal Cable, Basic Chemical Tank, Gauge
-# Dropper and Chemical Injection Chamber, with every carried recipe, block and
-# loot table exercised as the parity rule (AGENTS.md, 2026-11-20) requires.
+# Dropper, Chemical Injection Chamber and Purification Chamber, with every
+# carried recipe, block and loot table exercised as the parity rule
+# (AGENTS.md, 2026-11-20) requires.
 #
 # The game is **launcher-built with this package installed**: a native `.hmod`
 # carries its own content and code, so there is no `--dev-mod` folder and no
@@ -73,12 +74,22 @@
 #     draws nothing;
 #  H  the injecting sweep: every carried injecting row (72) runs in a real
 #     chamber with its declared input count and output stack, the input consumed
-#     and the neighbour tank short exactly the gas the operation spent.
+#     and the neighbour tank short exactly the gas the operation spent;
+#  I  the purification chamber (slice 6): a neighbour tank's 4,000 oxygen turns
+#     one iron ore into three clumps for exactly 40,000 FE (200 x 200), leaving
+#     the tank 3,800 and the machine's own 210-unit tank empty; with no tank, and
+#     with a tank of the injection chamber's hydrogen chloride, it makes no
+#     progress and spends no FE; the jar's chain then runs end to end -- a clump
+#     crushes into a dirty dust, that dirty dust enriches into a dust (its own
+#     recipe is `mekanism:enriching`, not purifying), and a dirty dust in a
+#     purification chamber makes nothing;
+#  J  the purifying sweep: every carried purifying row (15) runs in a real
+#     chamber, the input consumed and the tank short 200 x its per-tick gas.
 #
 # NOCABLE=1 runs the cable scenario without the cable and asserts that the
 # smelter and the chamber stay empty (the differential control passing).
-# SELFTEST=1 flips the injection chamber's output assertion of phase G (it must
-# FAIL): the newest family's own check is the one proven able to fail.
+# SELFTEST=1 flips the purification chamber's output assertion of phase I (it
+# must FAIL): the newest family's own check is the one proven able to fail.
 #
 # CONTROL=1 (needs CONTROL_GAME=<an unmodded horizon-client>) first launches
 # that game in its own scratch home and world and shows that the block ids are
@@ -118,6 +129,9 @@ DROPPER=mekanism:gauge_dropper
 DUST=mekanism:dust_iron
 INJECTION=mekanism:chemical_injection_chamber
 SHARD=mekanism:shard_iron
+PURIFICATION=mekanism:purification_chamber
+CLUMP=mekanism:clump_iron
+DIRTY=mekanism:dirty_dust_iron
 
 [ -n "$GAME" ] || { echo "set GAME=<the launcher-built horizon-client> (see the header)" >&2; exit 1; }
 [ -x "$GAME" ] || { echo "missing horizon-client: $GAME" >&2; exit 1; }
@@ -396,9 +410,12 @@ arena
 # A. Content: every carried block and item, the unknown id, the loot tables
 # ---------------------------------------------------------------------------
 echo "== A1: every carried block and item is give-able =="
-BLOCKS=("$SMELTER" "$CHAMBER" "$CRUSHER" "$INJECTION" "$CUBE" "$CABLE" "$TANK")
+BLOCKS=("$SMELTER" "$CHAMBER" "$CRUSHER" "$INJECTION" "$PURIFICATION" "$CUBE" "$CABLE" "$TANK")
 ITEMS=("mekanism:dust_iron" "mekanism:dust_gold" "mekanism:dust_copper" \
-    "mekanism:shard_iron" "mekanism:shard_gold" "mekanism:shard_copper" "$DROPPER")
+    "mekanism:shard_iron" "mekanism:shard_gold" "mekanism:shard_copper" \
+    "mekanism:clump_iron" "mekanism:clump_gold" "mekanism:clump_copper" \
+    "mekanism:dirty_dust_iron" "mekanism:dirty_dust_gold" "mekanism:dirty_dust_copper" \
+    "$DROPPER")
 for id in "${BLOCKS[@]}" "${ITEMS[@]}"; do
     ctl command "clear @s" >/dev/null
     ctl give "$id" 1 >/dev/null || fail "give $id failed"
@@ -414,10 +431,12 @@ for id in "${BLOCKS[@]}"; do
     place "$((-6 + 2 * i))" 64 26 "$id"
     i=$((i + 1))
 done
-end "setblock 8 64 26 mekanism:not_a_block" >/dev/null 2>&1 || true
+# Past the array: eight blocks now stand at x=-6..8, so the probe sits at 10
+# (a new member of BLOCKS moves every hard-coded probe, as slice 5 learned).
+end "setblock 10 64 26 mekanism:not_a_block" >/dev/null 2>&1 || true
 ctl wait 3
-[ "$(block_name 8 64 26)" = "minecraft:air" ] \
-    || fail "an unknown block id was accepted: $(block_name 8 64 26)"
+[ "$(block_name 10 64 26)" = "minecraft:air" ] \
+    || fail "an unknown block id was accepted: $(block_name 10 64 26)"
 echo "  ${#BLOCKS[@]} blocks place and read back; an unknown id is refused"
 
 # ---------------------------------------------------------------------------
@@ -552,33 +571,28 @@ ctl wait 6
 # took the energy at all (the exact 80,000 is asserted after the operation).
 expect_energy 1 66 12 "$INJECTION" gt 0
 ctl wait 230
-if [ "$SELFTEST" = 1 ]; then
-    echo "(selftest: asserting the chamber's output is still empty)"
-    expect_contains 1 66 12 "$INJECTION" "output empty x0"
-else
-    # The jar's c:raw_materials/iron x3 + 1 hydrogen chloride per tick -> 8 shards.
-    expect_contains 1 66 12 "$INJECTION" "input empty x0, output $SHARD x8"
-    # 200 ticks x 400 FE: exactly half the 160,000 buffer.
-    expect_energy 1 66 12 "$INJECTION" eq 80000
-    # The gas came from the neighbour, through the capability: 4,000 - 200.
-    expect_chem "holds mekanism:hydrogen_chloride 3800/64000 (answered by mekanism)" \
-        -- read 0 66 12
-    TANK_LEFT=$(block_data 0 66 12 amount)
-    echo "  data get block 0 66 12 amount: $TANK_LEFT"
-    case "$TANK_LEFT" in
-        *"3800"*) ;;
-        *) fail "the neighbour tank should hold 3800 after one operation: $TANK_LEFT" ;;
-    esac
-    # ...and the machine kept none of it: it pulled one tick's gas per tick and
-    # spent it, so the consumer's own buffer reads 0.
-    MACHINE_GAS=$(block_data 1 66 12 amount)
-    echo "  data get block 1 66 12 amount: $MACHINE_GAS"
-    case "$MACHINE_GAS" in
-        *" 0"*|*": 0"*) ;;
-        *) fail "the chamber's own tank should be empty after the operation: $MACHINE_GAS" ;;
-    esac
-    expect_chem "holds nothing 0/210 (answered by mekanism)" -- read 1 66 12
-fi
+# The jar's c:raw_materials/iron x3 + 1 hydrogen chloride per tick -> 8 shards.
+expect_contains 1 66 12 "$INJECTION" "input empty x0, output $SHARD x8"
+# 200 ticks x 400 FE: exactly half the 160,000 buffer.
+expect_energy 1 66 12 "$INJECTION" eq 80000
+# The gas came from the neighbour, through the capability: 4,000 - 200.
+expect_chem "holds mekanism:hydrogen_chloride 3800/64000 (answered by mekanism)" \
+    -- read 0 66 12
+TANK_LEFT=$(block_data 0 66 12 amount)
+echo "  data get block 0 66 12 amount: $TANK_LEFT"
+case "$TANK_LEFT" in
+    *"3800"*) ;;
+    *) fail "the neighbour tank should hold 3800 after one operation: $TANK_LEFT" ;;
+esac
+# ...and the machine kept none of it: it pulled one tick's gas per tick and
+# spent it, so the consumer's own buffer reads 0.
+MACHINE_GAS=$(block_data 1 66 12 amount)
+echo "  data get block 1 66 12 amount: $MACHINE_GAS"
+case "$MACHINE_GAS" in
+    *" 0"*|*": 0"*) ;;
+    *) fail "the chamber's own tank should be empty after the operation: $MACHINE_GAS" ;;
+esac
+expect_chem "holds nothing 0/210 (answered by mekanism)" -- read 1 66 12
 
 echo "== G2: without a tank beside it the chamber makes no progress and spends no FE =="
 # Two controls in one wait: no neighbour at all (4,66,12), and a neighbour whose
@@ -612,29 +626,158 @@ elif [ "$SELFTEST" = 1 ]; then
     echo "  (selftest: the sweep is skipped)"
 else
     IROWS=$SCRATCH/injecting-rows.json
-    python3 "$PORT/tools/gen_injecting.py" --rows >"$IROWS" \
+    python3 -u "$PORT/tools/gen_injecting.py" --rows >"$IROWS" \
         || fail "the injecting rows could not be read from the jar"
     rows=$(jq 'length' "$IROWS")
     [ "$rows" -ge 60 ] || fail "the jar yielded only $rows injecting rows"
     echo "  rows from the jar's mekanism:injecting data: $rows"
     HORIZON_LOG="$HORIZON_HOME/logs/latest.log" \
-        python3 "$PORT/tools/inject_sweep.py" "$SOCK" "$CTL" "$IROWS" 6 66 -4 --batch 6 \
+        python3 -u "$PORT/tools/inject_sweep.py" "$SOCK" "$CTL" "$IROWS" 6 66 -4 --batch 6 \
         || fail "the injecting sweep failed"
     HORIZON_LOG="$HORIZON_HOME/logs/latest.log" \
-        python3 "$PORT/tools/inject_sweep.py" "$SOCK" "$CTL" --control 20 66 -4 \
+        python3 -u "$PORT/tools/inject_sweep.py" "$SOCK" "$CTL" --control 20 66 -4 \
         || fail "the injection chamber's wrong-gas control failed"
+fi
+
+# ---------------------------------------------------------------------------
+# I. The Purification Chamber: oxygen, the jar's clump table, and the chain
+# ---------------------------------------------------------------------------
+# The jar's numbers: 200 FE/t x 200 ticks = 40,000 FE an operation, an 80,000 FE
+# insert-only buffer, the same 210-unit gas tank the injection chamber has, and
+# the recipe's per-tick oxygen (1 for an ore, 2 for a raw block). The machine
+# pulls the oxygen from the tank beside it through `mekanism:chemical`, exactly
+# as the injection chamber pulls hydrogen chloride.
+echo "== I1: one iron ore becomes three clumps for 40,000 FE and exactly 200 oxygen =="
+place 0 66 16 "$TANK"
+expect_chem "inserted 4000 mekanism:oxygen into mekanism:basic_chemical_tank (4000/64000)" \
+    -- insert 4000 mekanism:oxygen 0 66 16
+place 1 66 16 "$PURIFICATION"
+ctl command "execute in minecraft:the_end run item replace block 1 66 16 container.0 with minecraft:iron_ore 1" >/dev/null
+ctl wait 6
+expect_contains 1 66 16 "$PURIFICATION" "0/80000 FE, progress 0/200, input minecraft:iron_ore x1"
+say "mekanism energy 80000 1 66 16"
+ctl wait 6
+# The machine starts on its first charged tick, so the assertion here is that it
+# took the energy at all (the exact 40,000 is asserted after the operation).
+expect_energy 1 66 16 "$PURIFICATION" gt 0
+ctl wait 230
+if [ "$SELFTEST" = 1 ]; then
+    echo "(selftest: asserting the chamber's output is still empty)"
+    expect_contains 1 66 16 "$PURIFICATION" "output empty x0"
+else
+    # The jar's c:ores/iron x1 + 1 oxygen per tick -> 3 clumps.
+    expect_contains 1 66 16 "$PURIFICATION" "input empty x0, output $CLUMP x3"
+    # 200 ticks x 200 FE: exactly half the 80,000 buffer.
+    expect_energy 1 66 16 "$PURIFICATION" eq 40000
+    # The oxygen came from the neighbour, through the capability: 4,000 - 200.
+    expect_chem "holds mekanism:oxygen 3800/64000 (answered by mekanism)" \
+        -- read 0 66 16
+    TANK_LEFT=$(block_data 0 66 16 amount)
+    echo "  data get block 0 66 16 amount: $TANK_LEFT"
+    case "$TANK_LEFT" in
+        *"3800"*) ;;
+        *) fail "the neighbour tank should hold 3800 after one operation: $TANK_LEFT" ;;
+    esac
+    MACHINE_GAS=$(block_data 1 66 16 amount)
+    echo "  data get block 1 66 16 amount: $MACHINE_GAS"
+    case "$MACHINE_GAS" in
+        *" 0"*|*": 0"*) ;;
+        *) fail "the chamber's own tank should be empty after the operation: $MACHINE_GAS" ;;
+    esac
+    expect_chem "holds nothing 0/210 (answered by mekanism)" -- read 1 66 16
+fi
+
+echo "== I2: without oxygen, or with the injection chamber's hydrogen chloride, nothing moves =="
+# Two controls in one wait: no neighbour at all (4,66,16), and a neighbour whose
+# gas the jar's iron-ore recipe does not take (hydrogen chloride at 7,66,16).
+place 4 66 16 "$PURIFICATION"
+place 7 66 16 "$TANK"
+expect_chem "inserted 4000 mekanism:hydrogen_chloride into mekanism:basic_chemical_tank (4000/64000)" \
+    -- insert 4000 mekanism:hydrogen_chloride 7 66 16
+place 8 66 16 "$PURIFICATION"
+for x in 4 8; do
+    ctl command "execute in minecraft:the_end run item replace block $x 66 16 container.0 with minecraft:iron_ore 1" >/dev/null
+done
+say "mekanism energy 80000 4 66 16"
+say "mekanism energy 80000 8 66 16"
+ctl wait 6
+ctl wait 230
+expect_contains 4 66 16 "$PURIFICATION" "progress 0/200, input minecraft:iron_ore x1, output empty x0"
+expect_energy 4 66 16 "$PURIFICATION" eq 80000
+expect_contains 8 66 16 "$PURIFICATION" "progress 0/200, input minecraft:iron_ore x1, output empty x0"
+expect_energy 8 66 16 "$PURIFICATION" eq 80000
+expect_chem "holds mekanism:hydrogen_chloride 4000/64000" -- read 7 66 16
+
+echo "== I3: the jar's chain: clump -> crusher -> dirty dust -> enriching chamber -> dust =="
+if [ "$SELFTEST" = 1 ]; then
+    echo "  (selftest: the chain needs phase I1's clumps)"
+else
+    # A clump into a real crusher: the jar's from_clump row, 10,000 FE.
+    place 0 68 16 "$CRUSHER"
+    ctl command "execute in minecraft:the_end run item replace block 0 68 16 container.0 with $CLUMP 1" >/dev/null
+    say "mekanism energy 20000 0 68 16"
+    ctl wait 6
+    ctl wait 230
+    expect_contains 0 68 16 "$CRUSHER" "input empty x0, output $DIRTY x1"
+    expect_energy 0 68 16 "$CRUSHER" eq 10000
+    # The dirty dust into an enrichment chamber: upstream's
+    # `processing/<material>/dust/from_dirty_dust.json` is `mekanism:enriching`.
+    # There is no hopper in this check (recorded gap), so the item the crusher
+    # made is put into the chamber by hand, as slices 1-2 did with their dust.
+    place 3 68 16 "$CHAMBER"
+    ctl command "execute in minecraft:the_end run item replace block 3 68 16 container.0 with $DIRTY 1" >/dev/null
+    say "mekanism energy 20000 3 68 16"
+    ctl wait 6
+    ctl wait 230
+    expect_contains 3 68 16 "$CHAMBER" "input empty x0, output $DUST x1"
+    expect_energy 3 68 16 "$CHAMBER" eq 10000
+    # ...and the same dirty dust in a purification chamber makes nothing: the
+    # jar has no purifying recipe for it, so the port does not invent one.
+    place 6 68 16 "$PURIFICATION"
+    ctl command "execute in minecraft:the_end run item replace block 6 68 16 container.0 with $DIRTY 1" >/dev/null
+    say "mekanism energy 80000 6 68 16"
+    ctl wait 6
+    ctl wait 230
+    expect_contains 6 68 16 "$PURIFICATION" "progress 0/200, input $DIRTY x1, output empty x0"
+    expect_energy 6 68 16 "$PURIFICATION" eq 80000
+    echo "  a clump crushed into a dirty dust and that dirty dust enriched into a dust; the purification chamber has no row for a dirty dust"
+fi
+
+# ---------------------------------------------------------------------------
+# J. The sweep: every carried purifying row through a real chamber
+# ---------------------------------------------------------------------------
+echo "== J: every carried purifying recipe in a real Purification Chamber =="
+if [ "$NOCABLE" = 1 ]; then
+    echo "  (NOCABLE: the sweep is skipped with the cable scenario)"
+elif [ "$SELFTEST" = 1 ]; then
+    echo "  (selftest: the sweep is skipped)"
+else
+    PROWS=$SCRATCH/purifying-rows.json
+    python3 -u "$PORT/tools/gen_purifying.py" --rows >"$PROWS" \
+        || fail "the purifying rows could not be read from the jar"
+    rows=$(jq 'length' "$PROWS")
+    [ "$rows" -ge 15 ] || fail "the jar yielded only $rows purifying rows"
+    echo "  rows from the jar's mekanism:purifying data: $rows"
+    HORIZON_LOG="$HORIZON_HOME/logs/latest.log" \
+        python3 -u "$PORT/tools/gas_sweep.py" "$SOCK" "$CTL" "$PROWS" 6 66 -8 --batch 6 \
+        --kind purifying \
+        || fail "the purifying sweep failed"
+    HORIZON_LOG="$HORIZON_HOME/logs/latest.log" \
+        python3 -u "$PORT/tools/gas_sweep.py" "$SOCK" "$CTL" --control 20 66 -8 \
+        --kind purifying \
+        || fail "the purification chamber's wrong-gas control failed"
 fi
 
 # ---------------------------------------------------------------------------
 # B. Recipes: the five shaped recipes in a real table, and the blocks' loot
 # ---------------------------------------------------------------------------
-echo "== B1: the eight carried shaped recipes in a real crafting table =="
+echo "== B1: the nine carried shaped recipes in a real crafting table =="
 place 10 64 28 minecraft:crafting_table
 ctl command "execute in minecraft:the_end run tp @s 9.5 64 28.5" >/dev/null
 ctl wait 4
 ctl command "gamemode survival @s" >/dev/null
 ctl wait 3
-python3 "$PORT/tools/craft_check.py" "$SOCK" "$CTL" 10 64 28 \
+python3 -u "$PORT/tools/craft_check.py" "$SOCK" "$CTL" 10 64 28 \
     || fail "the crafting-table recipe check failed"
 ctl command "gamemode creative @s" >/dev/null
 ctl command "clear @s" >/dev/null
@@ -717,14 +860,14 @@ elif [ "$SELFTEST" = 1 ]; then
     echo "  (selftest: the sweep is skipped)"
 else
     ROWS=$SCRATCH/crushing-rows.json
-    python3 "$PORT/tools/gen_crushing.py" --rows >"$ROWS" \
+    python3 -u "$PORT/tools/gen_crushing.py" --rows >"$ROWS" \
         || fail "the crushing rows could not be read from the jar"
     rows=$(jq 'length' "$ROWS")
     [ "$rows" -ge 130 ] || fail "the jar yielded only $rows crushing rows"
     echo "  rows from the jar's mekanism:crushing data: $rows"
-    python3 "$PORT/tools/crush_sweep.py" "$SOCK" "$CTL" "$ROWS" 6 64 -8 --batch 10 \
+    python3 -u "$PORT/tools/crush_sweep.py" "$SOCK" "$CTL" "$ROWS" 6 64 -8 --batch 10 \
         || fail "the crushing sweep failed"
-    python3 "$PORT/tools/crush_sweep.py" "$SOCK" "$CTL" --control 0 64 24 \
+    python3 -u "$PORT/tools/crush_sweep.py" "$SOCK" "$CTL" --control 0 64 24 \
         || fail "the crusher's no-recipe control failed"
 fi
 
@@ -942,10 +1085,10 @@ jq -e '.ok == true and .screen == "container"' <<<"$state" >/dev/null \
 SCREEN_OPEN=1
 
 if [ "$NOCABLE" = 1 ]; then
-    echo "PASS: the chemical capability works (an insert lands in the tank's saved data, part of it drains into the gauge dropper, an unknown id and a block that answers no chemical both move nothing), its first consumer pulls a gas from a neighbour through the same capability and spends exactly one operation's worth on one operation (or nothing without a usable tank), and without a cable the charged cube moves no energy into the adjacent smelter or chamber, which never smelt or enrich"
+    echo "PASS: the chemical capability works (an insert lands in the tank's saved data, part of it drains into the gauge dropper, an unknown id and a block that answers no chemical both move nothing), its consumers pull a gas from a neighbour through the same capability and spend exactly one operation's worth on one operation (or nothing without a usable gas), and without a cable the charged cube moves no energy into the adjacent smelter or chamber, which never smelt or enrich"
 elif [ "$SELFTEST" = 1 ]; then
     echo "SELFTEST finished without failing (this is a bug in the test)"
     exit 1
 else
-    echo "PASS: the seven blocks, their eight shaped recipes and their loot tables work, every carried crushing recipe runs in a real crusher, every carried injecting recipe runs in a real chemical injection chamber that pulls its gas from a neighbour's tank through mekanism:chemical and spends exactly the operation's gas, the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input, a no-gas and a wrong-gas neighbour do nothing - the menus open, the machines' FE, progress and slots survive a save and relaunch, and the chemical capability moves one chemical into the tank's saved data, drains part of it into the gauge dropper through the item capability, and refuses an unknown id by name while a block that answers no chemical moves nothing"
+    echo "PASS: the eight blocks, their nine shaped recipes and their loot tables work, every carried crushing recipe runs in a real crusher, every carried injecting recipe runs in a real chemical injection chamber and every carried purifying recipe in a real purification chamber, both pulling their gas from a neighbour's tank through mekanism:chemical and spending exactly the operation's gas - 200 oxygen for one iron ore into three clumps at 40,000 FE - the jar's chain runs end to end (a clump crushes into a dirty dust and that dirty dust enriches into a dust, while a purification chamber has no row for it), the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input, a no-gas and a wrong-gas neighbour do nothing - the menus open, the machines' FE, progress and slots survive a save and relaunch, and the chemical capability moves one chemical into the tank's saved data, drains part of it into the gauge dropper through the item capability, and refuses an unknown id by name while a block that answers no chemical moves nothing"
 fi

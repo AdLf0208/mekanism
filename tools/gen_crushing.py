@@ -61,16 +61,27 @@ TAGS: dict[str, list[str]] = {
     "c:ingots/iron": ["minecraft:iron_ingot"],
     "c:ingots/gold": ["minecraft:gold_ingot"],
     "c:ingots/copper": ["minecraft:copper_ingot"],
+    "c:clumps/copper": ["mekanism:clump_copper"],
+    "c:clumps/gold": ["mekanism:clump_gold"],
+    "c:clumps/iron": ["mekanism:clump_iron"],
 }
 
-# The items the port registers: vanilla's own, plus the three dusts this slice
-# declares in `data/mekanism/horizon/item/`.
+# The items the port registers: vanilla's own, plus the three dusts of slices
+# 1-3 and the clumps and dirty dusts of slice 6, all declared in
+# `data/mekanism/horizon/item/`. The clump rows (clump -> dirty dust) need both
+# ends registered: the tag above names the input, this list the output.
 DUSTS = ["mekanism:dust_copper", "mekanism:dust_gold", "mekanism:dust_iron"]
+CLUMPS = ["mekanism:clump_copper", "mekanism:clump_gold", "mekanism:clump_iron"]
+DIRTY_DUSTS = [
+    "mekanism:dirty_dust_copper",
+    "mekanism:dirty_dust_gold",
+    "mekanism:dirty_dust_iron",
+]
 
 
 def registered_items() -> set[str]:
-    """The non-vanilla items this slice registers (its three dusts)."""
-    return set(DUSTS)
+    """The non-vanilla items this port registers (dusts, clumps, dirty dusts)."""
+    return set(DUSTS) | set(CLUMPS) | set(DIRTY_DUSTS)
 
 
 def ingredient_inputs(ingredient: dict) -> list[str]:

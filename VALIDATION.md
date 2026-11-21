@@ -1,5 +1,48 @@
 # Validation
 
+## 0.2.5 — the Purification Chamber, slice 6 (2026-11-21)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`).
+
+| Check | Command | Result |
+|---|---|---|
+| runtime + glue rules, RED first | `cargo test --offline` on the untouched tree | **34 errors**, the new API missing (`slice6-unit-red.log`) |
+| tests | `cargo test --offline` | **78 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`sdk-fmt.log`) |
+| recipe tables | the five `gen_*.py --check` | 163 / **132** / **148** / 72 / **15** rows (`slice6-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **124,275 B**, `cmp` identical, sha256 `ac8289c802ffdba25a1b3f7a96fea5c0904b8c7a65d20ca49417dea6f9363828` (`sdk-build.log`, `sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.5 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 159 entries (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`sdk-fits.log`, sha printed beside it) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`sdk-fits.log`) |
+| archive | `unzip -l mekanism.hmod` | 159 entries, no `Cargo.lock` (`sdk-entries.txt`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (`sdk-verify-package.log`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 1,66,16 to say 'output empty x0', got '… output mekanism:clump_iron x3'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+| launcher build | `launcher-game.sh build mekanism` (in a lease) | `Compiling mekanism (1 of 1)`, `native-0a875da-6e2fafb2fa07` (`slice6-launcher-build.log`) |
+
+The in-game leg proves, per the parity rule: the eight blocks and thirteen items are give-able and
+placeable, an unknown id is refused, the **nine** carried shaped recipes craft (id, count,
+ingredients consumed, six wrong-ingredient controls empty), the eight blocks' loot tables drop the
+block, every carried crushing recipe (148), every carried injecting recipe (72) and every carried
+purifying recipe (15) run in a real machine, the machines' chain and persistence hold, the chemical
+capability moves and refuses as before — and **its second consumer**: a Purification Chamber beside a
+tank of oxygen pulls the gas **through `mekanism:chemical`**, turns one iron ore into the jar's
+three `mekanism:clump_iron` for exactly 40,000 FE (200 × 200), and leaves the neighbour tank at
+4,000 − 200 with its own tank empty; with no tank beside it, and with a tank of the injection
+chamber's hydrogen chloride, it makes no progress, spends no FE and draws nothing; and the jar's
+chain runs end to end (clump → crusher → dirty dust → enriching chamber → dust, while a purification
+chamber has no row for a dirty dust). See [notes.md](notes.md) §"Slice 6 — the Purification Chamber"
+for the transcript.
+
 ## 0.2.4 — the Chemical Injection Chamber, slice 5 (2026-11-21)
 
 Validated on Linux against the campaign pin **Horizon

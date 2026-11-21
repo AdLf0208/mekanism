@@ -1,4 +1,4 @@
-# Mekanism for Horizon — slices 1–5: the ore-processing machines, the cable and the chemical chain.
+# Mekanism for Horizon — slices 1–6: the ore-processing machines, the cable and the chemical chain.
 #
 # Migrated 2026-11-18 from the retired `.hnmod` container (Horizon's mod-API merge
 # #16941; the registry closed every `.hnmod` submission with the format purge).
@@ -13,8 +13,8 @@
 # Local-only until the maintainer approves publishing (ARCHITECTURE.md §8).
 id = "mekanism"
 name = "Mekanism"
-version = "0.2.4"
-description = """A port of Mekanism for Horizon, slices 1-5. The ore-processing machines: the
+version = "0.2.5"
+description = """A port of Mekanism for Horizon, slices 1-6. The ore-processing machines: the
 Energized Smelter, the Enrichment Chamber and the Crusher (50 FE/t, 200 ticks and 10,000 FE per
 operation, a 20,000 FE buffer, three slots and the vanilla furnace menu, the jar's smelting,
 enriching and crushing recipes over the items this port registers), the Basic Energy Cube
@@ -27,11 +27,15 @@ component through the item side of the same capability. Slice 5 is its first con
 Injection Chamber (400 FE/t, 200 ticks, a 160,000 FE buffer and a 210-unit gas tank it tops up from
 an adjacent tank through `mekanism:chemical`) runs the jar's `mekanism:injecting` recipes over the
 items this port has — raw ore and ore into shards, the vanilla solidifying, coral, oxidising and
-mud families — and adds the iron, gold and copper shards. `/mekanism info` and `/mekanism chemical
-insert|drain` need an operator or a player within 8 blocks. Not ported: the rest of Mekanism —
-purification and washing (which also need oxygen and water), factories, the slurries and pigments,
-upgrades, side configuration, the Configurator, the Digital Miner, the Teleporter, jetpacks, the
-multiblocks and the mod's own GUIs."""
+mud families — and adds the iron, gold and copper shards. Slice 6 is the Purification Chamber: the
+same gas machine on oxygen (200 FE/t, 200 ticks, a 40,000 FE operation, an 80,000 FE buffer and the
+same 210-unit tank) running the jar's `mekanism:purifying` clump recipes — ore into 3 clumps, raw
+ore into 2, a raw block into 18 and a shard into 1 — and adding the iron, gold and copper clumps and
+dirty dusts, so the jar's chain works end to end: a clump crushes into a dirty dust and that dirty
+dust enriches into a dust. `/mekanism info` and `/mekanism chemical insert|drain` need an operator or
+a player within 8 blocks. Not ported: the rest of Mekanism — the Ore Washer (which needs water),
+factories, the slurries and pigments, upgrades, side configuration, the Configurator, the Digital
+Miner, the Teleporter, jetpacks, the multiblocks and the mod's own GUIs."""
 authors = ["Aidan C. Brady", "AdLf0208"]
 # The content API: exact and checked. This package ships carried content beside its code, so the
 # capability is a real claim; it is also the one value the manifest schema has.

@@ -1581,3 +1581,283 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > exit 0; `fits` `made for` at the pin and `fits` at `0b14f8a`; 72 tests, clippy `-D warnings` clean;
 > in game `PASS` + `EXIT:0` with all 72 injecting rows, the unmodded game `EXIT:1`, `SELFTEST=1`
 > `EXIT:1`, `NOCABLE=1` `PASS` + `EXIT:0`.
+
+## Slice 6 — the Purification Chamber (0.2.5, 2026-11-21)
+
+### The scope authority, quoted
+
+The slice comes from the port's own gap list. `notes.md` "Gaps / deviations" item 1 and
+`FINDINGS.md` "Next slices" 1 both name it:
+
+> Ore processing beyond smelting, enriching, crushing and injection (**Purification** and the Ore
+> Washer — both need a second gas/fluid input — plus factories and the rest of the chain from the
+> shards onward: the shards → clumps → dirty dust → dust steps need the purification chamber and the
+> crusher on this port's items), …
+
+> … next are the **Purification Chamber** (needs oxygen) and the Ore Washer (needs water as a gas).
+> Both are `ItemStackChemicalToItemStack` machines of the same shape, so each is a slice like this
+> one — with its own recipe table and a second gas id the table already validates against.
+
+**Chosen: the Purification Chamber** (`mekanism:purifying`) — the same gas machine the injection
+chamber is, on **oxygen**, with the jar's clump table. It fits the **`deep` tier** as a
+machines-shaped feature (one block entity with its own saved state, a container, an energy balance
+and a capability consumer), same as slice 5.
+
+### One brief/artefact disagreement, and what the jar says
+
+The brief for this slice asked to prove "the dirty dust back into this chamber gives a dust". The
+jar does not: `data/mekanism/recipe/processing/<material>/dust/from_dirty_dust.json` is
+`"type": "mekanism:enriching"`, and `mekanism:purifying` has **28** recipes, every one of them a
+`processing/<material>/clump/from_*.json`. So the port follows the artefact: the chain is proven as
+**clump → crusher → dirty dust → enrichment chamber → dust**, and phase I3 also puts a dirty dust
+into a purification chamber as a counterfactual (no progress, no FE spent) so the table's rule is
+two-sided. The alternative — inventing a purifying row — would have been a defect, not fidelity.
+
+### What the jar says (upstream truth, read from `v1.21.1-10.7.19.85`)
+
+| value | source | port |
+|---|---|---|
+| usage **200 FE/t** | `UsageConfig.java:56` (`purificationChamber`, default `200L`) | `PURIFY_USAGE = 200` |
+| storage **80,000 FE** | `StorageConfig.java:57-61` (`purificationChamber`, `80_000L, 1`) | `PURIFY_CAPACITY = 80_000` |
+| 200 ticks per operation, so **40,000 FE** | `TileEntityPurificationChamber` → `TileEntityAdvancedElectricMachine(BASE_TICKS_REQUIRED)` | `PURIFY_OPERATION = { 200, 200 }` |
+| the machine's own gas tank is **210** units | `TileEntityAdvancedElectricMachine.java:66` (`MAX_GAS = 210`) | `PURIFY_TANK = 210` |
+| insert-only for automation | `useStatisticalMechanics()` is the config default `true` → `allowExtractingChemical()` false → `ConstantPredicates.notExternal()` | answered through `mekanism:chemical`, inserts up to 210, foreign extract takes nothing |
+| the gas is spent per tick | `chemical_input.amount` under `per_tick_usage: true`, through `ChemicalUsageMultiplier.constantUse` (1 unit/tick) | `per_tick` per operating tick, so an operation takes `per_tick × 200` |
+| no gas (or another gas) **holds** the progress | the constant-usage handler overrides `resetProgress` to `updateOperations(0)` | `IdleReason::NoChemical` (held, no FE spent) |
+| recipe type `mekanism:purifying` | `TileEntityPurificationChamber.getRecipeType()` | `runtime::purifying` |
+| block 3.5 / 16, `facing`×`active` | `MekanismBlockTypes.PURIFICATION_CHAMBER` (`createFactoryMachine`), `blockstates/purification_chamber.json` | barrel template (3.5/16, `facing`×`open`), the same recorded deviation as the other machines |
+
+The numbers were re-read for **this** machine rather than carried over from slice 5: it is **200
+FE/t**, not the injection chamber's 400 and not the three simpler machines' 50, so an operation
+costs 40,000 FE and the buffer is 80,000.
+
+### The recipe table: 15 of the jar's 28 purifying recipes
+
+`tools/gen_purifying.py` reads every `"type": "mekanism:purifying"` file in the jar and keeps a row
+where both sides exist in this port:
+
+- **item tags expanded to their 26.3 members** (`c:ores/{iron,gold,copper}`, `c:raw_materials/*`,
+  `c:storage_blocks/raw_*`, `c:shards/{iron,gold,copper}`), each expansion its own row;
+- the jar's 28 recipes are 4 files × 7 materials; the port registers iron, gold and copper, so 12
+  recipes expand to **15 rows**: ore ×1 → **3** clumps (2 ores each for iron and copper, gold's two
+  26.3 ores in the same expansion the other tables use), raw ore ×1 → **2**, raw block ×1 (+2 gas)
+  → **18**, shard ×1 → **1**;
+- **16 skipped, each printed**: the lead/osmium/tin/uranium ore, raw and shard tags — no such item
+  in this port.
+
+### The machine, in the port's three layers
+
+- **`src/runtime.rs`** — `GasRecipe` (renamed from `InjectionRecipe`: the two machines run the same
+  `ItemStackChemicalToItemStack` recipe type, so one shape serves both), `gas_pull` and
+  `process_gas_tick` (renamed with it), `purifying::{recipe_for, lookup, ROW_COUNT}` and the five
+  `PURIFY_*` constants.
+- **`src/support.rs`** — `GasPart { operation, capacity, tank, recipe_for }` replaces the
+  injection-only `InjectionPart`; the two machines are two `GasDecl` rows and one `Part`. The
+  registration still answers `mekanism:chemical` with the machine's own 210-unit tank.
+- **Content** — `mekanism:purification_chamber` (barrel template 3.5/16, the upstream blockstate's
+  `facing`×`open`, the upstream model, `_active` model and all 12 textures), the three
+  `mekanism:clump_{iron,gold,copper}` and three `mekanism:dirty_dust_*` items (the jar's
+  `item/generated` models and textures), loot, the shaped recipe (vanilla stand-ins: 4 gold + 2
+  redstone + 2 copper around an **Enrichment Chamber**, the upstream `ACA/OPO/ACA` pattern over
+  ingredients this port has), the pickaxe tag, the creative tab and the lang keys.
+
+Registering the clumps and dirty dusts also carries the two rows the chain needs, which the crusher
+and enrichment generators had been printing as skipped: `c:clumps/*` → 1 dirty dust (crusher,
+**145 → 148** rows) and `c:dirty_dusts/*` → 1 dust (enriching, **129 → 132** rows).
+
+### Red → green
+
+The runtime rules and the glue's declaration were written as tests first and ran red on the
+untouched tree (`../_shared/evidence/mekanism/slice6-unit-red.log`):
+
+```
+error[E0425]: cannot find value `PURIFICATION` in this scope
+    --> src/support.rs:1328:37
+     |
+1328 |         assert_eq!(machine_capacity(PURIFICATION), Some(PURIFY_CAPACITY));
+     |                                     ^^^^^^^^^^^^ not found in this scope
+…
+error: could not compile `mekanism` (lib test) due to 34 previous errors
+```
+
+Then the constants, the generator's table, the shared gas core and the `GasPart` made the crate
+green: **78 tests** (was 72) — 5 new `runtime::purification_tests`, 1 `support::tests`.
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the Purification Chamber block, block entity, 80,000 FE buffer, three slots, furnace menu | **tested** | `A1`/`A2` (give/place/read back), `B2` (loot), `B1` (crafts), `I1` (`0/80000 FE, ...`) |
+| one purification operation: 40,000 FE, 200 ticks, the input consumed, the jar's output stack | **tested** | `I1`: `iron_ore x1` → `mekanism:clump_iron x3`, `energy eq 40000` |
+| oxygen pulled **through the capability** from a neighbour, one tick's worth per tick | **tested** | `I1`: tank `4000 → 3800`, machine's own tank `0` (`holds nothing 0/210 (answered by mekanism)`) |
+| no tank beside it → no progress, no FE spent | **tested** | `I2` (4,66,16): `progress 0/200, input minecraft:iron_ore x1`, `eq 80000` |
+| hydrogen chloride (the injection chamber's gas) → no progress, no FE, nothing drawn | **tested** | `I2` (7/8,66,16): same idle line, tank still `4000/64000`; sweep control: a hydrogen chloride tank at an iron-ore chamber, `5000/64000` unchanged |
+| **all 15 carried purifying recipes** (input count, output id and count, input consumed, tank short exactly `200 × per_tick`) | **tested** | `J`: `rows purifying: 15 of 15` (`tools/gas_sweep.py --kind purifying`) |
+| the jar's chain: clump → crusher → dirty dust | **tested** | `I3`: crusher reads `output mekanism:dirty_dust_iron x1`, `10000/20000 FE` left |
+| dirty dust → dust (the jar's **enriching** row) | **tested** | `I3`: enrichment chamber reads `output mekanism:dust_iron x1`, `10000/20000 FE` left |
+| a dirty dust in a purification chamber makes nothing (counterfactual) | **tested** | `I3`: `progress 0/200, input mekanism:dirty_dust_iron x1`, `eq 80000` |
+| the three clumps and three dirty dusts: items, models, textures, give-able | **tested** | `A1` (6 items give-able) |
+| the nine carried shaped recipes | **tested** | `B1` (`tools/craft_check.py`): nine crafts + six wrong-ingredient controls |
+| the eight blocks' loot tables | **tested** | `B2`: each block drops its own item |
+| lead/osmium/tin/uranium clumps and their ores | **not ported** | those items are not registered; the generator prints each skipped file |
+| the `active` front texture and the `_active` model | **not ported** | carried in `assets/`, unused: the block template's `open` state stands in for `active` (the other machines' recorded deviation) |
+| factories (purifying factory), upgrades, side configuration, the machine's own GUI | **not ported** | out of this slice (the same gaps as the other machines) |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| runtime + glue tests (RED) | `cargo test --offline` on the untouched tree | **34 errors**, the new API missing (`slice6-unit-red.log`) |
+| tests | `cargo test --offline` | **78 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` | clean (`sdk-fmt.log`) |
+| recipe tables | `gen_smelting.py --check`, `gen_enriching.py --check`, `gen_crushing.py --check`, `gen_injecting.py --check`, `gen_purifying.py --check` | 163 / **132** / **148** / 72 / **15** rows (`slice6-recipe-tables.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` | `Built ./target/horizon-mod/mekanism.hmod` (`sdk-build.log`) |
+| same package twice | the same again | **`cmp` identical** (`sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | `mekanism 0.2.5 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **124,275 B, SHA-256 `ac8289c8…3828`**, exit 0 (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, `FIT-PIN-EXIT:0` (`sdk-fits.log`, sha printed first) |
+| fits, **a different build** | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, `FIT-OTHER-EXIT:0` (`sdk-fits.log`) — the run that proves something |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (159 entries, no packed `Cargo.lock`) |
+| archive shape | `unzip -l mekanism.hmod` | 159 files, no `Cargo.lock` (`sdk-entries.txt`) |
+
+The launcher build (`launcher-game.sh build mekanism`, in a lease) printed `Compiling mekanism (1 of
+1)` and produced `native-0a875da-6e2fafb2fa07`, which is the trap's check that the binary under test
+carries this package.
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`../_shared/evidence/mekanism-e2e/e2e-package.log` → `PASS` + `EXIT:0`, quoted from phases I and J:
+
+```
+== I1: one iron ore becomes three clumps for 40,000 FE and exactly 200 oxygen ==
+  chemical insert 4000 mekanism:oxygen 0 66 16: chemical: inserted 4000 mekanism:oxygen into mekanism:basic_chemical_tank (4000/64000)
+  info(1,66,16): mekanism:purification_chamber: 0/80000 FE, progress 0/200, input minecraft:iron_ore x1, output empty x0
+  energy(1,66,16): 78800
+  info(1,66,16): mekanism:purification_chamber: 40000/80000 FE, progress 0/200, input empty x0, output mekanism:clump_iron x3
+  energy(1,66,16): 40000
+  chemical read 0 66 16: chemical: mekanism:basic_chemical_tank holds mekanism:oxygen 3800/64000 (answered by mekanism)
+  data get block 0 66 16 amount: 0, 66, 16 has the following block data: 3800
+  data get block 1 66 16 amount: 1, 66, 16 has the following block data: 0
+  chemical read 1 66 16: chemical: mekanism:purification_chamber holds nothing 0/210 (answered by mekanism)
+== I2: without oxygen, or with the injection chamber's hydrogen chloride, nothing moves ==
+  chemical insert 4000 mekanism:hydrogen_chloride 7 66 16: chemical: inserted 4000 mekanism:hydrogen_chloride into mekanism:basic_chemical_tank (4000/64000)
+  info(4,66,16): mekanism:purification_chamber: 80000/80000 FE, progress 0/200, input minecraft:iron_ore x1, output empty x0
+  energy(4,66,16): 80000
+  info(8,66,16): mekanism:purification_chamber: 80000/80000 FE, progress 0/200, input minecraft:iron_ore x1, output empty x0
+  energy(8,66,16): 80000
+  chemical read 7 66 16: chemical: mekanism:basic_chemical_tank holds mekanism:hydrogen_chloride 4000/64000 (answered by mekanism)
+== I3: the jar's chain: clump -> crusher -> dirty dust -> enriching chamber -> dust ==
+  info(0,68,16): mekanism:crusher: 10000/20000 FE, progress 0/200, input empty x0, output mekanism:dirty_dust_iron x1
+  energy(0,68,16): 10000
+  info(3,68,16): mekanism:enrichment_chamber: 10000/20000 FE, progress 0/200, input empty x0, output mekanism:dust_iron x1
+  energy(3,68,16): 10000
+  info(6,68,16): mekanism:purification_chamber: 80000/80000 FE, progress 0/200, input mekanism:dirty_dust_iron x1, output empty x0
+  energy(6,68,16): 80000
+  a clump crushed into a dirty dust and that dirty dust enriched into a dust; the purification chamber has no row for a dirty dust
+== J: every carried purifying recipe in a real Purification Chamber ==
+  rows from the jar's mekanism:purifying data: 15
+  minecraft:copper_ore x1 + mekanism:oxygen x1/t -> {"count": 3, "item": "mekanism:clump_copper"} (chemical: mekanism:basic_chemical_tank holds mekanism:oxygen 4800/64000 (answered by mekanism))
+  …
+  minecraft:raw_iron_block x1 + mekanism:oxygen x2/t -> {"count": 18, "item": "mekanism:clump_iron"} (chemical: mekanism:basic_chemical_tank holds mekanism:oxygen 4600/64000 (answered by mekanism))
+rows purifying: 15 of 15
+sweep PASS: all 15 carried purifying recipes ran in a real machine with their declared input count and output stack, the input was consumed, and the neighbour tank lost exactly the gas the operation spent
+== control: a tank of a gas the purifying recipe does not take moves nothing ==
+  gas: chemical: mekanism:basic_chemical_tank holds mekanism:hydrogen_chloride 5000/64000 (answered by mekanism)
+  machine: [{"count": 1, "item": "minecraft:iron_ore"}], 80000 FE
+  control PASS: the input is still there, nothing was made and no gas was drawn
+```
+
+What the numbers prove:
+
+- **the operation is exactly one operation at the jar's price**: 200 ticks × 200 FE = 40,000 FE —
+  the buffer goes 80,000 → **40,000**, the input leaves the slot and slot 2 gains the jar's
+  **three** `mekanism:clump_iron`;
+- **the oxygen is the recipe's, per tick**: the neighbour tank goes 4,000 → **3,800** (exactly
+  `200 × 1`), and the machine's own tank reads **0**, so nothing was manufactured or over-drawn;
+- **the controls are two-sided**: with no tank the machine held its progress at 0 and its 80,000 FE
+  intact; with the **injection chamber's** hydrogen chloride beside it nothing moved either, and the
+  tank was not drawn from at all — the gas id in the table is what decides, not the presence of a
+  tank;
+- **every row costs what it declares**: a one-unit row leaves 4,800, the raw-block rows (2/tick)
+  leave 4,600, and each produced the jar's stack (18 for a raw block, 3 for an ore, 2 for a raw ore,
+  1 for a shard);
+- **the chain runs end to end**: the clump crushed into a dirty dust for 10,000 FE, that dirty dust
+  enriched into a dust for 10,000 FE, and the same dirty dust in a purification chamber made
+  nothing with all 80,000 FE intact.
+
+| leg | result | evidence |
+|---|---|---|
+| package (default) | **`PASS` + `EXIT:0`** | `e2e-package.log` |
+| unmodded game (`GAME=$CONTROL_GAME CONTROL=0`) | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** | `e2e-control.log` |
+| fail-capable (`SELFTEST=1`) | **`FAIL: expected /mekanism info at 1,66,16 to say 'output empty x0', got 'mekanism:purification_chamber: 40000/80000 FE, progress 0/200, input empty x0, output mekanism:clump_iron x3'` + `EXIT:1`** | `e2e-selftest.log` |
+| differential (`NOCABLE=1`) | **`PASS` + `EXIT:0`** (phase I passes with no cable too) | `e2e-nocable.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+
+The `SELFTEST=1` flip moved to **this** slice's assertion (it was the injection chamber's output):
+the newest family is the one that has to prove it can fail.
+
+### What the harness taught this slice
+
+1. **A Python tool's stdout is block-buffered when it is piped**, so a sweep that prints only per
+   batch can go silent for minutes while it is working: the first D-sweep run was killed by
+   `e2e-guard`'s 900 s idle limit with no output after `rows … 148` (kept as
+   `../_shared/evidence/mekanism/e2e-attempt-idle-timeout.log`). Every tool call in `tools/e2e.sh`
+   is `python3 -u` now, so the guard sees real liveness; the run then passed. The guard itself is
+   real: its `EXIT:124` was a scheduling signal, not a port defect.
+2. **A new member of the `BLOCKS` array moves the A2 probe again**: the unknown-id probe stood at
+   `8,64,26`, which is now the eighth block's slot, so it moved to `10,64,26`. (Same class as slice
+   5's note.)
+3. **The brief's chain step and the jar disagree**: `from_dirty_dust` is `mekanism:enriching`, not
+   `mekanism:purifying` (see above). The e2e therefore proves the jar's chain and keeps the
+   purification chamber's missing row as a counterfactual, rather than inventing a recipe.
+
+### Gaps after slice 6
+
+Everything in *Gaps / deviations*, *Gaps after the migration*, *Gaps after slice 3*, *Gaps after
+slice 4* and *Gaps after slice 5* still stands. Changed: the **purification chamber is ported**, so
+the ore-processing chain is now smelter · enrichment · crusher · injection · purification, and the
+port ships the three clumps and three dirty dusts, which also carries the crusher's clump rows and
+the enrichment chamber's dirty-dust rows. Still missing: the **Ore Washer** (water as a gas), the
+crystals and slurries, the factories, the chemicals as items, and the `c:ores/gold` expansion still
+omits `minecraft:nether_gold_ore` in all three ore-table generators (a pre-existing gap of the tag
+expansion, not introduced here).
+
+### `## Upstream defects fixed`
+
+None found in this slice. The one candidate — a purification chamber "should" turn a dirty dust into
+a dust — is not a defect: the jar's own data puts that step in the enrichment chamber, and the port
+follows the data.
+
+### Deviations this slice records
+
+- **The machine pulls its gas; upstream is pushed into** — the slice-5 deviation, unchanged and for
+  the same reason (this slice is the same consumer through `mekanism:chemical`).
+- **`randomizedConsumption` is not modelled**: the deterministic `constantUse` amount (1 unit/tick)
+  is spent instead of the statistical mean, exactly as the injection chamber records.
+- **The block is the barrel template** (`facing`×`open`), not upstream's `facing`×`active`; the
+  `_active` model and 12 textures are carried, unused.
+- **No upgrades, no factory, no ejector, no side configuration, no GUI** — the other machines' gaps.
+- **The purification chamber has no recipe for a dirty dust** — the jar's rule, proven in `I3`.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+### Changelog (0.2.5) — supersedes 0.2.4
+
+> **0.2.5 — the Purification Chamber, the jar's clump table and the ore-processing chain's middle
+> step.** A new machine on the shared gas-machine core (the same `ItemStackChemicalToItemStack`
+> machine the injection chamber is): **200 FE/t × 200 ticks (40,000 FE an operation)**, an **80,000
+> FE** insert-only buffer, the same **210-unit** oxygen tank answered through `mekanism:chemical`,
+> the same three slots and vanilla furnace menu, and the jar's `mekanism:purifying` table over the
+> items this port has — **15 rows**: ore → **3 clumps**, raw ore → **2**, raw block → **18** and
+> shard → **1** for iron, gold and copper, with the six `mekanism:clump_*` and
+> `mekanism:dirty_dust_*` items carried (models, textures, tab, lang). Registering them also carries
+> the crusher's clump → dirty dust rows (145 → 148) and the enrichment chamber's dirty dust → dust
+> rows (129 → 132), so the jar's chain is complete in game: clump → crusher → dirty dust → enriching
+> chamber → dust, while a purification chamber has no row for a dirty dust (the jar's
+> `from_dirty_dust` is an enriching recipe). The machine pulls one tick's oxygen at a time from a
+> neighbour tank through `mekanism:chemical` and spends exactly `200 × per_tick` units an operation.
+> Package: **159 entries, 124,275 B**, sha256
+> `ac8289c802ffdba25a1b3f7a96fea5c0904b8c7a65d20ca49417dea6f9363828`; `check` exit 0; `fits` `made
+> for` at the pin and `fits` at `0b14f8a`; 78 tests, clippy `-D warnings` clean; in game `PASS` +
+> `EXIT:0` with all 15 purifying rows and the chain proven, the unmodded game `EXIT:1`, `SELFTEST=1`
+> `EXIT:1`, `NOCABLE=1` `PASS` + `EXIT:0`.

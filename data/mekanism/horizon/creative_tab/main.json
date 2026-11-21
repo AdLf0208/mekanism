@@ -15,6 +15,13 @@
     "mekanism:shard_gold",
     "mekanism:shard_copper",
     "mekanism:basic_chemical_tank",
-    "mekanism:gauge_dropper"
+    "mekanism:gauge_dropper",
+    "mekanism:purification_chamber",
+    "mekanism:clump_iron",
+    "mekanism:clump_gold",
+    "mekanism:clump_copper",
+    "mekanism:dirty_dust_iron",
+    "mekanism:dirty_dust_gold",
+    "mekanism:dirty_dust_copper"
   ]
 }

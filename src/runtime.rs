@@ -101,6 +101,31 @@ pub const INJECTION_OPERATION: Operation = Operation {
     usage: INJECTION_USAGE,
 };
 
+/// Ticks one Purification Chamber operation takes
+/// (`TileEntityAdvancedElectricMachine.BASE_TICKS_REQUIRED`, the same base the
+/// injection chamber uses).
+pub const PURIFY_TICKS: i32 = 200;
+
+/// Energy one Purification Chamber operating tick costs
+/// (`UsageConfig.purificationChamber`, default 200).
+pub const PURIFY_USAGE: i32 = 200;
+
+/// The Purification Chamber's energy buffer
+/// (`StorageConfig.purificationChamber`, default 80,000).
+pub const PURIFY_CAPACITY: i32 = 80_000;
+
+/// The Purification Chamber's own gas tank
+/// (`TileEntityAdvancedElectricMachine.MAX_GAS`), the same 210-unit buffer the
+/// injection chamber has.
+pub const PURIFY_TANK: u32 = 210;
+
+/// The Purification Chamber's operation: the jar's 200 FE/t over the shared 200
+/// ticks, so one operation costs 40,000 FE.
+pub const PURIFY_OPERATION: Operation = Operation {
+    ticks: PURIFY_TICKS,
+    usage: PURIFY_USAGE,
+};
+
 /// One Basic Energy Cube's storage (`EnergyCubeTier.BASIC`).
 pub const CUBE_CAPACITY: i32 = 4_000_000;
 
@@ -449,8 +474,11 @@ pub mod enriching {
     // `(input item, items consumed, output item, output count)`; a `c:`
     // tag is expanded to the members 26.3 has (see the tool's TAGS), and
     // a recipe whose output the port does not register is left out.
-    // Source recipes: 322. Rows: 129. Skipped: 202.
+    // Source recipes: 322. Rows: 132. Skipped: 199.
     static TABLE: &[(&str, u32, &str, u32)] = &[
+        ("mekanism:dirty_dust_copper", 1, "mekanism:dust_copper", 1),
+        ("mekanism:dirty_dust_gold", 1, "mekanism:dust_gold", 1),
+        ("mekanism:dirty_dust_iron", 1, "mekanism:dust_iron", 1),
         ("minecraft:allium", 1, "minecraft:magenta_dye", 2),
         (
             "minecraft:ancient_debris",
@@ -959,8 +987,11 @@ pub mod crushing {
     // `(input item, items consumed, output item, output count)`; a `c:`
     // tag is expanded to the members 26.3 has (see the tool's TAGS), and
     // a recipe whose output the port does not register is left out.
-    // Source recipes: 313. Rows: 145. Skipped: 190.
+    // Source recipes: 313. Rows: 148. Skipped: 187.
     static TABLE: &[(&str, u32, &str, u32)] = &[
+        ("mekanism:clump_copper", 1, "mekanism:dirty_dust_copper", 1),
+        ("mekanism:clump_gold", 1, "mekanism:dirty_dust_gold", 1),
+        ("mekanism:clump_iron", 1, "mekanism:dirty_dust_iron", 1),
         ("minecraft:black_wool", 1, "minecraft:string", 4),
         ("minecraft:blaze_rod", 1, "minecraft:blaze_powder", 4),
         ("minecraft:blue_wool", 1, "minecraft:string", 4),
@@ -2009,16 +2040,18 @@ pub fn extract_chemical(tank: &mut Tank, chemical: &str, amount: u32) -> u32 {
 // Slice 5: the Chemical Injection Chamber — a consumer of the capability
 // ---------------------------------------------------------------------------
 
-/// One `mekanism:injecting` recipe as the machine runs it: the items one
-/// operation consumes, the chemicals its gas input accepts (the jar writes
-/// either one id or a chemical tag), how much of that gas **one operating tick**
-/// takes, and what it produces.
+/// One gas-machine recipe as the machine runs it: the items one operation
+/// consumes, the chemicals its gas input accepts (the jar writes either one id
+/// or a chemical tag), how much of that gas **one operating tick** takes, and
+/// what it produces. The Chemical Injection Chamber and the Purification
+/// Chamber run the same `ItemStackChemicalToItemStack` recipe type, so they
+/// share this shape.
 ///
 /// `per_tick` is the jar's `chemical_input.amount` under `per_tick_usage: true`.
 /// Upstream spends it through `ChemicalUsageMultiplier.constantUse`, so a whole
 /// operation takes `per_tick × 200` units.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InjectionRecipe {
+pub struct GasRecipe {
     /// Items taken from the input slot when the operation finishes.
     pub input: u32,
     /// The chemicals the gas input accepts (a tag expands to its members).
@@ -2029,7 +2062,7 @@ pub struct InjectionRecipe {
     pub output: ItemAmount,
 }
 
-impl InjectionRecipe {
+impl GasRecipe {
     /// Whether the recipe takes `chemical`.
     #[must_use]
     pub fn accepts(&self, chemical: &str) -> bool {
@@ -2040,25 +2073,25 @@ impl InjectionRecipe {
 /// The jar's `mekanism:injecting` recipes over the items and chemicals this port
 /// registers, generated into `src/runtime.rs` by `tools/gen_injecting.py`.
 pub mod injecting {
-    use super::{InjectionRecipe, ItemAmount};
+    use super::{GasRecipe, ItemAmount};
 
     /// How many rows the table holds.
     pub const ROW_COUNT: usize = TABLE.len();
 
     /// The recipe for `item`, whatever the machine's tank holds.
     #[must_use]
-    pub fn recipe_for(item: &str) -> Option<InjectionRecipe> {
+    pub fn recipe_for(item: &str) -> Option<GasRecipe> {
         TABLE.iter().find(|row| row.0 == item).map(row_recipe)
     }
 
     /// The recipe for `item`, only when it takes `chemical`.
     #[must_use]
-    pub fn lookup(item: &str, chemical: &str) -> Option<InjectionRecipe> {
+    pub fn lookup(item: &str, chemical: &str) -> Option<GasRecipe> {
         recipe_for(item).filter(|recipe| recipe.accepts(chemical))
     }
 
-    fn row_recipe(row: &Row) -> InjectionRecipe {
-        InjectionRecipe {
+    fn row_recipe(row: &Row) -> GasRecipe {
+        GasRecipe {
             input: row.1,
             chemical: row.2,
             per_tick: row.3,
@@ -2667,6 +2700,180 @@ pub mod injecting {
     // END GENERATED INJECTING TABLE
 }
 
+/// The jar's `mekanism:purifying` recipes over the items this port registers,
+/// generated into `src/runtime.rs` by `tools/gen_purifying.py`.
+pub mod purifying {
+    use super::{GasRecipe, ItemAmount};
+
+    /// How many rows the table holds.
+    pub const ROW_COUNT: usize = TABLE.len();
+
+    /// The recipe for `item`, whatever the machine's tank holds.
+    #[must_use]
+    pub fn recipe_for(item: &str) -> Option<GasRecipe> {
+        TABLE.iter().find(|row| row.0 == item).map(row_recipe)
+    }
+
+    /// The recipe for `item`, only when it takes `chemical`.
+    #[must_use]
+    pub fn lookup(item: &str, chemical: &str) -> Option<GasRecipe> {
+        recipe_for(item).filter(|recipe| recipe.accepts(chemical))
+    }
+
+    fn row_recipe(row: &Row) -> GasRecipe {
+        GasRecipe {
+            input: row.1,
+            chemical: row.2,
+            per_tick: row.3,
+            output: ItemAmount::new(row.4, row.5),
+        }
+    }
+
+    /// `(input item, items consumed, accepted chemicals, per-tick units, output
+    /// item, output count)`.
+    type Row = (
+        &'static str,
+        u32,
+        &'static [&'static str],
+        u32,
+        &'static str,
+        u32,
+    );
+
+    // BEGIN GENERATED PURIFYING TABLE (tools/gen_purifying.py)
+    // Generated from the jar's `mekanism:purifying` recipes by
+    // `tools/gen_purifying.py`; do not edit by hand. Each row is
+    // `(input item, items consumed, accepted chemicals, per-tick units,
+    // output item, output count)`; an item tag is expanded to the members
+    // 26.3 has and a chemical tag to the chemicals this port knows (see the
+    // tool's ITEM_TAGS/CHEMICAL_TAGS), and a recipe whose output the port
+    // does not register is left out.
+    // Source recipes: 28. Rows: 15. Skipped: 16.
+    static TABLE: &[Row] = &[
+        (
+            "mekanism:shard_copper",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_copper",
+            1,
+        ),
+        (
+            "mekanism:shard_gold",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_gold",
+            1,
+        ),
+        (
+            "mekanism:shard_iron",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_iron",
+            1,
+        ),
+        (
+            "minecraft:copper_ore",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_copper",
+            3,
+        ),
+        (
+            "minecraft:deepslate_copper_ore",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_copper",
+            3,
+        ),
+        (
+            "minecraft:deepslate_gold_ore",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_gold",
+            3,
+        ),
+        (
+            "minecraft:deepslate_iron_ore",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_iron",
+            3,
+        ),
+        (
+            "minecraft:gold_ore",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_gold",
+            3,
+        ),
+        (
+            "minecraft:iron_ore",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_iron",
+            3,
+        ),
+        (
+            "minecraft:raw_copper",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_copper",
+            2,
+        ),
+        (
+            "minecraft:raw_copper_block",
+            1,
+            &["mekanism:oxygen"],
+            2,
+            "mekanism:clump_copper",
+            18,
+        ),
+        (
+            "minecraft:raw_gold",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_gold",
+            2,
+        ),
+        (
+            "minecraft:raw_gold_block",
+            1,
+            &["mekanism:oxygen"],
+            2,
+            "mekanism:clump_gold",
+            18,
+        ),
+        (
+            "minecraft:raw_iron",
+            1,
+            &["mekanism:oxygen"],
+            1,
+            "mekanism:clump_iron",
+            2,
+        ),
+        (
+            "minecraft:raw_iron_block",
+            1,
+            &["mekanism:oxygen"],
+            2,
+            "mekanism:clump_iron",
+            18,
+        ),
+    ];
+    // END GENERATED PURIFYING TABLE
+}
+
 /// The gas the machine pulls from a neighbour for the tick it is about to run:
 /// the chemical to ask for and how much of it, or `None` when its own tank
 /// already holds a tick's worth or a chemical the recipe does not take.
@@ -2675,7 +2882,7 @@ pub mod injecting {
 /// operation spends and no more: the machine's tank is a buffer, not a
 /// reservoir.
 #[must_use]
-pub fn injection_pull(recipe: &InjectionRecipe, tank: &Tank) -> Option<(&'static str, u32)> {
+pub fn gas_pull(recipe: &GasRecipe, tank: &Tank) -> Option<(&'static str, u32)> {
     let chemical = match tank.held() {
         Some((held, _)) if recipe.accepts(held) => {
             *recipe.chemical.iter().find(|it| **it == held)?
@@ -2687,8 +2894,10 @@ pub fn injection_pull(recipe: &InjectionRecipe, tank: &Tank) -> Option<(&'static
     (want > 0).then_some((chemical, want))
 }
 
-/// One tick of a Chemical Injection Chamber (`TileEntityAdvancedElectricMachine`
-/// through `ItemStackConstantChemicalToObjectCachedRecipe`).
+/// One tick of a gas machine — the Chemical Injection Chamber or the
+/// Purification Chamber (`TileEntityAdvancedElectricMachine` through
+/// `ItemStackConstantChemicalToObjectCachedRecipe`); the two differ only in
+/// their operation's constants and their recipe table.
 ///
 /// `lookup` answers the recipe for an input item id. Each operating tick costs
 /// `operation.usage` energy **and** `recipe.per_tick` units of the gas, and adds
@@ -2698,14 +2907,14 @@ pub fn injection_pull(recipe: &InjectionRecipe, tank: &Tank) -> Option<(&'static
 /// constant-usage handler pauses instead of resetting); so do no energy and no
 /// output room. An empty input, an input without a recipe or too few items reset
 /// it, exactly as the other machines do.
-pub fn process_injection_tick(
+pub fn process_gas_tick(
     machine: &mut Machine,
     operation: Operation,
     tank: &mut Tank,
     input: &mut ItemAmount,
     output: &mut ItemAmount,
     max_stack: u32,
-    lookup: &dyn Fn(&str) -> Option<InjectionRecipe>,
+    lookup: &dyn Fn(&str) -> Option<GasRecipe>,
 ) -> Outcome {
     if input.is_empty() {
         machine.progress = 0;
@@ -3765,7 +3974,7 @@ mod injection_tests {
     #[test]
     fn one_injection_tick_spends_fe_one_progress_and_the_tick_s_gas() {
         let (mut machine, mut tank, mut input, mut output) = injection(200);
-        let outcome = process_injection_tick(
+        let outcome = process_gas_tick(
             &mut machine,
             INJECTION_OPERATION,
             &mut tank,
@@ -3805,7 +4014,7 @@ mod injection_tests {
             };
             machine.progress = 41;
             let mut tank = gas.clone();
-            let outcome = process_injection_tick(
+            let outcome = process_gas_tick(
                 &mut machine,
                 INJECTION_OPERATION,
                 &mut tank,
@@ -3833,7 +4042,7 @@ mod injection_tests {
         let (mut machine, mut tank, mut input, mut output) = injection(200);
         let mut last = Outcome::Working;
         for _ in 0..INJECTION_TICKS {
-            last = process_injection_tick(
+            last = process_gas_tick(
                 &mut machine,
                 INJECTION_OPERATION,
                 &mut tank,
@@ -3865,7 +4074,7 @@ mod injection_tests {
         let (mut machine, mut tank, mut input, mut output) = injection(100);
         let mut last = Outcome::Working;
         for _ in 0..INJECTION_TICKS {
-            last = process_injection_tick(
+            last = process_gas_tick(
                 &mut machine,
                 INJECTION_OPERATION,
                 &mut tank,
@@ -3898,33 +4107,33 @@ mod injection_tests {
     fn the_top_up_asks_for_exactly_the_tick_s_gas() {
         let recipe = injecting::recipe_for("minecraft:raw_iron").expect("a recipe");
         assert_eq!(
-            injection_pull(&recipe, &Tank::default()),
+            gas_pull(&recipe, &Tank::default()),
             Some(("mekanism:hydrogen_chloride", 1)),
             "an empty tank asks for one tick's gas"
         );
         assert_eq!(
-            injection_pull(&recipe, &Tank::new("mekanism:hydrogen_chloride", 1)),
+            gas_pull(&recipe, &Tank::new("mekanism:hydrogen_chloride", 1)),
             None,
             "a tank holding the tick's gas asks for nothing"
         );
         assert_eq!(
-            injection_pull(&recipe, &Tank::new("mekanism:hydrogen_chloride", 200)),
+            gas_pull(&recipe, &Tank::new("mekanism:hydrogen_chloride", 200)),
             None
         );
         assert_eq!(
-            injection_pull(&recipe, &Tank::new("mekanism:oxygen", 4_000)),
+            gas_pull(&recipe, &Tank::new("mekanism:oxygen", 4_000)),
             None,
             "a tank of another chemical is not topped up with this one"
         );
         let coral = injecting::recipe_for("minecraft:dead_tube_coral").expect("a coral recipe");
         assert_eq!(coral.per_tick, 3);
         assert_eq!(
-            injection_pull(&coral, &Tank::new("mekanism:steam", 1)),
+            gas_pull(&coral, &Tank::new("mekanism:steam", 1)),
             Some(("mekanism:steam", 2)),
             "a tag's second member is pulled under its own name"
         );
         assert_eq!(
-            injection_pull(&coral, &Tank::default()),
+            gas_pull(&coral, &Tank::default()),
             Some(("mekanism:water_vapor", 3)),
             "an empty tank asks for the tag's first chemical"
         );
@@ -3950,6 +4159,188 @@ mod injection_tests {
             ),
             64,
             "an empty output takes the stack"
+        );
+    }
+}
+
+#[cfg(test)]
+mod purification_tests {
+    use super::*;
+
+    /// A charged Purification Chamber with one iron ore in its input and oxygen
+    /// in its own tank: the slice's headline machine.
+    fn chamber(oxygen: u32) -> (Machine, Tank, ItemAmount, ItemAmount) {
+        (
+            Machine {
+                energy: PURIFY_CAPACITY,
+                progress: 0,
+            },
+            Tank::new("mekanism:oxygen", oxygen),
+            ItemAmount::new("minecraft:iron_ore", 1),
+            ItemAmount::default(),
+        )
+    }
+
+    /// The table is the jar's `mekanism:purifying` data over the items this port
+    /// registers: 28 recipes in the jar, 15 rows here (four materials' clump
+    /// recipes name items or tags this port has; an item tag is one row per
+    /// 26.3 member).
+    #[test]
+    fn the_purifying_table_is_the_jar_s_clump_recipes() {
+        let ore = purifying::recipe_for("minecraft:iron_ore").expect("an iron ore clumps");
+        assert_eq!(ore.input, 1);
+        assert_eq!(ore.output, ItemAmount::new("mekanism:clump_iron", 3));
+        assert_eq!(ore.per_tick, 1, "the jar's per_tick_usage amount");
+        assert!(ore.accepts("mekanism:oxygen"));
+        assert!(
+            !ore.accepts("mekanism:hydrogen_chloride"),
+            "hydrogen chloride is the injection chamber's gas"
+        );
+        let raw = purifying::recipe_for("minecraft:raw_gold").expect("raw gold clumps");
+        assert_eq!(raw.output, ItemAmount::new("mekanism:clump_gold", 2));
+        let block = purifying::recipe_for("minecraft:raw_copper_block").expect("a raw block");
+        assert_eq!(block.output, ItemAmount::new("mekanism:clump_copper", 18));
+        assert_eq!(block.per_tick, 2, "from_raw_block's chemical_input.amount");
+        let shard = purifying::recipe_for("mekanism:shard_iron").expect("a shard clumps");
+        assert_eq!(shard.output, ItemAmount::new("mekanism:clump_iron", 1));
+        assert_eq!(
+            purifying::ROW_COUNT,
+            15,
+            "the rows the generator keeps from the jar's 28 purifying recipes"
+        );
+    }
+
+    /// One tick of the operation: the recipe's oxygen is taken per tick, one
+    /// progress tick is added, and 200 FE (`UsageConfig.purificationChamber`) is
+    /// spent.
+    #[test]
+    fn one_purification_tick_spends_fe_one_progress_and_the_tick_s_oxygen() {
+        let (mut machine, mut tank, mut input, mut output) = chamber(200);
+        let outcome = process_gas_tick(
+            &mut machine,
+            PURIFY_OPERATION,
+            &mut tank,
+            &mut input,
+            &mut output,
+            64,
+            &purifying::recipe_for,
+        );
+        assert_eq!(outcome, Outcome::Working);
+        assert_eq!(machine.progress, 1);
+        assert_eq!(
+            machine.energy,
+            PURIFY_CAPACITY - PURIFY_USAGE,
+            "200 FE for one tick"
+        );
+        assert_eq!(tank.held(), Some(("mekanism:oxygen", 199)));
+        assert_eq!(
+            input.count, 1,
+            "the input is consumed when the operation ends"
+        );
+        assert!(output.is_empty());
+        assert_eq!(
+            PURIFY_TANK, 210,
+            "TileEntityAdvancedElectricMachine.MAX_GAS"
+        );
+    }
+
+    /// A whole operation: 200 ticks, 40,000 FE (half the buffer), 200 units of
+    /// oxygen, one iron ore in and the jar's three clumps out.
+    #[test]
+    fn a_purification_operation_costs_forty_thousand_fe_and_two_hundred_oxygen() {
+        let (mut machine, mut tank, mut input, mut output) = chamber(200);
+        let mut last = Outcome::Working;
+        for _ in 0..PURIFY_TICKS {
+            last = process_gas_tick(
+                &mut machine,
+                PURIFY_OPERATION,
+                &mut tank,
+                &mut input,
+                &mut output,
+                64,
+                &purifying::recipe_for,
+            );
+        }
+        assert_eq!(last, Outcome::Produced);
+        assert_eq!(machine.progress, 0, "a finished operation starts over");
+        assert_eq!(
+            machine.energy,
+            PURIFY_CAPACITY - 40_000,
+            "200 ticks x 200 FE"
+        );
+        assert_eq!(tank, Tank::default(), "all 200 units went into the clumps");
+        assert!(input.is_empty(), "the operation consumed its iron ore");
+        assert_eq!(output, ItemAmount::new("mekanism:clump_iron", 3));
+    }
+
+    /// The purification chamber takes oxygen and nothing else: a tank of the
+    /// injection chamber's hydrogen chloride holds the progress and spends
+    /// nothing, exactly as an empty tank does.
+    #[test]
+    fn a_purification_chamber_takes_no_other_gas() {
+        for tank in [
+            Tank::default(),
+            Tank::new("mekanism:hydrogen_chloride", 4_000),
+        ] {
+            let (mut machine, mut input, mut output) = {
+                let (machine, _tank, input, output) = chamber(0);
+                (machine, input, output)
+            };
+            machine.progress = 41;
+            let mut tank = tank.clone();
+            let outcome = process_gas_tick(
+                &mut machine,
+                PURIFY_OPERATION,
+                &mut tank,
+                &mut input,
+                &mut output,
+                64,
+                &purifying::recipe_for,
+            );
+            assert_eq!(outcome, Outcome::Idle(IdleReason::NoChemical), "{tank:?}");
+            assert_eq!(
+                machine,
+                Machine {
+                    energy: PURIFY_CAPACITY,
+                    progress: 41
+                }
+            );
+            assert_eq!(tank, tank.clone(), "a held tick moves no gas");
+        }
+        assert_eq!(
+            gas_pull(
+                &purifying::recipe_for("minecraft:iron_ore").expect("a recipe"),
+                &Tank::default()
+            ),
+            Some(("mekanism:oxygen", 1)),
+            "the machine asks for one tick's oxygen"
+        );
+    }
+
+    /// The jar's ore-processing chain, row by row: a clump crushes into a dirty
+    /// dust, and a dirty dust enriches into a dust. Upstream's
+    /// `from_dirty_dust.json` is `mekanism:enriching`, so the purification
+    /// chamber has no row for a dirty dust — the port does not invent one.
+    #[test]
+    fn the_chain_rows_are_the_jar_s_clump_to_dirty_dust_and_dirty_dust_to_dust() {
+        assert_eq!(
+            crushing::lookup("mekanism:clump_iron"),
+            Some(MachineRecipe {
+                input: 1,
+                output: ItemAmount::new("mekanism:dirty_dust_iron", 1),
+            })
+        );
+        assert_eq!(
+            enriching::lookup("mekanism:dirty_dust_iron"),
+            Some(MachineRecipe {
+                input: 1,
+                output: ItemAmount::new("mekanism:dust_iron", 1),
+            })
+        );
+        assert_eq!(
+            purifying::recipe_for("mekanism:dirty_dust_iron"),
+            None,
+            "from_dirty_dust is an enriching recipe, not a purifying one"
         );
     }
 }

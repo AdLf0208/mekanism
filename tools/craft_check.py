@@ -251,6 +251,22 @@ def main() -> int:
         ],
         "mekanism:chemical_injection_chamber", 1, "minecraft:copper_block",
     )
+    check(
+        "purification chamber: 4 gold + 2 redstone + 2 copper + an enrichment chamber",
+        [
+            ("minecraft:gold_ingot", 4),
+            ("minecraft:redstone", 2),
+            ("minecraft:copper_ingot", 2),
+            ("mekanism:enrichment_chamber", 1),
+        ],
+        [
+            ("minecraft:gold_ingot", every(100, 102, 106, 108)),
+            ("minecraft:redstone", every(101, 107)),
+            ("minecraft:copper_ingot", every(103, 105)),
+            ("mekanism:enrichment_chamber", every(104)),
+        ],
+        "mekanism:purification_chamber", 1, "mekanism:enrichment_chamber",
+    )
 
     # --- controls: a wrong ingredient leaves the result empty -------------
     empty_control(
@@ -306,6 +322,21 @@ def main() -> int:
         ],
     )
     empty_control(
+        "purification chamber with a stick where the enrichment chamber goes",
+        [
+            ("minecraft:gold_ingot", 4),
+            ("minecraft:redstone", 2),
+            ("minecraft:copper_ingot", 2),
+            ("minecraft:stick", 1),
+        ],
+        [
+            ("minecraft:gold_ingot", every(100, 102, 106, 108)),
+            ("minecraft:redstone", every(101, 107)),
+            ("minecraft:copper_ingot", every(103, 105)),
+            ("minecraft:stick", every(104)),
+        ],
+    )
+    empty_control(
         "injection chamber with a stick where the iron block goes",
         [
             ("minecraft:gold_ingot", 4),
@@ -327,7 +358,7 @@ def main() -> int:
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)
         return 1
-    print("recipe PASS: all eight carried shaped recipes craft with their declared id and "
+    print("recipe PASS: all nine carried shaped recipes craft with their declared id and "
           "count, their ingredients are consumed, and every wrong-ingredient control leaves "
           "the result empty")
     return 0

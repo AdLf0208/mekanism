@@ -6,6 +6,7 @@
     "mekanism:chemical_injection_chamber",
     "mekanism:basic_energy_cube",
     "mekanism:basic_universal_cable",
-    "mekanism:basic_chemical_tank"
+    "mekanism:basic_chemical_tank",
+    "mekanism:purification_chamber"
   ]
 }
