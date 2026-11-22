@@ -1,4 +1,4 @@
-# Mekanism for Horizon — slices 1–7: the ore-processing machines, the cable, the chemical chain and the basic factories.
+# Mekanism for Horizon — slices 1–8: the ore-processing machines, the cable, the chemical chain, the basic factories and the washer.
 #
 # Migrated 2026-11-18 from the retired `.hnmod` container (Horizon's mod-API merge
 # #16941; the registry closed every `.hnmod` submission with the format purge).
@@ -13,8 +13,8 @@
 # Local-only until the maintainer approves publishing (ARCHITECTURE.md §8).
 id = "mekanism"
 name = "Mekanism"
-version = "0.2.6"
-description = """A port of Mekanism for Horizon, slices 1-7. The ore-processing machines: the
+version = "0.2.7"
+description = """A port of Mekanism for Horizon, slices 1-8. The ore-processing machines: the
 Energized Smelter, the Enrichment Chamber and the Crusher (50 FE/t, 200 ticks and 10,000 FE per
 operation, a 20,000 FE buffer, three slots and the vanilla furnace menu, the jar's smelting,
 enriching and crushing recipes over the items this port registers), the Basic Energy Cube
@@ -39,10 +39,16 @@ base machine's storage per process (30,000 FE for the item machines, 240,000 for
 factory and 120,000 for the purifying one) and, for the two gas factories, one shared 630-unit tank —
 so three ore in a basic purifying factory become nine clumps for 3 x 40,000 FE and 600 oxygen while
 one ore costs one operation. `/mekanism info` and `/mekanism chemical insert|drain` need an operator
-or a player within 8 blocks. Not ported: the rest of Mekanism — the Ore Washer (which needs water),
-the advanced/elite/ultimate factory tiers, the slurries and pigments, upgrades, side configuration,
-the Configurator, the Digital Miner, the Teleporter, jetpacks, the multiblocks and the mod's own
-GUIs."""
+or a player within 8 blocks. Slice 8 is the Chemical Washer, the port's first machine with a **fluid**
+input: 200 FE/t, 200 ticks and 40,000 FE an operation, an 80,000 FE buffer, a 10,000 mB water tank
+declared through the game's own `horizon:fluids` capability (its contents in the `fluids` list the
+block entity saves) and two 10,000-unit slurry tanks through `mekanism:chemical` (dirty in, clean
+out), running the jar's seven `mekanism:washing` recipes — 5 mB of water and one unit of a dirty
+slurry into one unit of its clean slurry, for copper, gold, iron, lead, osmium, tin and uranium — and
+carrying the jar's own model and textures for it. Not ported: the rest of Mekanism — the advanced,
+elite and ultimate factory tiers, the crystallizer and the dissolution chamber, the pigments,
+upgrades, side configuration, the Configurator, the Digital Miner, the Teleporter, jetpacks, the
+multiblocks and the mod's own GUIs."""
 authors = ["Aidan C. Brady", "AdLf0208"]
 # The content API: exact and checked. This package ships carried content beside its code, so the
 # capability is a real claim; it is also the one value the manifest schema has.

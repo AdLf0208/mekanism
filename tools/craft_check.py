@@ -295,6 +295,26 @@ def main() -> int:
             f"mekanism:basic_{factory}_factory", 1, base,
         )
 
+    # --- slice 8: the Chemical Washer -------------------------------------
+    check(
+        "chemical washer: 4 iron + a bucket + 2 redstone + iron block + a chemical tank",
+        [
+            ("minecraft:iron_ingot", 4),
+            ("minecraft:bucket", 1),
+            ("minecraft:redstone", 2),
+            ("minecraft:iron_block", 1),
+            ("mekanism:basic_chemical_tank", 1),
+        ],
+        [
+            ("minecraft:iron_ingot", every(100, 102, 106, 108)),
+            ("minecraft:bucket", every(101)),
+            ("minecraft:redstone", every(103, 105)),
+            ("minecraft:iron_block", every(104)),
+            ("mekanism:basic_chemical_tank", every(107)),
+        ],
+        "mekanism:chemical_washer", 1, "minecraft:bucket",
+    )
+
     # --- controls: a wrong ingredient leaves the result empty -------------
     empty_control(
         "smelter with a stick where the glass goes",
@@ -376,6 +396,23 @@ def main() -> int:
             ("minecraft:redstone", every(101, 107)),
             ("minecraft:iron_ingot", every(103, 105)),
             ("minecraft:stick", every(104)),
+        ],
+    )
+    empty_control(
+        "chemical washer with a stick where the bucket goes",
+        [
+            ("minecraft:iron_ingot", 4),
+            ("minecraft:stick", 1),
+            ("minecraft:redstone", 2),
+            ("minecraft:iron_block", 1),
+            ("mekanism:basic_chemical_tank", 1),
+        ],
+        [
+            ("minecraft:iron_ingot", every(100, 102, 106, 108)),
+            ("minecraft:stick", every(101)),
+            ("minecraft:redstone", every(103, 105)),
+            ("minecraft:iron_block", every(104)),
+            ("mekanism:basic_chemical_tank", every(107)),
         ],
     )
     empty_control(

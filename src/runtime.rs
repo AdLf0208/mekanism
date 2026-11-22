@@ -1675,6 +1675,11 @@ pub enum IdleReason {
     /// operating tick of it (the progress is held: upstream's constant-usage
     /// handler pauses rather than resetting).
     NoChemical,
+    /// The fluid tank holds none of the fluid the recipe takes, another fluid,
+    /// or less than one operation needs (the progress **resets**: upstream's
+    /// `mismatchedRecipe` for an empty tank and `NOT_ENOUGH_SECONDARY_INPUT`
+    /// for a short one both go through `resetProgress`).
+    NoFluid,
     /// The output slot has no room for the recipe's result (held).
     NoOutputSpace,
 }
@@ -1975,9 +1980,41 @@ pub const CHEMICALS: [&str; 32] = [
 
 /// The id of a chemical Mekanism registers, or `None` for one it does not (and
 /// for the empty chemical, which is not a chemical a tank takes).
+///
+/// Both registries this port knows: [`CHEMICALS`] (the gases and infuse types)
+/// and [`SLURRIES`] (the ore-processing slurries), which upstream registers in
+/// the same chemical registry (`MekanismChemicals.PROCESSED_RESOURCES`).
 #[must_use]
 pub fn known_chemical(id: &str) -> Option<&'static str> {
-    CHEMICALS.iter().copied().find(|known| *known == id)
+    known_slurry(id).or_else(|| CHEMICALS.iter().copied().find(|known| *known == id))
+}
+
+/// Mekanism's processed slurries (`ChemicalDeferredRegister.registerSlurry`):
+/// a dirty and a clean one per `PrimaryResource`, as ids of the same chemical
+/// registry a gas is (`MekanismChemicals.PROCESSED_RESOURCES`). The Chemical
+/// Washer is what turns one into the other; they ship no item, a tank carries
+/// them.
+pub const SLURRIES: [&str; 14] = [
+    "mekanism:clean_copper",
+    "mekanism:clean_gold",
+    "mekanism:clean_iron",
+    "mekanism:clean_lead",
+    "mekanism:clean_osmium",
+    "mekanism:clean_tin",
+    "mekanism:clean_uranium",
+    "mekanism:dirty_copper",
+    "mekanism:dirty_gold",
+    "mekanism:dirty_iron",
+    "mekanism:dirty_lead",
+    "mekanism:dirty_osmium",
+    "mekanism:dirty_tin",
+    "mekanism:dirty_uranium",
+];
+
+/// The id of a slurry this port knows, `None` for anything else.
+#[must_use]
+pub fn known_slurry(id: &str) -> Option<&'static str> {
+    SLURRIES.iter().copied().find(|known| *known == id)
 }
 
 /// What the Basic Chemical Tank's one tank holds (`ChemicalTankTier.BASIC`: 64
@@ -2088,6 +2125,77 @@ pub fn extract_chemical(tank: &mut Tank, chemical: &str, amount: u32) -> u32 {
         return 0;
     }
     tank.spend(amount)
+}
+
+/// One tank of one fluid, in millibuckets: what the washer's water tank holds.
+///
+/// The shape is [`Tank`]'s (an id and an amount, `amount == 0` empty whatever
+/// the id), kept apart because a fluid is not a chemical: the two capabilities
+/// are different tables and neither id is valid in the other's tank.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FluidTank {
+    /// The fluid it holds (`minecraft:water`), `None` when it holds none.
+    pub fluid: Option<String>,
+    /// How many millibuckets of it (a bucket is a thousand).
+    pub amount: u32,
+}
+
+impl FluidTank {
+    /// A tank holding `amount` millibuckets of `fluid` (`amount` 0 for empty).
+    #[must_use]
+    pub fn new(fluid: &str, amount: u32) -> Self {
+        if amount == 0 {
+            Self::default()
+        } else {
+            Self {
+                fluid: Some(fluid.to_owned()),
+                amount,
+            }
+        }
+    }
+
+    /// The fluid and its amount, `None` for an empty tank.
+    #[must_use]
+    pub fn held(&self) -> Option<(&str, u32)> {
+        match (&self.fluid, self.amount) {
+            (Some(fluid), amount) if amount > 0 => Some((fluid, amount)),
+            _ => None,
+        }
+    }
+
+    /// Takes `amount` millibuckets out of the tank and answers how much came
+    /// out; a tank that runs dry is empty, not a fluid at 0.
+    pub fn spend(&mut self, amount: u32) -> u32 {
+        let came = amount.min(self.amount);
+        self.amount -= came;
+        if self.amount == 0 {
+            *self = Self::default();
+        }
+        came
+    }
+}
+
+/// Puts up to `amount` millibuckets of `fluid` into `tank`, up to `capacity`:
+/// how much went in.
+///
+/// Only [`WATER`] goes in: upstream's tank predicate is
+/// `containsRecipeAB(fluid, ...)`, and every washing recipe takes water, so a
+/// lava (or any other fluid) offer moves nothing. A different fluid than the one
+/// held is refused whole, as `BasicFluidTank.insert` tests the held stack first.
+#[must_use]
+pub fn insert_fluid(tank: &mut FluidTank, fluid: &str, amount: u32, capacity: u32) -> u32 {
+    if fluid != WATER {
+        return 0;
+    }
+    if tank.held().is_some_and(|(held, _)| held != WATER) {
+        return 0;
+    }
+    let held = tank.amount.min(capacity);
+    let went = amount.min(capacity.saturating_sub(held));
+    if went > 0 {
+        *tank = FluidTank::new(WATER, held + went);
+    }
+    went
 }
 
 // ---------------------------------------------------------------------------
@@ -3008,6 +3116,258 @@ pub fn process_gas_tick(
         output.count += recipe.output.count;
     }
     Outcome::Produced
+}
+
+// ---------------------------------------------------------------------------
+// Slice 8: the Chemical Washer — a fluid beside the chemical inputs
+// ---------------------------------------------------------------------------
+
+/// The fluid every washing recipe takes: `minecraft:water`, as the jar's
+/// `fluid_input` tag names it.
+pub const WATER: &str = "minecraft:water";
+
+/// The washer's usage in FE per tick (`UsageConfig.chemicalWasher`, `200L`).
+pub const WASHER_USAGE: i32 = 200;
+
+/// The washer's buffer in FE (`StorageConfig.chemicalWasher`, `80_000L, 1`).
+pub const WASHER_CAPACITY: i32 = 80_000;
+
+/// Ticks one washing operation takes (`TileEntityRecipeMachine`'s
+/// `BASE_TICKS_REQUIRED`), so one operation costs 200 x 200 = 40,000 FE.
+pub const WASHER_TICKS: i32 = 200;
+
+/// The washer's one operation: 200 ticks at 200 FE/t.
+pub const WASHER_OPERATION: Operation = Operation {
+    ticks: WASHER_TICKS,
+    usage: WASHER_USAGE,
+};
+
+/// The washer's water tank, in millibuckets (`MAX_FLUID = 10 *
+/// BUCKET_VOLUME`). Water is what every washing recipe takes, so the fluid side
+/// of the machine is one tank of it.
+pub const WASHER_WATER: u32 = 10_000;
+
+/// Each of the washer's two slurry tanks, in millibuckets (`MAX_SLURRY = 10 *
+/// BUCKET_VOLUME`): the dirty one it takes and the clean one it makes.
+pub const WASHER_SLURRY: u32 = 10_000;
+
+/// One `mekanism:washing` recipe as the washer runs it: the fluid and its
+/// amount one operation consumes, the dirty slurry and its amount, and the clean
+/// slurry it makes. `FluidChemicalToChemicalRecipe`.
+///
+/// Both inputs are consumed **when the operation finishes**
+/// (`TwoInputCachedRecipe` overrides no `useResources`), unlike the gas
+/// machines' per-tick chemical, so one operation takes exactly one row's worth.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WashRecipe {
+    /// The fluid the recipe takes ([`WATER`]).
+    pub fluid: &'static str,
+    /// Millibuckets of it one operation consumes.
+    pub fluid_amount: u32,
+    /// The dirty slurry the recipe takes.
+    pub chemical: &'static str,
+    /// Units of it one operation consumes.
+    pub chemical_amount: u32,
+    /// The clean slurry it makes.
+    pub output: &'static str,
+    /// Units of it one operation makes.
+    pub output_amount: u32,
+}
+
+/// The jar's `mekanism:washing` recipes, generated into `src/runtime.rs` by
+/// `tools/gen_washing.py`.
+pub mod washing {
+    use super::WashRecipe;
+
+    /// How many rows the table holds.
+    pub const ROW_COUNT: usize = TABLE.len();
+
+    /// The recipe whose dirty slurry is `chemical`, `None` when no row takes it.
+    #[must_use]
+    pub fn recipe_for(chemical: &str) -> Option<WashRecipe> {
+        TABLE
+            .iter()
+            .find(|row| row.1 == chemical)
+            .map(|row| WashRecipe {
+                fluid: row.0,
+                fluid_amount: row.2,
+                chemical: row.1,
+                chemical_amount: row.3,
+                output: row.4,
+                output_amount: row.5,
+            })
+    }
+
+    /// `(fluid, dirty slurry, fluid millibuckets, slurry units, clean slurry,
+    /// clean units)`.
+    type Row = (&'static str, &'static str, u32, u32, &'static str, u32);
+
+    // BEGIN GENERATED WASHING TABLE (tools/gen_washing.py)
+    // Generated from the jar's `mekanism:washing` recipes by
+    // `tools/gen_washing.py`; do not edit by hand. Each row is
+    // `(fluid, dirty slurry, fluid millibuckets, slurry units, clean
+    // slurry, clean units)`, the amounts one **operation** takes and makes
+    // (both inputs are consumed when it finishes, not per tick), and a
+    // recipe whose slurry ids this port does not know is left out.
+    // Source recipes: 7. Rows: 7. Skipped: 0.
+    static TABLE: &[Row] = &[
+        (
+            "minecraft:water",
+            "mekanism:dirty_copper",
+            5,
+            1,
+            "mekanism:clean_copper",
+            1,
+        ),
+        (
+            "minecraft:water",
+            "mekanism:dirty_gold",
+            5,
+            1,
+            "mekanism:clean_gold",
+            1,
+        ),
+        (
+            "minecraft:water",
+            "mekanism:dirty_iron",
+            5,
+            1,
+            "mekanism:clean_iron",
+            1,
+        ),
+        (
+            "minecraft:water",
+            "mekanism:dirty_lead",
+            5,
+            1,
+            "mekanism:clean_lead",
+            1,
+        ),
+        (
+            "minecraft:water",
+            "mekanism:dirty_osmium",
+            5,
+            1,
+            "mekanism:clean_osmium",
+            1,
+        ),
+        (
+            "minecraft:water",
+            "mekanism:dirty_tin",
+            5,
+            1,
+            "mekanism:clean_tin",
+            1,
+        ),
+        (
+            "minecraft:water",
+            "mekanism:dirty_uranium",
+            5,
+            1,
+            "mekanism:clean_uranium",
+            1,
+        ),
+    ];
+    // END GENERATED WASHING TABLE
+}
+
+/// One tick of the Chemical Washer (`TileEntityChemicalWasher` through
+/// `TwoInputCachedRecipe.fluidChemicalToChemical`).
+///
+/// `lookup` answers the recipe for a dirty slurry. Each operating tick costs
+/// `operation.usage` energy and adds one progress tick; on `operation.ticks` the
+/// recipe's fluid and slurry are consumed and its clean slurry goes into the
+/// output tank. The fluid side is the **secondary** input: an empty water tank
+/// (or one of another fluid) is upstream's `mismatchedRecipe`, and less water
+/// than one operation needs is `NOT_ENOUGH_SECONDARY_INPUT` — both reset the
+/// progress, as the item machines reset theirs. Too little dirty slurry resets
+/// it too. No energy and no output room **hold** it.
+pub fn process_wash_tick(
+    machine: &mut Machine,
+    operation: Operation,
+    water: &mut FluidTank,
+    slurry_in: &mut Tank,
+    slurry_out: &mut Tank,
+    slurry_capacity: u32,
+    lookup: &dyn Fn(&str) -> Option<WashRecipe>,
+) -> Outcome {
+    let Some((dirty, dirty_amount)) = slurry_in.held() else {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoInput);
+    };
+    let Some(recipe) = lookup(dirty).filter(|recipe| recipe.output_amount > 0) else {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoRecipe);
+    };
+    match water.held() {
+        Some((fluid, amount)) if fluid == recipe.fluid && amount >= recipe.fluid_amount => {}
+        _ => {
+            machine.progress = 0;
+            return Outcome::Idle(IdleReason::NoFluid);
+        }
+    }
+    if dirty_amount < recipe.chemical_amount {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NotEnoughInput);
+    }
+    if room_in_tank(
+        slurry_out,
+        recipe.output,
+        recipe.output_amount,
+        slurry_capacity,
+    ) < recipe.output_amount
+    {
+        return Outcome::Idle(IdleReason::NoOutputSpace);
+    }
+    if machine.energy < operation.usage {
+        return Outcome::Idle(IdleReason::NoEnergy);
+    }
+    machine.energy -= operation.usage;
+    machine.progress += 1;
+    if machine.progress < operation.ticks {
+        return Outcome::Working;
+    }
+    machine.progress = 0;
+    water.spend(recipe.fluid_amount);
+    slurry_in.spend(recipe.chemical_amount);
+    let held = slurry_out.amount.min(slurry_capacity);
+    *slurry_out = Tank::new(recipe.output, held + recipe.output_amount);
+    Outcome::Produced
+}
+
+/// How much of a recipe's clean slurry an output tank still takes: its whole
+/// capacity when empty, the room left when it holds the same chemical, and none
+/// when it holds another (upstream's `NOT_ENOUGH_OUTPUT_SPACE`).
+#[must_use]
+pub fn room_in_tank(output: &Tank, recipe_output: &str, recipe_amount: u32, capacity: u32) -> u32 {
+    let room = match output.held() {
+        None => capacity,
+        Some((held, _)) if held == recipe_output => capacity.saturating_sub(output.amount),
+        Some(_) => 0,
+    };
+    // One operation must fit at all: a tank smaller than a row's output takes
+    // nothing, which is the same answer as a full one.
+    if room >= recipe_amount { room } else { 0 }
+}
+
+/// The dirty slurry the washer pulls from a neighbour for the operation it is
+/// about to run: which slurry and how much, or `None` when its own tank already
+/// holds the operation's worth (or holds a slurry it cannot use).
+///
+/// One **operation's** amount is asked for, not one tick's: this machine consumes
+/// its chemical when the operation finishes, unlike the gas machines' per-tick
+/// gas. The port's recorded deviation for the gas machines applies here: with no
+/// pipes, a machine takes from the handler beside it what it is about to spend.
+#[must_use]
+pub fn washer_pull(recipe: &WashRecipe, tank: &Tank) -> Option<(&'static str, u32)> {
+    match tank.held() {
+        Some((held, stored)) if held == recipe.chemical => {
+            let want = recipe.chemical_amount.saturating_sub(stored);
+            (want > 0).then_some((recipe.chemical, want))
+        }
+        Some(_) => None,
+        None => Some((recipe.chemical, recipe.chemical_amount)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4949,5 +5309,370 @@ mod factory_tests {
         assert_eq!(processes[0].output.count, 1);
         assert_eq!(processes[2].output.count, 1);
         assert_eq!(energy, 10_000);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Slice 8: the Chemical Washer — a fluid input beside the chemical ones
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod washer_tests {
+    use super::*;
+
+    /// The washer's numbers are the jar's own (`UsageConfig.chemicalWasher`,
+    /// `StorageConfig.chemicalWasher`, `MAX_FLUID`/`MAX_SLURRY`), not carried
+    /// over from another machine.
+    #[test]
+    fn the_washer_is_the_jar_s_200_fe_a_tick_and_its_three_tanks() {
+        assert_eq!(WASHER_USAGE, 200, "UsageConfig.chemicalWasher");
+        assert_eq!(WASHER_CAPACITY, 80_000, "StorageConfig.chemicalWasher");
+        assert_eq!(
+            WASHER_TICKS, 200,
+            "TileEntityRecipeMachine BASE_TICKS_REQUIRED"
+        );
+        assert_eq!(WASHER_OPERATION.usage, 200);
+        assert_eq!(WASHER_OPERATION.ticks, 200);
+        assert_eq!(WASHER_WATER, 10_000, "MAX_FLUID = 10 x BUCKET_VOLUME");
+        assert_eq!(WASHER_SLURRY, 10_000, "MAX_SLURRY = 10 x BUCKET_VOLUME");
+        assert_eq!(WATER, "minecraft:water");
+    }
+
+    /// Slurries are chemicals of Mekanism's own registry
+    /// (`MekanismChemicals.PROCESSED_RESOURCES` → `registerSlurry`): fourteen
+    /// ids, `dirty_` and `clean_` for the seven `PrimaryResource`s, and a tank
+    /// therefore takes them.
+    #[test]
+    fn the_slurry_table_is_mekanism_s_fourteen_chemicals() {
+        assert_eq!(SLURRIES.len(), 14, "seven materials x a dirty and a clean");
+        assert!(
+            SLURRIES.windows(2).all(|pair| pair[0] < pair[1]),
+            "the table is sorted and has no duplicates"
+        );
+        for id in SLURRIES {
+            assert!(
+                id.starts_with("mekanism:dirty_") || id.starts_with("mekanism:clean_"),
+                "{id} is not a slurry id"
+            );
+            assert_eq!(known_slurry(id), Some(id));
+            assert_eq!(
+                known_chemical(id),
+                Some(id),
+                "a tank takes a slurry: it is a chemical of the same registry"
+            );
+        }
+        assert_eq!(
+            known_slurry("mekanism:hydrogen"),
+            None,
+            "a gas is not a slurry"
+        );
+        assert_eq!(
+            known_chemical(WATER),
+            None,
+            "water is a fluid, not a chemical"
+        );
+    }
+
+    /// Every washing row is the jar's: 5 mB of water and one unit of the
+    /// material's dirty slurry make one unit of its clean slurry.
+    #[test]
+    fn every_washing_row_is_the_jar_s() {
+        assert_eq!(washing::ROW_COUNT, 7, "one clean.json per PrimaryResource");
+        for material in ["copper", "gold", "iron", "lead", "osmium", "tin", "uranium"] {
+            let dirty = format!("mekanism:dirty_{material}");
+            let clean = format!("mekanism:clean_{material}");
+            let recipe =
+                washing::recipe_for(&dirty).unwrap_or_else(|| panic!("no row for {dirty}"));
+            assert_eq!(recipe.fluid, WATER);
+            assert_eq!(recipe.fluid_amount, 5, "the jar's fluid_input amount");
+            assert_eq!(recipe.chemical, dirty);
+            assert_eq!(recipe.chemical_amount, 1);
+            assert_eq!(recipe.output, clean);
+            assert_eq!(recipe.output_amount, 1);
+            assert_eq!(
+                washing::recipe_for(&clean),
+                None,
+                "a clean slurry is not an input: the jar has no row for one"
+            );
+        }
+        assert_eq!(washing::recipe_for("mekanism:hydrogen"), None);
+    }
+
+    /// One operation at the jar's price: 200 ticks x 200 FE, 5 mB of water and
+    /// one unit of dirty slurry in, one unit of clean slurry out — and the
+    /// three tanks each move by exactly that.
+    #[test]
+    fn one_washing_operation_costs_one_operation_s_energy_water_and_slurry() {
+        let mut machine = Machine {
+            energy: WASHER_CAPACITY,
+            progress: 0,
+        };
+        let mut water = FluidTank::new(WATER, WASHER_WATER);
+        let mut dirty = Tank::new("mekanism:dirty_iron", 1_000);
+        let mut clean = Tank::default();
+        let mut outcomes = Vec::new();
+        for _ in 0..WASHER_TICKS {
+            outcomes.push(process_wash_tick(
+                &mut machine,
+                WASHER_OPERATION,
+                &mut water,
+                &mut dirty,
+                &mut clean,
+                WASHER_SLURRY,
+                &washing::recipe_for,
+            ));
+        }
+        assert!(
+            outcomes[..199]
+                .iter()
+                .all(|outcome| *outcome == Outcome::Working),
+            "every tick but the last only works"
+        );
+        assert_eq!(*outcomes.last().unwrap(), Outcome::Produced);
+        assert_eq!(
+            machine.energy,
+            WASHER_CAPACITY - 40_000,
+            "200 ticks x 200 FE"
+        );
+        assert_eq!(machine.progress, 0, "the operation finished");
+        assert_eq!(
+            water.held(),
+            Some((WATER, WASHER_WATER - 5)),
+            "5 mB of water an operation, not 5 a tick"
+        );
+        assert_eq!(dirty.held(), Some(("mekanism:dirty_iron", 999)));
+        assert_eq!(clean.held(), Some(("mekanism:clean_iron", 1)));
+    }
+
+    /// No water (or another fluid in the tank) is upstream's mismatched recipe:
+    /// the progress resets and nothing at all is spent.
+    #[test]
+    fn a_washer_with_no_water_resets_and_spends_nothing() {
+        for (fluid, amount) in [(None, 0u32), (Some("minecraft:lava"), 10_000)] {
+            let mut machine = Machine {
+                energy: WASHER_CAPACITY,
+                progress: 60,
+            };
+            let mut water = FluidTank {
+                fluid: fluid.map(str::to_owned),
+                amount,
+            };
+            let mut dirty = Tank::new("mekanism:dirty_iron", 1_000);
+            let mut clean = Tank::default();
+            assert_eq!(
+                process_wash_tick(
+                    &mut machine,
+                    WASHER_OPERATION,
+                    &mut water,
+                    &mut dirty,
+                    &mut clean,
+                    WASHER_SLURRY,
+                    &washing::recipe_for,
+                ),
+                Outcome::Idle(IdleReason::NoFluid)
+            );
+            assert_eq!(
+                machine.progress, 0,
+                "a mismatched recipe resets the progress"
+            );
+            assert_eq!(machine.energy, WASHER_CAPACITY, "and spends no energy");
+            assert_eq!(dirty, Tank::new("mekanism:dirty_iron", 1_000));
+            assert_eq!(clean, Tank::default());
+        }
+    }
+
+    /// Too little water for one operation is `NOT_ENOUGH_SECONDARY_INPUT`: it
+    /// resets the progress rather than holding it, as the item machines do.
+    #[test]
+    fn a_washer_short_of_water_resets_too() {
+        let mut machine = Machine {
+            energy: WASHER_CAPACITY,
+            progress: 60,
+        };
+        let mut water = FluidTank::new(WATER, 4);
+        let mut dirty = Tank::new("mekanism:dirty_iron", 1_000);
+        let mut clean = Tank::default();
+        assert_eq!(
+            process_wash_tick(
+                &mut machine,
+                WASHER_OPERATION,
+                &mut water,
+                &mut dirty,
+                &mut clean,
+                WASHER_SLURRY,
+                &washing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoFluid)
+        );
+        assert_eq!(machine.progress, 0);
+        assert_eq!(machine.energy, WASHER_CAPACITY);
+        assert_eq!(water, FluidTank::new(WATER, 4), "not a drop is taken");
+    }
+
+    /// A tank of clean slurry is an input with no recipe: the progress resets,
+    /// and neither the water nor the energy moves.
+    #[test]
+    fn a_washer_with_a_clean_slurry_has_no_recipe() {
+        let mut machine = Machine {
+            energy: WASHER_CAPACITY,
+            progress: 60,
+        };
+        let mut water = FluidTank::new(WATER, WASHER_WATER);
+        let mut clean_in = Tank::new("mekanism:clean_iron", 1_000);
+        let mut clean_out = Tank::default();
+        assert_eq!(
+            process_wash_tick(
+                &mut machine,
+                WASHER_OPERATION,
+                &mut water,
+                &mut clean_in,
+                &mut clean_out,
+                WASHER_SLURRY,
+                &washing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoRecipe)
+        );
+        assert_eq!(machine.progress, 0);
+        assert_eq!(machine.energy, WASHER_CAPACITY);
+        assert_eq!(water.held(), Some((WATER, WASHER_WATER)));
+    }
+
+    /// No energy holds the progress: nothing is spent, and the tanks stay.
+    #[test]
+    fn a_washer_without_energy_holds_its_progress() {
+        let mut machine = Machine {
+            energy: WASHER_USAGE - 1,
+            progress: 60,
+        };
+        let mut water = FluidTank::new(WATER, WASHER_WATER);
+        let mut dirty = Tank::new("mekanism:dirty_iron", 1_000);
+        let mut clean = Tank::default();
+        assert_eq!(
+            process_wash_tick(
+                &mut machine,
+                WASHER_OPERATION,
+                &mut water,
+                &mut dirty,
+                &mut clean,
+                WASHER_SLURRY,
+                &washing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoEnergy)
+        );
+        assert_eq!(machine.progress, 60, "held, not reset");
+        assert_eq!(machine.energy, WASHER_USAGE - 1);
+        assert_eq!(water.held(), Some((WATER, WASHER_WATER)));
+    }
+
+    /// A full output tank (or one holding another chemical) holds the progress
+    /// and spends nothing, as `NOT_ENOUGH_OUTPUT_SPACE` does.
+    #[test]
+    fn a_washer_with_no_output_room_holds_its_progress() {
+        for held in ["mekanism:clean_iron", "mekanism:clean_gold"] {
+            let mut machine = Machine {
+                energy: WASHER_CAPACITY,
+                progress: 60,
+            };
+            let mut water = FluidTank::new(WATER, WASHER_WATER);
+            let mut dirty = Tank::new("mekanism:dirty_iron", 1_000);
+            let mut clean = Tank::new(held, WASHER_SLURRY);
+            assert_eq!(
+                process_wash_tick(
+                    &mut machine,
+                    WASHER_OPERATION,
+                    &mut water,
+                    &mut dirty,
+                    &mut clean,
+                    WASHER_SLURRY,
+                    &washing::recipe_for,
+                ),
+                Outcome::Idle(IdleReason::NoOutputSpace),
+                "{held}"
+            );
+            assert_eq!(machine.progress, 60, "{held}: held, not reset");
+            assert_eq!(machine.energy, WASHER_CAPACITY);
+        }
+    }
+
+    /// The water tank takes water and nothing else: upstream's tank predicate is
+    /// `containsRecipeAB(fluid, ...)`, and every washing row takes water.
+    #[test]
+    fn the_water_tank_takes_water_only() {
+        let mut water = FluidTank::default();
+        assert_eq!(
+            insert_fluid(&mut water, WATER, WASHER_WATER + 1, WASHER_WATER),
+            WASHER_WATER,
+            "capped by the tank, not by the offer"
+        );
+        assert_eq!(water.held(), Some((WATER, WASHER_WATER)));
+        assert_eq!(
+            insert_fluid(&mut water, "minecraft:lava", 1_000, WASHER_WATER),
+            0,
+            "a fluid no washing recipe takes does not go in"
+        );
+        assert_eq!(
+            insert_fluid(&mut water, "mekanism:dirty_iron", 1_000, WASHER_WATER),
+            0,
+            "a chemical is not a fluid"
+        );
+        let mut fresh = FluidTank::default();
+        assert_eq!(insert_fluid(&mut fresh, WATER, 4, WASHER_WATER), 4);
+        assert_eq!(fresh.held(), Some((WATER, 4)));
+    }
+
+    /// The washer pulls one **operation's** dirty slurry from a neighbour, and
+    /// asks for nothing while its own tank already holds that much (or holds a
+    /// slurry no row takes).
+    #[test]
+    fn the_washer_pulls_one_operation_s_slurry_and_no_more() {
+        let recipe = washing::recipe_for("mekanism:dirty_iron").expect("the iron row");
+        assert_eq!(
+            washer_pull(&recipe, &Tank::default()),
+            Some(("mekanism:dirty_iron", 1)),
+            "one operation's unit, not one tick's"
+        );
+        assert_eq!(
+            washer_pull(&recipe, &Tank::new("mekanism:dirty_iron", 1)),
+            None,
+            "a tank with the operation's worth is not topped up"
+        );
+        assert_eq!(
+            washer_pull(&recipe, &Tank::new("mekanism:dirty_iron", 5)),
+            None
+        );
+        assert_eq!(
+            washer_pull(&recipe, &Tank::new("mekanism:dirty_gold", 1)),
+            None,
+            "another slurry is not drawn from either"
+        );
+    }
+
+    /// The three tanks each keep their own contents: a spent water tank leaves
+    /// the slurry tanks alone and the other way round.
+    #[test]
+    fn the_three_tanks_are_separate() {
+        let mut water = FluidTank::new(WATER, 500);
+        let mut dirty = Tank::new("mekanism:dirty_iron", 10);
+        let mut clean = Tank::new("mekanism:clean_gold", 20);
+        let mut machine = Machine {
+            energy: WASHER_CAPACITY,
+            progress: 0,
+        };
+        assert_eq!(
+            process_wash_tick(
+                &mut machine,
+                WASHER_OPERATION,
+                &mut water,
+                &mut dirty,
+                &mut clean,
+                WASHER_SLURRY,
+                &washing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoOutputSpace),
+            "a tank of another clean slurry has no room for this one"
+        );
+        assert_eq!(water.held(), Some((WATER, 500)));
+        assert_eq!(dirty.held(), Some(("mekanism:dirty_iron", 10)));
+        assert_eq!(clean.held(), Some(("mekanism:clean_gold", 20)));
     }
 }

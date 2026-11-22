@@ -1,4 +1,4 @@
-# Mekanism for Horizon — slices 1–5
+# Mekanism for Horizon — slices 1–8
 
 One flat **SDK package** (`horizon-mod.toml`, `api = "0.2"`) for Mekanism
 10.7.19.85 (MIT), the exact ATM10 jar. The carried blocks, items, models,
@@ -23,6 +23,13 @@ here; the behaviour is `src/lib.rs` (one `impl mod_api::Hooks`) and
   72 `mekanism:injecting` rows this port can finish (ore and raw ore → shards,
   copper oxidising, concrete solidifying, coral reviving, dirt → mud,
   terracotta → clay), with the `mekanism:shard_{iron,gold,copper}` items;
+- `mekanism:chemical_washer` — **the port's first fluid machine**: 200 FE/t,
+  200 ticks per operation (40,000 FE), an 80,000 FE buffer, a 10,000 mB **water
+  tank** declared through the game's own `horizon:fluids` capability (its
+  contents in the block entity's `fluids` list) and two 10,000-unit slurry tanks
+  through `mekanism:chemical` — dirty in, clean out — over the jar's seven
+  `mekanism:washing` rows (5 mB of water + 1 unit of a dirty slurry → 1 unit of
+  its clean slurry, for copper, gold, iron, lead, osmium, tin and uranium);
 - `mekanism:basic_energy_cube` — 4,000,000 FE at 4,000 FE/t;
 - `mekanism:basic_universal_cable` — moves 8,000 FE/t between the block
   entities beside it, on its own tick;

@@ -1,5 +1,48 @@
 # Validation
 
+## 0.2.7 — the Chemical Washer, slice 8 (2026-11-22)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`).
+
+| Check | Command | Result |
+|---|---|---|
+| runtime + glue rules, RED first | `cargo test --offline` on the untouched tree | **147 errors**, the new API missing (`slice8-unit-red.log`) |
+| tests | `cargo test --offline` | **108 passed**, 0 failed |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`slice8-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`slice8-clippy.log`) |
+| recipe tables | the six `gen_*.py --check` (`HORIZON_RES` set) | 163 / 132 / 148 / 72 / 15 / **7** rows |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **179,723 B**, `cmp` identical, sha256 `38a7bca520354e06932a914fbcd70adb0f2c2f12624b74598a855bcc4a7458a4` (`slice8-build.log`, `slice8-build-second.log`, `slice8-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.7 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 233 entries (`slice8-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`slice8-fits.log`, sha printed beside it) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`slice8-fits.log`) |
+| archive | `unzip -l mekanism.hmod` | 233 entries, no `Cargo.lock` |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (233 entries, no packed `Cargo.lock`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 1,72,0 to say 'output empty x0', got '… output mekanism:clean_iron x1'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+| launcher build | `launcher-game.sh build mekanism` (in a lease) | `Compiling mekanism (1 of 1)`, `native-0a875da-46a111dc6bcd` (`slice8-launcher-build.log`) |
+
+The in-game leg proves, per the parity rule: the fourteen blocks and thirteen items are give-able and
+placeable, an unknown id is refused, the **fifteen** carried shaped recipes craft (id, count,
+ingredients consumed, eight wrong-ingredient controls empty), the fourteen blocks' loot tables drop
+the block, every carried crushing (148), injecting (72), purifying (15) and **washing (7)** recipe
+still runs — and the new family, the port's first **fluid** machine: water arrives through the
+game's own `horizon:fluids` (the block entity's saved `fluids` list reads it back, the read names
+`the game` as the answering provider), the dirty slurry arrives through `mekanism:chemical`, and one
+operation spends exactly **40,000 FE, 5 mB of water and one unit of dirty slurry** to make **one unit
+of clean slurry** (the tank beside it 1,000 → 999, the machine's own tank empty); a clean slurry makes
+nothing, an empty water tank spends no FE and draws nothing, water is refused by the chemical key, a
+chemical tank answers no fluid handler, and the clean slurry drains through the chemical key's tank 1;
+the washer's progress and all three tanks survive a save and relaunch. See [notes.md](notes.md)
+§"Slice 8 — the Chemical Washer" for the transcript.
+
 ## 0.2.6 — the basic factory family, slice 7 (2026-11-22)
 
 Validated on Linux against the campaign pin **Horizon

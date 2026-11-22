@@ -290,3 +290,43 @@ one an item or an output this port does not register.
 
 The slice closes the "injection chamber" half of *Next slices* 1; the purification chamber and ore
 washer remain, and the shards → clumps → dirty dust → dust path from here needs exactly those two.
+
+## Slice 8 — the Chemical Washer (upstream analysis)
+
+Read for this slice from the upstream **tag `v1.21.1-10.7.19.85`** (commit
+`a00109e4856fd38b9c5b3dd7f22ce4a59cd65a80`), analysis only — the Rust is a clean-room rewrite, and
+the jar's own data (`data/mekanism/recipe/processing/*/slurry/clean.json`) is the recipe source:
+
+| Area | Files |
+|---|---|
+| the machine | `common/tile/machine/TileEntityChemicalWasher.java` |
+| the recipe | `src/api/java/mekanism/api/recipes/FluidChemicalToChemicalRecipe.java`, `src/api/java/mekanism/api/recipes/cache/TwoInputCachedRecipe.java`, `CachedRecipe.java`, `CachedRecipeHelper.java`, `inputs/InputHelper.java` |
+| the numbers | `common/config/UsageConfig.java` (`chemicalWasher`, `200L`), `common/config/StorageConfig.java` (`chemicalWasher`, `80_000L, 1`) |
+| the slurries | `common/registries/MekanismChemicals.java` (`PROCESSED_RESOURCES` → `registerSlurry`), `common/registration/impl/ChemicalDeferredRegister.java`, `common/resource/PrimaryResource.java` |
+| the block | `common/registries/MekanismBlockTypes.java`, `assets/mekanism/blockstates/chemical_washer.json`, `assets/mekanism/models/block/chemical_washer.json` |
+
+Numbers carried: usage **200 FE/t**, storage **80,000 FE**, the shared **200**-tick operation
+(**40,000 FE**), the water tank **10,000 mB** (`MAX_FLUID = 10 * BUCKET_VOLUME`, `BasicFluidTank.input`
+— fill only, and only fluids some washing recipe takes, which is water), and the two slurry tanks of
+**10,000** each (`MAX_SLURRY`, `inputModern` in / `output` out). The jar's seven washing rows are
+**5 mB of water + 1 unit of a dirty slurry → 1 unit of its clean slurry** for copper, gold, iron,
+lead, osmium, tin and uranium; the pack's CraftTweaker script only changes the *uranium* row to 10 mB,
+which the port does not apply (no script support), so uranium is 5 mB here — a recorded deviation.
+
+Where the rewrite differs (and why):
+
+- upstream's washer is filled by automation pushing into its tanks; the port ships **no pipes**, so
+  the machine **pulls** one operation's dirty slurry from an adjacent `mekanism:chemical` handler —
+  the same recorded deviation the injection and purification chambers carry, and it draws only when it
+  could complete an operation (the slice-7 gas-sip defect, guarded from the start);
+- the water is the **game's own** `horizon:fluids` tank (`ModFluidTanks` + the entity's `fluids`
+  list), not a port-defined key: `FluidResource` is one of the SDK's shared resource types, so the
+  capability is answerable across packages and the e2e's read names `the game`;
+- the four upstream slots (a fluid-container slot, its output, a slurry-output slot and an energy
+  slot) are not carried: the tanks are the interface, and `/mekanism fluid read|insert`,
+  `/mekanism chemical insert|drain-tank` and `/mekanism info` are the harness's path;
+- both inputs are consumed at the operation's **finish** (`TwoInputCachedRecipe` overrides no
+  `useResources`), which the port keeps and the persistence phase pins (a mid-operation washer still
+  holds its water and slurry);
+- the block's model and seven textures are the jar's **own** (28 elements, `cutout`); the jar's block
+  has no `active` state at all, so the barrel template's unused `open` state is the only stand-in.

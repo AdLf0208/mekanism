@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "B": "minecraft:bucket",
+    "C": "minecraft:redstone",
+    "I": "minecraft:iron_ingot",
+    "T": "mekanism:basic_chemical_tank",
+    "X": "minecraft:iron_block"
+  },
+  "pattern": [
+    "IBI",
+    "CXC",
+    "ITI"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:chemical_washer"
+  }
+}

@@ -96,9 +96,22 @@ impl Hooks for Mod {
             "mekanism chemical drain <amount:integer> <pos:block_pos>",
             2,
         ));
+        // The washer's output tank is a handler's second one; this names it.
+        event.commands.push(Command::op(
+            "mekanism chemical drain-tank <amount:integer> <tank:integer> <pos:block_pos>",
+            2,
+        ));
         event
             .commands
             .push(Command::new("mekanism chemical dropper"));
+        // Slice 8's fluid side: the game's own `horizon:fluids`, read and filled.
+        event
+            .commands
+            .push(Command::new("mekanism fluid read <pos:block_pos>"));
+        event.commands.push(Command::op(
+            "mekanism fluid insert <amount:integer> <pos:block_pos>",
+            2,
+        ));
     }
 
     /// The command bodies. The arguments are parsed and resolved by the
@@ -186,6 +199,34 @@ impl Hooks for Mod {
                             *pos,
                             u32::try_from(*amount).unwrap_or(0),
                         )
+                    }
+                    ["mekanism", "chemical", "drain-tank"] => {
+                        let Some(CommandArgumentValue::Integer(amount)) =
+                            event.command.argument("amount")
+                        else {
+                            return Flow::Continue;
+                        };
+                        let Some(CommandArgumentValue::Integer(tank)) =
+                            event.command.argument("tank")
+                        else {
+                            return Flow::Continue;
+                        };
+                        support::chemical_drain_tank(
+                            host,
+                            event.source,
+                            *pos,
+                            usize::try_from(*tank).unwrap_or(usize::MAX),
+                            u32::try_from(*amount).unwrap_or(0),
+                        )
+                    }
+                    ["mekanism", "fluid", "read"] => support::fluid_read(host, *pos),
+                    ["mekanism", "fluid", "insert"] => {
+                        let Some(CommandArgumentValue::Integer(amount)) =
+                            event.command.argument("amount")
+                        else {
+                            return Flow::Continue;
+                        };
+                        support::fluid_insert(host, *pos, u32::try_from(*amount).unwrap_or(0))
                     }
                     _ => return Flow::Continue,
                 }

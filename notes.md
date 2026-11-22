@@ -2123,3 +2123,300 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > `made for` at the pin and `fits` at `0b14f8a`; 92 tests, clippy `-D warnings` clean; in game
 > `PASS` + `EXIT:0` with the factory phase and the 148/72/15-row sweeps, the unmodded game `EXIT:1`,
 > `SELFTEST=1` `EXIT:1` on the factory's own assertion, `NOCABLE=1` `PASS` + `EXIT:0`.
+
+## Slice 8 — the Chemical Washer, the port's first fluid machine (0.2.7, 2026-11-22)
+
+### The scope authority, quoted
+
+The gap line this slice comes from is the port's own, named by all three of its lists:
+
+> Ore processing beyond smelting, enriching, crushing and injection (**Purification** and the Ore
+> Washer — both need a second gas/fluid input — plus factories …) (`notes.md` "Gaps / deviations" 1)
+
+> the **Ore Washer** (water as a gas) … (`FINDINGS.md` "Next slices" 1, after slice 5)
+
+> Still missing: … the **Ore Washer** (water as a gas), the crystals and slurries … (`notes.md`
+> "Gaps after slice 7")
+
+and the 0.2.6 report's next-slice proposal: **the Chemical Washer** — `FluidChemicalToChemicalRecipe`,
+a 10,000 mB water tank plus a slurry tank in and a second out, 200 FE/t, 80,000 FE.
+
+**Chosen: the Chemical Washer** (`mekanism:washing`). It fits the **`deep` tier** as a
+machines-shaped feature — one block entity with its own saved state, three tanks, an energy balance
+and a capability provider *and* consumer — and it is the port's first machine whose input is a
+**fluid**, which is why it is also the slice that proves "chemicals are not fluids" in the positive
+direction. No entity, renderer, dimension or custom vanilla hook.
+
+### The fluid capability at the pin: enough, without a new API
+
+The pin's SDK already carries the whole fluid surface, so this slice adds no capability:
+
+| piece | where it is at `0a875da` | used for |
+|---|---|---|
+| `ModFluidTanks` (capacities, faces, fill/drain tanks) | `crates/horizon-mod-vocab/src/item/containers.rs:224` | the washer's one 10,000 mB water tank |
+| `DefaultCapabilitiesRegistrar::block_fluids` | `crates/horizon-mod-api/src/parts/default_capabilities.rs:43` | the declaration |
+| `FluidResource`, `FLUIDS` | `crates/horizon-mod-vocab/src/block/fluid_capability.rs:68` | the key the harness fills through |
+| the `fluids` list in the entity's saved compound | `hooks/notes.rs:1610` ("the tanks' contents live in the entity's saved compound under `fluids`") | what the tick reads and writes |
+
+`FluidResource` is one of the two resource types the SDK shares between crates (`ItemResource` is the
+other), so unlike `mekanism:chemical` (§9k) a fluid capability is answerable across packages — the
+e2e's read is `(answered by the game)`, not by this port. The one gap that remains is §9l's:
+`native_move_fluids` is a `helpers[]` entry a package cannot call and refuses any fluid but
+water/lava engine-side; this slice does not move fluids between blocks (the machine fills its own tank
+through the key and spends it), so the gap does not block it.
+
+### What the jar says (upstream truth, re-read from `v1.21.1-10.7.19.85`, `a00109e4`)
+
+| value | source | port |
+|---|---|---|
+| usage **200 FE/t** | `UsageConfig.java:67` (`chemicalWasher`, `200L`) | `WASHER_USAGE` |
+| storage **80,000 FE** | `StorageConfig.java:84-85` (`chemicalWasher`, `80_000L, 1`) | `WASHER_CAPACITY` |
+| 200 ticks per operation, so **40,000 FE** | `TileEntityRecipeMachine`'s `BASE_TICKS_REQUIRED` | `WASHER_OPERATION` |
+| water tank **10,000 mB**, input only | `TileEntityChemicalWasher.MAX_FLUID = 10 * BUCKET_VOLUME`; `BasicFluidTank.input(MAX_FLUID, fluid -> containsRecipeAB(...))` | `WASHER_WATER`; `block_fluids` with `inputs [0]`, `outputs []` |
+| two slurry tanks of **10,000**, insert-only in / extract-only out | `MAX_SLURRY = 10 * BUCKET_VOLUME`; `BasicChemicalTank.inputModern` / `.output` | `WASHER_SLURRY`; `WasherTanks` (0 = dirty in, 1 = clean out) |
+| recipe type `mekanism:washing` | `TileEntityChemicalWasher.getRecipeType()` → `MekanismRecipeType.WASHING` | `runtime::washing` |
+| 5 mB water + 1 dirty slurry → 1 clean slurry, **per operation** | `processing/<m>/slurry/clean.json`; `TwoInputCachedRecipe` overrides no `useResources`, so both inputs are taken in `finishProcessing` | `WashRecipe`, `process_wash_tick` |
+| a mismatched recipe (no water, a clean slurry, too little) **resets**; no energy or output room **holds** | `CachedRecipeHelper.twoInputCalculateOperationsThisTick` + `InputHandler.calculateOperationsCanSupport` (`resetProgress`) | `IdleReason::{NoFluid, NoRecipe, NotEnoughInput}` reset; `{NoEnergy, NoOutputSpace}` hold |
+| slurries are chemicals of the same registry, `dirty_`/`clean_` × 7 materials | `MekanismChemicals.PROCESSED_RESOURCES` → `ChemicalDeferredRegister.registerSlurry`; `PrimaryResource` | `runtime::SLURRIES` (14 ids); `known_chemical` accepts them |
+| 7 `mekanism:washing` recipes | one `clean.json` per `PrimaryResource` | 7 rows, every one carried |
+
+### The slice in the port's three layers
+
+- **`src/runtime.rs`** — `SLURRIES` (14 ids) and `known_slurry`, with `known_chemical` now answering
+  both registries; `FluidTank` and `insert_fluid` (water and nothing else — upstream's tank predicate
+  is `containsRecipeAB`, and every washing row takes water); `WashRecipe`, `washing::{recipe_for,
+  ROW_COUNT}` (generated by `tools/gen_washing.py`); `process_wash_tick`, `room_in_tank` and
+  `washer_pull`; the `WASHER_*`/`WATER` constants; `IdleReason::NoFluid`.
+- **`src/support.rs`** — the block's declaration (no container: its inputs are tanks, so upstream's
+  four slots are recorded as a deviation), its 80,000 FE buffer, `block_fluids` (`washer_fluids()`),
+  the `fluids`-list read/write (`read_washer_fluid`/`write_washer_fluid`, the game's own shape),
+  `WasherTanks` (two chemical tanks through `mekanism:chemical`, tank 0 insert-only and tank 1
+  extract-only), `WasherPart` (the tick plus `washer_draw`, which pulls the operation's dirty slurry
+  from a neighbour through the key — the gas machines' recorded "no pipes" deviation), the washer's
+  `/mekanism info` line, `/mekanism fluid read|insert` (through `horizon:fluids`) and
+  `/mekanism chemical drain-tank` (a named tank, so the clean output can be drained).
+- **Content** — `mekanism:chemical_washer` with the jar's **own 28-element model** and its seven
+  textures (`models/ports`, `ports_large`, `ports_led`, `ports_large_led`, `chemical_washer`,
+  `chemical_washer_elements`, `steel_casing`), the blockstate, the block declaration (3.5/16, a tool),
+  loot, the shaped recipe and the lang keys.
+
+### Red → green
+
+The runtime rules and the glue's declarations were written as tests first and ran red on the
+untouched tree (`../_shared/evidence/mekanism/slice8-unit-red.log`):
+
+```
+error[E0425]: cannot find value `WASHER` in this scope
+error[E0425]: cannot find function `process_wash_tick` in this scope
+error: could not compile `mekanism` (lib test) due to 147 previous errors
+```
+
+Then the constants, the slurry table, the generator's washing table, the three-tank tick and the
+declarations made the crate green: **108 tests** (was 92) — 16 new (12 `runtime::washer_tests`, and the
+washer's declaration, water tank, saved shape and info line in `support::tests`).
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the washer block, its block entity, 80,000 FE buffer | **tested** | `A1`/`A2` (give/place/read back), `B2` (loot), `B1` (crafts), `L1` (`80000/80000 FE`) |
+| its one 10,000 mB water tank, filled **through `horizon:fluids`** | **tested** | `L1`: `fluid: inserted 10000 minecraft:water … (10000/10000)`, saved `fluids[0].Amount` 10000, `holds minecraft:water 10000/10000 (answered by the game)` |
+| its two slurry tanks through `mekanism:chemical` (0 dirty in, 1 clean out) | **tested** | `L1` insert `(1000/10000)`, `chemical read` 0 → nothing after the operation; `L4` `drain-tank 250 1` → `drained 1 mekanism:clean_iron (tank 0/10000, dropper 1/16000)` |
+| one washing operation: 200 ticks, 40,000 FE, 5 mB water, 1 dirty in, 1 clean out | **tested** | `L1`: `0/80000 FE, progress 0/200, water 9995/10000 mB, input empty x0, output mekanism:clean_iron x1`; saved `energy` 0, `fluids[0].Amount` 9995, `input_amount` 0, `output_chemical`/`output_amount`; the neighbour tank 1,000 → 999 |
+| a clean slurry in the input: no recipe, no progress, no water, no FE, nothing drawn | **tested** | `L2`: `80000/80000 FE, progress 0/200, water 1000/10000 mB, input mekanism:clean_iron x1000, output empty x0`; the neighbour still 1,000 |
+| dirty slurry beside a machine with no water: no progress, no FE, nothing drawn | **tested** | `L3`: `80000/80000 FE, progress 0/200, water 0/10000 mB, input empty x0, output empty x0`; the neighbour still 1,000 |
+| **all 7 carried washing rows** (water spent, dirty consumed, clean made, one operation's FE) | **tested** | `M`: `rows washed: 7 of 7` (`tools/wash_sweep.py`) |
+| the slurry ids are chemicals of Mekanism's registry | **tested** | unit `the_slurry_table_is_mekanism_s_fourteen_chemicals`; `L2` inserts `mekanism:clean_iron` through the key |
+| water is not a chemical / a chemical tank is not a fluid tank | **tested** | `L4`: `unknown chemical minecraft:water`; `no fluid handler at 0 72 4` |
+| the washer's three tanks survive save + relaunch | **tested** | persistence: `0/80000 FE, progress 67/200, water 1000/10000 mB, input mekanism:dirty_iron x10, output empty x0` before and after |
+| the washer's four container slots (bucket in, dropper out, energy) | **not ported** | its inputs are tanks; recorded as a deviation (the machine reaches them through the capabilities, and `/mekanism info`/`drain-tank` are the harness's read/write path) |
+| its own GUI | **not ported** | the other machines' gap: no screens in this port |
+| the crystallizer and dissolution chamber (the rest of the slurry chain) | **not ported** | their own machines (`mekanism:crystallizing`, `mekanism:dissolving`); the slurries are ids this port now knows, so they are the next consumer |
+| `active` / `open` face texture | **deviation** | the jar's washer has no `active` state at all; the barrel template's unused `open` state stands in, as on every other machine |
+| upgrades, side configuration, ejector, security | **not ported** | the other machines' gaps |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| runtime + glue tests (RED) | `cargo test --offline` on the untouched tree | **147 errors**, the new API missing (`slice8-unit-red.log`) |
+| tests | `cargo test --offline` | **108 passed**, 0 failed |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`slice8-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`slice8-clippy.log`) |
+| recipe tables | the six `gen_*.py --check` (`HORIZON_RES` set) | 163 / 132 / 148 / 72 / 15 / **7** rows |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` | `Built ./target/horizon-mod/mekanism.hmod` (`slice8-build.log`) |
+| same package twice | the same again | **`cmp` identical** (`slice8-build-second.log`, `slice8-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | `mekanism 0.2.7 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **179,723 B, SHA-256 `38a7bca5…458a4`**, exit 0 (`slice8-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, `FIT-PIN-EXIT:0` (`slice8-fits.log`, sha printed first) |
+| fits, **a different build** | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, `FIT-OTHER-EXIT:0` (`slice8-fits.log`) — the run that proves something |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (233 entries, no packed `Cargo.lock`) |
+| archive shape | `unzip -l mekanism.hmod` | 233 files, no `Cargo.lock` |
+
+The launcher build (`launcher-game.sh build mekanism`, in a lease) printed `Compiling mekanism (1 of
+1)` and produced `native-0a875da-46a111dc6bcd` (`slice8-launcher-build.log`). The stale
+`native-0a875da-c5974b56f2f6` build (same 0.2.7 manifest, older code) was removed first: the
+launcher reuses a build while the manifest is byte-identical, so an edit inside an unpublished
+version is invisible until the old version folder and its export are gone (the slice-7 trap, hit
+once more here because the pull change landed after the first 0.2.7 build).
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`../_shared/evidence/mekanism-e2e/e2e-package.log` → `PASS` + `EXIT:0`, quoted from phases L and M:
+
+```
+== L1: water through horizon:fluids, the tank's slurry through mekanism:chemical, one operation ==
+  chemical insert 1000 mekanism:dirty_iron 0 72 0: chemical: inserted 1000 mekanism:dirty_iron into mekanism:basic_chemical_tank (1000/64000)
+  info(1,72,0): mekanism:chemical_washer: 80000/80000 FE, progress 0/200, water 0/10000 mB, input empty x0, output empty x0
+  chemical read 0 72 0: chemical: mekanism:basic_chemical_tank holds mekanism:dirty_iron 1000/64000 (answered by mekanism)
+  fluid insert 10000 1 72 0: fluid: inserted 10000 minecraft:water into mekanism:chemical_washer (10000/10000)
+  data get block 1 72 0 fluids[0].Amount: 1, 72, 0 has the following block data: 10000
+  fluid read 1 72 0: fluid: mekanism:chemical_washer holds minecraft:water 10000/10000 (answered by the game)
+  info(1,72,0): mekanism:chemical_washer: 0/80000 FE, progress 0/200, water 10000/10000 mB, input empty x0, output empty x0
+  info(1,72,0): mekanism:chemical_washer: 0/80000 FE, progress 0/200, water 9995/10000 mB, input empty x0, output mekanism:clean_iron x1
+  data get block 1 72 0 fluids[0].Amount: 1, 72, 0 has the following block data: 9995
+  data get block 1 72 0 input_amount: 1, 72, 0 has the following block data: 0
+  data get block 1 72 0 output_chemical: 1, 72, 0 has the following block data: "mekanism:clean_iron"
+  data get block 1 72 0 output_amount: 1, 72, 0 has the following block data: 1
+  data get block 1 72 0 energy: 1, 72, 0 has the following block data: 0
+  chemical read 0 72 0: chemical: mekanism:basic_chemical_tank holds mekanism:dirty_iron 999/64000 (answered by mekanism)
+  chemical read 1 72 0: chemical: mekanism:chemical_washer holds nothing 0/10000 (answered by mekanism)
+== L2: a clean slurry in the input makes nothing, draws no water and takes nothing from the tank beside it ==
+  fluid insert 1000 5 72 0: fluid: inserted 1000 minecraft:water into mekanism:chemical_washer (1000/10000)
+  chemical insert 1000 mekanism:clean_iron 5 72 0: chemical: inserted 1000 mekanism:clean_iron into mekanism:chemical_washer (1000/10000)
+  info(5,72,0): mekanism:chemical_washer: 80000/80000 FE, progress 0/200, water 1000/10000 mB, input mekanism:clean_iron x1000, output empty x0
+  energy(5,72,0): 80000
+  chemical read 4 72 0: chemical: mekanism:basic_chemical_tank holds mekanism:dirty_iron 1000/64000 (answered by mekanism)
+== L3: dirty slurry beside a machine with no water spends no FE and draws nothing ==
+  info(8,72,0): mekanism:chemical_washer: 80000/80000 FE, progress 0/200, water 0/10000 mB, input empty x0, output empty x0
+  energy(8,72,0): 80000
+  chemical read 7 72 0: chemical: mekanism:basic_chemical_tank holds mekanism:dirty_iron 1000/64000 (answered by mekanism)
+== L4: water is not a chemical, a chemical tank is not a fluid tank, and the clean slurry drains ==
+  chemical insert 100 minecraft:water 1 72 0: chemical: unknown chemical minecraft:water
+  fluid insert 100 0 72 4: fluid: no fluid handler at 0 72 4
+  chemical drain-tank 250 1 1 72 0: chemical: drained 1 mekanism:clean_iron into the gauge dropper (tank 0/10000, dropper 1/16000)
+== M: every carried washing recipe in a real Chemical Washer ==
+  rows from the jar's mekanism:washing data: 7
+  mekanism:dirty_copper x1 + 5 mB water -> {'mekanism:clean_copper': 1} (water 495, input 0, energy 40000)
+  …
+rows washed: 7 of 7
+sweep PASS: all 7 carried washing recipes ran in a real Chemical Washer with their declared water and
+slurry, the dirty slurry consumed, the clean slurry made, and exactly one operation's water and FE spent
+== persistence: save, quit and relaunch read the block entities back ==
+  before save, washer:  mekanism:chemical_washer: 0/80000 FE, progress 67/200, water 1000/10000 mB, input mekanism:dirty_iron x10, output empty x0
+  after relaunch, washer: mekanism:chemical_washer: 0/80000 FE, progress 67/200, water 1000/10000 mB, input mekanism:dirty_iron x10, output empty x0
+```
+
+What the numbers prove:
+
+- **the water arrives through the game's own fluid handler**: `fluid: inserted 10000
+  minecraft:water …` is a `FLUIDS` capability insert, the block entity's saved `fluids` list reads
+  `Amount: 10000`, and the read-back names `(answered by the game)` — the engine's provider, not this
+  port's. That is the positive half of "chemicals are not fluids"; the negative half is the same run
+  (`unknown chemical minecraft:water`, `no fluid handler at 0 72 4`);
+- **one operation is exactly the jar's price**: 200 ticks x 200 FE = 40,000 FE (the buffer charged
+  with exactly one operation reads **0** afterwards), **5 mB** of water (10,000 → 9,995) and **one
+  unit** of dirty slurry (the neighbour's 1,000 → 999, pulled through `mekanism:chemical` and spent at
+  the finish) for **one unit** of clean slurry — all four read from the saved data, not from the info
+  line alone;
+- **the tank beside it is the chemical side**: the machine's own 10,000-unit tank is empty after the
+  operation (`holds nothing 0/10000`), so the slurry it spent came through the capability;
+- **water and slurry are spent at the finish, not per tick**: the mid-operation washer (persistence
+  phase) holds all 1,000 mB at progress 67/200;
+- **every row costs what it declares**: each of the 7 washing rows ran in a real washer with 500 mB of
+  water (495 after), its one unit of dirty slurry consumed, its own clean slurry made and 40,000 FE
+  spent;
+- **the state is the block entity's**: after `save`, quit and relaunch the washer still reads
+  `progress 67/200` with its water and its ten units of dirty slurry.
+
+| leg | result | evidence |
+|---|---|---|
+| package (default) | **`PASS` + `EXIT:0`** | `e2e-package.log` |
+| unmodded game (`GAME=$CONTROL_GAME CONTROL=0`) | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** | `e2e-control.log` |
+| fail-capable (`SELFTEST=1`) | **`FAIL: expected /mekanism info at 1,72,0 to say 'output empty x0', got '… output mekanism:clean_iron x1'` + `EXIT:1`** | `e2e-selftest.log` |
+| differential (`NOCABLE=1`) | **`PASS` + `EXIT:0`** (phase L needs no cable and still passes) | `e2e-nocable.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+
+The `SELFTEST=1` flip moved to **this** slice's assertion (it was the basic purifying factory's
+output): the newest family is the one that has to prove it can fail.
+
+### What the harness taught this slice
+
+1. **A machine that keeps working makes an exact FE reading impossible.** The first version charged
+   the full 80,000 FE with 1,000 units in the tank; at any read the washer had done one operation and
+   was 10–30 ticks into the next, so `40000/80000` could never be asserted. The phase now charges
+   **exactly one operation** (40,000 FE) with the buffer's 80,000 proven separately, and the machine
+   stops at 0 FE — which is also the stronger statement (the operation spends exactly 40,000).
+2. **`ctl chat`'s reply is not the command's answer.** The first sweep read the feedback from the
+   `ctl chat` reply and got `''`; every `/mekanism` answer has to be read from the game's
+   `latest.log` (the gas and crushing sweeps already did).
+3. **A `data get` value can hold a colon** (`"mekanism:clean_iron"`): splitting on the last `:` cuts
+   the id in half. The sweep splits on `block data: ` instead.
+4. **The idle assertion has to come before the charge** (the other machines' phases do): once the
+   buffer pays, the machine works one tick per tick and no read catches it at progress 0.
+
+### Gaps after slice 8
+
+Everything in *Gaps / deviations*, *Gaps after the migration* and *Gaps after slices 3–7* still stands
+where it is not superseded. Changed:
+
+- the **Ore Washer is ported**, so the ore-processing chain is now smelter · enrichment · crusher ·
+  injection · purification · **washer**;
+- the port **publishes** the fluid side of a machine too (through the game's `horizon:fluids`), and
+  its chemical id table now carries Mekanism's **14 slurries** (`runtime::SLURRIES`), so the
+  crystallizer, the dissolution chamber and any slurry-consuming mod are unblocked on the ids;
+- the washer has **no container** and **no GUI**: its four upstream slots (a bucket in, a dropper out,
+  an energy slot) are recorded as a deviation, and `/mekanism info`, `/mekanism fluid read|insert`
+  and `/mekanism chemical drain-tank` are the harness's read/write path;
+- the washer **pulls** its dirty slurry from a neighbour (one operation's worth) instead of being
+  filled by a pipe: the gas machines' recorded deviation, for the same reason (this port ships no
+  pipes).
+
+Still missing: the crystallizer and dissolution chamber (the slurries' other two machines), the
+pigments, the advanced/elite/ultimate tiers, upgrades, side configuration, the mod's own GUIs.
+
+### `## Upstream defects fixed`
+
+None found in this slice. Every number is the jar's own, re-read for this machine; the two behaviours
+that look odd are the artefact's and are carried as they are: the washer's block has **no `active`
+state** (so the barrel template's unused `open` is the only stand-in), and both inputs are consumed
+**at the finish**, not per tick (`TwoInputCachedRecipe` overrides no `useResources`) — the
+mid-operation persistence phase pins the second one.
+
+### Deviations this slice records
+
+- **No container and no GUI**: the four upstream slots are conveniences over the same tanks; the
+  tanks are the interface, reached through the two capabilities.
+- **The machine pulls its slurry** from an adjacent chemical handler, one operation's worth per
+  operation, and only when it could complete one — the gas machines' recorded deviation.
+- **The block is the barrel template** (`facing` × `open`); upstream's washer has only `facing`, so
+  the template's `open` state is never set. Its **model and seven textures are the jar's own** (the
+  28-element model), unlike the other machines' plain cube — the only machine whose authentic model
+  this port could carry unchanged.
+- **The recipe uses vanilla stand-ins**: `IBI/CXC/ITI` with a bucket for the basic fluid tank,
+  redstone for the ultimate circuit and an iron block for the steel casing, around this port's own
+  Basic Chemical Tank (the precedent of the fourteen earlier recipes).
+- **No upgrades, side configuration, ejector or security**, as on every other machine of this port.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices,rust-port
+
+### Changelog (0.2.7) — supersedes 0.2.6
+
+> **0.2.7 — the Chemical Washer, the port's first fluid machine.** It runs the jar's
+> `FluidChemicalToChemicalRecipe` (`mekanism:washing`): **200 FE/t × 200 ticks (40,000 FE an
+> operation)**, an **80,000 FE** insert-only buffer, a **10,000 mB water tank** declared through the
+> game's own **`horizon:fluids`** capability — its contents in the block entity's `fluids` list, so
+> water arrives through a real fluid handler — and **two 10,000-unit slurry tanks** through
+> `mekanism:chemical` (dirty in, clean out), with **5 mB of water and one unit of a dirty slurry
+> turned into one unit of its clean slurry per operation**, at the operation's finish as the jar does.
+> The seven `mekanism:washing` rows (copper, gold, iron, lead, osmium, tin, uranium) are all carried,
+> the port's chemical registry gains Mekanism's **14 slurries** (`dirty_*`/`clean_*`), and the block
+> ships the jar's own 28-element model and seven textures. Worked in the wrong direction in game:
+> water through the fluid key lands in the saved data and is spent 5 mB an operation, dirty slurry
+> arrives through the chemical key (1,000 → 999 for one operation), a clean slurry makes nothing, an
+> empty water tank spends no FE and draws nothing, water is refused by the chemical key, a chemical
+> tank answers no fluid handler, the clean slurry drains through tank 1, and after `save`+relaunch the
+> washer still holds its progress and all three tanks. Package: **233 entries, 179,723 B**, sha256
+> `38a7bca520354e06932a914fbcd70adb0f2c2f12624b74598a855bcc4a7458a4`; `check` exit 0; `fits` `made
+> for` at the pin and `fits` at `0b14f8a`; 108 tests, clippy `-D warnings` clean; in game `PASS` +
+> `EXIT:0` with all 7 washing rows, the unmodded game `EXIT:1`, `SELFTEST=1` `EXIT:1` on the washer's
+> own assertion, `NOCABLE=1` `PASS` + `EXIT:0`.

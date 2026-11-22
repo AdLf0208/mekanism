@@ -7,9 +7,10 @@
 //! state it writes reads back, and the exact lines `/mekanism` answers.
 use mod_api::{
     BlockEntityPart, BlockEntityTickEvent, BlockEntityTickReply, BlockEntityTicksEvent, BlockPart,
-    BlockSide, Capability, CommandSource, Compound, Direction, ENERGY, EnergyHandler, Hand, Host,
-    HostTransaction, Identifier, ItemComponentHandler, ItemPlace, ItemStack, ModContainer,
-    ModEnergyBuffer, Registrar, RegistrationContext, ResourceHandler, ServerHost, Tag, Transaction,
+    BlockSide, Capability, CommandSource, Compound, Direction, ENERGY, EnergyHandler, FLUIDS,
+    FluidKey, FluidResource, FluidStack, Hand, Host, HostTransaction, Identifier,
+    ItemComponentHandler, ItemPlace, ItemStack, ModContainer, ModEnergyBuffer, ModFluidTanks,
+    Registrar, RegistrationContext, ResourceHandler, ServerHost, Tag, Transaction,
 };
 
 use crate::chemical::{CHEMICAL, Chemical, ITEM_CHEMICAL, ITEM_COMPONENT};
@@ -17,15 +18,17 @@ use crate::runtime::{
     CABLE_CAPACITY, CHAMBER_CAPACITY, CHAMBER_OPERATION, CHAMBER_TICKS, CHEMICALS,
     CRUSHER_CAPACITY, CRUSHER_OPERATION, CRUSHER_TICKS, CRUSHING_FACTORY_CAPACITY, CUBE_CAPACITY,
     CUBE_RATE, DROPPER_CAPACITY, EMPTY_CHEMICAL, ENRICHING_FACTORY_CAPACITY, FACTORY_PROCESSES,
-    FACTORY_TICKS, FactoryProcess, GasRecipe, INJECTING_FACTORY_CAPACITY, INJECTING_FACTORY_TANK,
-    INJECTION_CAPACITY, INJECTION_OPERATION, INJECTION_TANK, INJECTION_TICKS, IdleReason,
-    ItemAmount, Machine, MachineRecipe, Operation, Outcome, PURIFY_CAPACITY, PURIFY_OPERATION,
-    PURIFY_TANK, PURIFY_TICKS, PURIFYING_FACTORY_CAPACITY, PURIFYING_FACTORY_TANK,
-    SMELTER_CAPACITY, SMELTER_OPERATION, SMELTER_TICKS, SMELTING_FACTORY_CAPACITY, TANK_CAPACITY,
-    Tank, clamp_energy, crushing, dropper_move, energy_after_extract, energy_after_insert,
-    enriching, extract_chemical, factory_gas_want, gas_pull, injecting, insert_chemical,
-    operations_per_tick, process_factory_tick, process_gas_factory_tick, process_gas_tick,
-    process_tick, purifying, room_for, smelting,
+    FACTORY_TICKS, FactoryProcess, FluidTank, GasRecipe, INJECTING_FACTORY_CAPACITY,
+    INJECTING_FACTORY_TANK, INJECTION_CAPACITY, INJECTION_OPERATION, INJECTION_TANK,
+    INJECTION_TICKS, IdleReason, ItemAmount, Machine, MachineRecipe, Operation, Outcome,
+    PURIFY_CAPACITY, PURIFY_OPERATION, PURIFY_TANK, PURIFY_TICKS, PURIFYING_FACTORY_CAPACITY,
+    PURIFYING_FACTORY_TANK, SLURRIES, SMELTER_CAPACITY, SMELTER_OPERATION, SMELTER_TICKS,
+    SMELTING_FACTORY_CAPACITY, TANK_CAPACITY, Tank, WASHER_CAPACITY, WASHER_OPERATION,
+    WASHER_SLURRY, WASHER_TICKS, WASHER_WATER, WATER, clamp_energy, crushing, dropper_move,
+    energy_after_extract, energy_after_insert, enriching, extract_chemical, factory_gas_want,
+    gas_pull, injecting, insert_chemical, operations_per_tick, process_factory_tick,
+    process_gas_factory_tick, process_gas_tick, process_tick, process_wash_tick, purifying,
+    room_for, room_in_tank, smelting, washer_pull, washing,
 };
 
 /// The five blocks of slices 1-3.
@@ -55,6 +58,10 @@ pub(crate) const CRUSHING_FACTORY: &str = "mekanism:basic_crushing_factory";
 pub(crate) const INJECTING_FACTORY: &str = "mekanism:basic_injecting_factory";
 pub(crate) const PURIFYING_FACTORY: &str = "mekanism:basic_purifying_factory";
 
+/// Slice 8's machine: the Chemical Washer, the port's first machine whose input
+/// is a **fluid** (water) beside a chemical (dirty slurry).
+pub(crate) const WASHER: &str = "mekanism:chemical_washer";
+
 /// The block entity types, in this mod's namespace (`/mekanism` has no
 /// bearing on them). One type per block, as the retired bundle's
 /// `block_entity` hook named the block it was asked about.
@@ -71,6 +78,7 @@ const ENRICHING_FACTORY_TYPE: &str = "basic_enriching_factory";
 const CRUSHING_FACTORY_TYPE: &str = "basic_crushing_factory";
 const INJECTING_FACTORY_TYPE: &str = "basic_injecting_factory";
 const PURIFYING_FACTORY_TYPE: &str = "basic_purifying_factory";
+const WASHER_TYPE: &str = "chemical_washer";
 
 /// A machine's menu slots: input, unused (the furnace menu's fuel slot) and
 /// output.
@@ -361,6 +369,55 @@ pub(crate) fn declare(registrar: &mut dyn Registrar, context: &RegistrationConte
             context.refuse(&error.to_string());
         }
     }
+    // Slice 8: the Chemical Washer — the same machine shape with a **fluid**
+    // input beside its chemicals. It has no container: its inputs are tanks
+    // (upstream's four slots are container conveniences, recorded as a
+    // deviation), an 80,000 FE buffer, one 10,000 mB water tank declared through
+    // `block_fluids` (the game's own `horizon:fluids`, whose contents live in
+    // the entity's saved `fluids` list), and two 10,000-unit slurry tanks
+    // answered through `mekanism:chemical`: the dirty one it takes and the clean
+    // one it makes.
+    let key = registrar.block_key(WASHER);
+    registrar.block_energy(&key, machine_battery(WASHER_CAPACITY));
+    registrar.block_fluids(&key, washer_fluids());
+    let kind = registrar
+        .block_entity_type(WASHER_TYPE)
+        .blocks(&[WASHER_TYPE])
+        .build();
+    registrar.block_entity_capability(&CHEMICAL, &kind, |_, at| {
+        Some(Box::new(WasherTanks {
+            side: at,
+            capacity: WASHER_SLURRY,
+        }) as Box<dyn ResourceHandler<Chemical>>)
+    });
+    if let Err(error) = registrar.block_entity_part(&kind, WasherPart) {
+        context.refuse(&error.to_string());
+    }
+    // The fluid key the machine's tank takes, resolved once at registration: a
+    // `FluidKey` is a load-owned slot handle, and `/mekanism fluid insert` builds
+    // its `FluidStack` from it (the mod API offers no other way to name a fluid
+    // outside the registrar).
+    if WATER_KEY.set(registrar.fluid_key(WATER)).is_err() {
+        context.refuse("mekanism: the water fluid key was resolved twice");
+    }
+}
+
+/// The one fluid the washer's tank takes, kept as the registration-time key the
+/// fluid capability's calls are built from.
+static WATER_KEY: std::sync::OnceLock<FluidKey> = std::sync::OnceLock::new();
+
+/// The washer's fluid tanks, as `block_fluids` declares them: one 10,000 mB tank
+/// of water that a fill may reach from every face and a drain may not take —
+/// upstream's `BasicFluidTank.input(MAX_FLUID, fluid -> containsRecipeAB(...))`.
+pub(crate) fn washer_fluids() -> ModFluidTanks {
+    // `ModFluidTanks` is `#[non_exhaustive]`: its fields are public but a literal
+    // cannot be built outside the SDK's crate, so it is filled one field at a time.
+    let mut tanks = ModFluidTanks::default();
+    tanks.tanks = vec![i32::try_from(WASHER_WATER).unwrap_or(i32::MAX)];
+    tanks.faces = std::array::from_fn(|_| vec![0]);
+    tanks.inputs = vec![0];
+    tanks.outputs = Vec::new();
+    tanks
 }
 
 /// The smelter's and the chamber's container: three slots every face reaches,
@@ -437,6 +494,7 @@ pub(crate) fn machine_capacity(id: &str) -> Option<i32> {
         CRUSHING_FACTORY => Some(CRUSHING_FACTORY_CAPACITY),
         INJECTING_FACTORY => Some(INJECTING_FACTORY_CAPACITY),
         PURIFYING_FACTORY => Some(PURIFYING_FACTORY_CAPACITY),
+        WASHER => Some(WASHER_CAPACITY),
         CUBE => Some(CUBE_CAPACITY),
         CABLE => Some(CABLE_CAPACITY),
         _ => None,
@@ -453,8 +511,15 @@ pub(crate) fn machine_ticks(id: &str) -> Option<i32> {
         PURIFICATION => Some(PURIFY_TICKS),
         SMELTING_FACTORY | ENRICHING_FACTORY | CRUSHING_FACTORY | INJECTING_FACTORY
         | PURIFYING_FACTORY => Some(FACTORY_TICKS),
+        WASHER => Some(WASHER_TICKS),
         _ => None,
     }
+}
+
+/// Whether the Chemical Washer stands at `id`: its `/mekanism info` line is its
+/// three tanks', not a slot machine's.
+pub(crate) fn is_washer(id: &str) -> bool {
+    id == WASHER
 }
 
 /// Whether one of the five basic factories stands at `id`.
@@ -643,6 +708,37 @@ pub(crate) fn factory_info_text(
         stack_name(&output),
         output.count
     )
+}
+
+/// The `/mekanism info` report line for the Chemical Washer: its buffer, its
+/// progress and its three tanks, each named by what it holds (`empty` at 0).
+pub(crate) fn washer_info_text(
+    id: &str,
+    capacity: i32,
+    machine: Machine,
+    water: &FluidTank,
+    input: &Tank,
+    output: &Tank,
+) -> String {
+    format!(
+        "{id}: {}/{} FE, progress {}/{}, water {}/{} mB, input {} x{}, output {} x{}",
+        machine.energy,
+        capacity,
+        machine.progress,
+        WASHER_TICKS,
+        water.amount,
+        WASHER_WATER,
+        tank_name(input),
+        input.amount,
+        tank_name(output),
+        output.amount
+    )
+}
+
+/// A tank's chemical for a readout, `empty` when it holds none.
+fn tank_name(tank: &Tank) -> String {
+    tank.held()
+        .map_or_else(|| "empty".to_owned(), |(id, _)| id.to_owned())
 }
 
 /// A slot as the pure core's stack, empty when the slot is empty.
@@ -1136,6 +1232,133 @@ impl BlockEntityPart for GasFactoryPart {
     }
 }
 
+/// The Chemical Washer's behaviour: one operation at a time over its three
+/// tanks — a fluid input (water), a chemical input (dirty slurry) and a chemical
+/// output (clean slurry) — and its own 80,000 FE buffer.
+///
+/// It has no container and no menu: upstream's four slots are container
+/// conveniences (a bucket in, a dropper out), recorded as a deviation, so the
+/// tanks are the interface and `/mekanism info` reports them.
+pub(crate) struct WasherPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for WasherPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for WasherPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    /// One server tick: draw the operation's dirty slurry from a neighbour when
+    /// the machine could work (through `mekanism:chemical`, the gas machines'
+    /// recorded deviation: no pipes, so a machine takes what it is about to
+    /// spend), then run one operation's tick over the three tanks and the buffer.
+    /// An idle tick that only held its progress (no energy or no output room)
+    /// changes nothing and answers `Unchanged`; a reset (no water, no recipe) is a
+    /// change, so it is written back.
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        let mut saved = Tag::Compound(event.entity.nbt.clone());
+        let mut machine = read_machine(&saved, WASHER_CAPACITY);
+        machine.progress = machine.progress.clamp(0, (WASHER_TICKS - 1).max(0));
+        let mut water = read_washer_fluid(&saved);
+        let (mut input, mut output) = read_washer_tanks(&saved);
+        let pulled = washer_draw(&machine, &water, &mut input, &output, host, event.pos);
+        let outcome = process_wash_tick(
+            &mut machine,
+            WASHER_OPERATION,
+            &mut water,
+            &mut input,
+            &mut output,
+            WASHER_SLURRY,
+            &washing::recipe_for,
+        );
+        write_state(&mut saved, machine.energy, machine.progress);
+        write_washer_fluid(&mut saved, &water);
+        write_washer_tanks(&mut saved, &input, &output);
+        if let Tag::Compound(nbt) = saved {
+            event.entity.nbt = nbt;
+        }
+        let idle = matches!(
+            outcome,
+            Outcome::Idle(IdleReason::NoEnergy | IdleReason::NoOutputSpace)
+        );
+        if idle && pulled == 0 {
+            *event.reply = BlockEntityTickReply::Unchanged;
+        }
+    }
+}
+
+/// Draw the operation's dirty slurry from an adjacent chemical handler through
+/// [`CHEMICAL`], and answer how much the neighbour gave.
+///
+/// It draws only when the machine could actually complete an operation — water
+/// for it, room for the clean slurry and energy for a tick — so a stalled washer
+/// never siphons a neighbour it cannot use (the defect the gas factories found in
+/// their own first version, pinned here from the start).
+///
+/// Two shapes, because a washer's recipe is chosen by its **chemical** while a gas
+/// machine's is chosen by its input **item**: a tank already holding a slurry the
+/// jar has a row for is topped up with that slurry, and an empty tank asks for a
+/// dirty slurry any neighbour holds, in the table's order (the port ships no
+/// pipes, so a machine takes what it is about to spend — the gas machines'
+/// recorded deviation).
+fn washer_draw(
+    machine: &Machine,
+    water: &FluidTank,
+    input: &mut Tank,
+    output: &Tank,
+    host: &mut dyn ServerHost,
+    pos: [i32; 3],
+) -> u32 {
+    if machine.energy < WASHER_OPERATION.usage {
+        return 0;
+    }
+    let water_ready = water.held().is_some_and(|(fluid, amount)| {
+        fluid == WATER
+            && amount
+                >= washing::recipe_for("mekanism:dirty_iron")
+                    .map_or(1, |recipe| recipe.fluid_amount)
+    });
+    if !water_ready {
+        return 0;
+    }
+    if let Some((dirty, _)) = input.held() {
+        let Some(recipe) = washing::recipe_for(dirty) else {
+            return 0;
+        };
+        if room_in_tank(output, recipe.output, recipe.output_amount, WASHER_SLURRY)
+            < recipe.output_amount
+        {
+            return 0;
+        }
+        let Some((chemical, want)) = washer_pull(&recipe, input) else {
+            return 0;
+        };
+        let pulled = pull_chemical(host, pos, chemical, want);
+        let _ = insert_chemical(input, chemical, pulled, WASHER_SLURRY);
+        return pulled;
+    }
+    // An empty tank: a recipe's output must have room before any is drawn, and
+    // every washing row makes one unit of its own clean slurry.
+    for dirty in SLURRIES {
+        let Some(recipe) = washing::recipe_for(dirty) else {
+            continue;
+        };
+        if room_in_tank(output, recipe.output, recipe.output_amount, WASHER_SLURRY)
+            < recipe.output_amount
+        {
+            return 0;
+        }
+        let pulled = pull_chemical(host, pos, dirty, recipe.chemical_amount);
+        if pulled > 0 {
+            let _ = insert_chemical(input, dirty, pulled, WASHER_SLURRY);
+            return pulled;
+        }
+    }
+    0
+}
+
 /// The state one gas-machine tick works on, bundled so the top-up and the
 /// operation read the same view of it.
 struct GasTick<'a> {
@@ -1276,6 +1499,216 @@ fn tank_patch(tank: &Tank) -> Compound {
     match saved {
         Tag::Compound(nbt) => nbt,
         _ => Compound::new(),
+    }
+}
+
+/// One of the washer's two slurry tanks, from its `input_*`/`output_*` keys.
+fn read_prefixed_tank(saved: &Tag, prefix: &str) -> Tank {
+    let chemical = match saved.get(&format!("{prefix}_chemical")) {
+        Some(Tag::String(id)) => Some(id.to_string_lossy()),
+        _ => None,
+    };
+    let amount = u32::try_from(int(saved, &format!("{prefix}_amount")).max(0)).unwrap_or(0);
+    match chemical {
+        Some(id) if amount > 0 && id != EMPTY_CHEMICAL => Tank {
+            chemical: Some(id),
+            amount,
+        },
+        _ => Tank::default(),
+    }
+}
+
+/// Write one of the washer's slurry tanks, as [`read_prefixed_tank`] reads it.
+fn write_prefixed_tank(saved: &mut Tag, prefix: &str, tank: &Tank) {
+    if let Tag::Compound(nbt) = saved {
+        let (chemical, amount) = tank.held().unwrap_or((EMPTY_CHEMICAL, 0));
+        let id_key = format!("{prefix}_chemical");
+        let amount_key = format!("{prefix}_amount");
+        nbt.insert(id_key.as_str().into(), Tag::String(chemical.into()));
+        nbt.insert(
+            amount_key.as_str().into(),
+            Tag::Int(i32::try_from(amount).unwrap_or(i32::MAX)),
+        );
+    }
+}
+
+/// The washer's two slurry tanks as its saved compound holds them: the dirty
+/// one it takes, then the clean one it makes.
+pub(crate) fn read_washer_tanks(saved: &Tag) -> (Tank, Tank) {
+    (
+        read_prefixed_tank(saved, "input"),
+        read_prefixed_tank(saved, "output"),
+    )
+}
+
+/// Write the washer's two slurry tanks into its saved compound.
+pub(crate) fn write_washer_tanks(saved: &mut Tag, input: &Tank, output: &Tank) {
+    write_prefixed_tank(saved, "input", input);
+    write_prefixed_tank(saved, "output", output);
+}
+
+/// The washer's water tank, as the game's own `fluids` list holds it: the first
+/// tank's `Fluid` and `Amount` (millibuckets), the shape the fluid capability
+/// writes and `/data get block <pos> fluids` reads.
+pub(crate) fn read_washer_fluid(saved: &Tag) -> FluidTank {
+    let Some(Tag::List(list)) = saved.get("fluids") else {
+        return FluidTank::default();
+    };
+    let Some(tank @ Tag::Compound(_)) = list.first() else {
+        return FluidTank::default();
+    };
+    let fluid = match tank.get("Fluid") {
+        Some(Tag::String(id)) if id.to_string_lossy() != "minecraft:empty" => {
+            Some(id.to_string_lossy())
+        }
+        _ => None,
+    };
+    let amount = match tank.get("Amount") {
+        Some(Tag::Int(amount)) => u32::try_from((*amount).max(0)).unwrap_or(0),
+        _ => 0,
+    };
+    match fluid {
+        Some(fluid) if amount > 0 => FluidTank {
+            fluid: Some(fluid),
+            amount,
+        },
+        _ => FluidTank::default(),
+    }
+}
+
+/// Write the washer's water tank into the `fluids` list the fluid capability
+/// reads: an emptied tank names `minecraft:empty` at 0 so the tank stays in
+/// place, as the game's own writer does.
+pub(crate) fn write_washer_fluid(saved: &mut Tag, tank: &FluidTank) {
+    if let Tag::Compound(nbt) = saved {
+        let (fluid, amount) = tank.held().unwrap_or(("minecraft:empty", 0));
+        let mut entry = Compound::new();
+        entry.insert("Fluid".into(), Tag::String(fluid.into()));
+        entry.insert(
+            "Amount".into(),
+            Tag::Int(i32::try_from(amount).unwrap_or(i32::MAX)),
+        );
+        nbt.insert("fluids".into(), Tag::List(vec![Tag::Compound(entry)]));
+    }
+}
+
+/// The chemical capability for the washer: its **two** slurry tanks, tank 0 the
+/// dirty one it takes (insert only, upstream's `inputModern`) and tank 1 the
+/// clean one it makes (extract only, upstream's `output`), both kept in the
+/// entity's saved compound (`input_*`/`output_*`).
+///
+/// Each call reads the entity and writes it back through `merge_data`, as the
+/// tank block's handler does, so a call from a command, from automation or from
+/// another mod sees the saved data and the chunk is marked changed.
+pub(crate) struct WasherTanks {
+    side: BlockSide,
+    capacity: u32,
+}
+
+impl WasherTanks {
+    /// What the block entity here holds; two empty tanks for a stale one.
+    fn held(&self, host: &mut dyn ServerHost) -> (Tank, Tank) {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return (Tank::default(), Tank::default());
+        };
+        let Some(saved) = entity.data(&*host) else {
+            return (Tank::default(), Tank::default());
+        };
+        read_washer_tanks(&Tag::Compound(saved))
+    }
+
+    /// Write both tanks back into the block entity here: whether it loaded.
+    fn store(&self, host: &mut dyn ServerHost, input: &Tank, output: &Tank) -> bool {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return false;
+        };
+        let mut saved = Tag::Compound(Compound::new());
+        write_washer_tanks(&mut saved, input, output);
+        let Tag::Compound(patch) = saved else {
+            return false;
+        };
+        entity
+            .merge_data(host, patch)
+            .ok()
+            .is_some_and(|loaded| loaded)
+    }
+}
+
+impl ResourceHandler<Chemical> for WasherTanks {
+    fn size(&self, _: &mut dyn ServerHost) -> usize {
+        2
+    }
+
+    fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<Chemical> {
+        let (input, output) = self.held(host);
+        let tank = match index {
+            0 => input,
+            1 => output,
+            _ => return None,
+        };
+        tank.held().and_then(|(id, _)| Chemical::new(id))
+    }
+
+    fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32 {
+        let (input, output) = self.held(host);
+        match index {
+            0 => input.amount,
+            1 => output.amount,
+            _ => 0,
+        }
+    }
+
+    fn capacity(&self, _: &mut dyn ServerHost, index: usize, _: &Chemical) -> u32 {
+        if index < 2 { self.capacity } else { 0 }
+    }
+
+    /// A fill goes into the **input** tank only: the clean one is filled by the
+    /// machine's own operation, as upstream's `BasicChemicalTank.output` is.
+    fn insert(
+        &self,
+        host: &mut dyn ServerHost,
+        _: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index != 0 {
+            return 0;
+        }
+        let (mut input, output) = self.held(host);
+        match insert_chemical(&mut input, chemical.as_str(), amount, self.capacity) {
+            Ok(0) => 0,
+            Ok(went) if self.store(host, &input, &output) => went,
+            Ok(_) => 0,
+            // A chemical Mekanism does not register: the handler cannot name it
+            // back, so it answers 0 (`/mekanism chemical insert` names it).
+            Err(_) => 0,
+        }
+    }
+
+    /// A drain takes from the **output** tank only: the dirty one is
+    /// automation's to fill, not to empty.
+    fn extract(
+        &self,
+        host: &mut dyn ServerHost,
+        _: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index != 1 {
+            return 0;
+        }
+        let (input, mut output) = self.held(host);
+        let came = extract_chemical(&mut output, chemical.as_str(), amount);
+        if came == 0 {
+            return 0;
+        }
+        if self.store(host, &input, &output) {
+            came
+        } else {
+            0
+        }
     }
 }
 
@@ -1602,6 +2035,29 @@ pub(crate) fn chemical_drain(
     pos: [i32; 3],
     amount: u32,
 ) -> String {
+    drain_tank_into_dropper(host, source, pos, 0, amount)
+}
+
+/// `/mekanism chemical drain-tank <amount> <tank> <pos>`: the same drain from a
+/// named tank of a handler with more than one (the washer's output slurry is
+/// tank 1; its tank 0 is the dirty input automation fills).
+pub(crate) fn chemical_drain_tank(
+    host: &mut dyn ServerHost,
+    source: &CommandSource,
+    pos: [i32; 3],
+    tank: usize,
+    amount: u32,
+) -> String {
+    drain_tank_into_dropper(host, source, pos, tank, amount)
+}
+
+fn drain_tank_into_dropper(
+    host: &mut dyn ServerHost,
+    source: &CommandSource,
+    pos: [i32; 3],
+    tank: usize,
+    amount: u32,
+) -> String {
     let CommandSource::Player { player, .. } = source else {
         return "chemical: draining needs a player holding the gauge dropper".to_owned();
     };
@@ -1614,7 +2070,7 @@ pub(crate) fn chemical_drain(
             pos[0], pos[1], pos[2]
         );
     };
-    let Some(held) = handler.resource(host, 0) else {
+    let Some(held) = handler.resource(host, tank) else {
         return "chemical: the tank holds nothing to drain".to_owned();
     };
     let place = ItemPlace::PlayerHand {
@@ -1626,7 +2082,7 @@ pub(crate) fn chemical_drain(
     };
     let asked = dropper_move(amount);
     let moved = host.transaction(|host, tx| {
-        let came = handler.extract(host, tx, 0, &held, asked);
+        let came = handler.extract(host, tx, tank, &held, asked);
         if came == 0 {
             return Ok::<u32, ()>(0);
         }
@@ -1634,17 +2090,17 @@ pub(crate) fn chemical_drain(
         // What the dropper would not take goes back: never lose a chemical to a
         // refused insert.
         if went < came {
-            let _ = handler.insert(host, tx, 0, &held, came - went);
+            let _ = handler.insert(host, tx, tank, &held, came - went);
         }
         Ok(went)
     });
     let moved = moved.unwrap_or(0);
-    let tank = handler.amount(host, 0);
-    let tank_capacity = handler.capacity(host, 0, &held);
+    let held_amount = handler.amount(host, tank);
+    let tank_capacity = handler.capacity(host, tank, &held);
     let dropper = item.amount(host, 0);
     format!(
         "chemical: drained {moved} {held} into the gauge dropper \
-         (tank {tank}/{tank_capacity}, dropper {dropper}/{DROPPER_CAPACITY})"
+         (tank {held_amount}/{tank_capacity}, dropper {dropper}/{DROPPER_CAPACITY})"
     )
 }
 
@@ -1668,6 +2124,78 @@ pub(crate) fn chemical_dropper(host: &mut dyn ServerHost, source: &CommandSource
         }
         None => format!("chemical: the gauge dropper holds nothing 0/{DROPPER_CAPACITY}"),
     }
+}
+
+/// The fluid resource a call is built from: water's, resolved at registration.
+fn water_resource() -> Option<FluidResource> {
+    WATER_KEY
+        .get()
+        .map(|key| FluidResource::of(&FluidStack::new(*key, 1)))
+}
+
+/// A fluid's registry name for a readout (`minecraft:water`).
+fn fluid_name(host: &dyn Host, resource: &FluidResource) -> String {
+    match resource.fluid().key() {
+        Some(key) => key.id(host),
+        None => "an unresolved fluid".to_owned(),
+    }
+}
+
+/// `/mekanism fluid read <pos>`: asks `horizon:fluids` at `pos` — the **game's**
+/// capability, not this port's — and prints what the handler answers.
+pub(crate) fn fluid_read(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
+    let Some(level) = host.level(host.dimension()) else {
+        return format!("fluid: no level for {pos:?}");
+    };
+    let block = level
+        .block(&*host, pos)
+        .map_or_else(|| "nothing".to_owned(), |id| id.id(&*host));
+    let Some(handler) = level.capability(host, &FLUIDS, pos, None) else {
+        return format!(
+            "fluid: no fluid handler at {} {} {}",
+            pos[0], pos[1], pos[2]
+        );
+    };
+    let owner = handler.owner();
+    let held = handler.resource(host, 0);
+    let amount = handler.amount(host, 0);
+    let capacity = water_resource().map_or(0, |probe| handler.capacity(host, 0, &probe));
+    match held {
+        Some(resource) => {
+            let name = fluid_name(&*host, &resource);
+            format!("fluid: {block} holds {name} {amount}/{capacity} (answered by {owner})")
+        }
+        None => format!("fluid: {block} holds nothing 0/{capacity} (answered by {owner})"),
+    }
+}
+
+/// `/mekanism fluid insert <amount> <pos>`: puts up to `amount` millibuckets of
+/// water into the block's tank through `horizon:fluids`, as another mod's crate
+/// would. The tank's own table decides what it takes (the washer's takes water
+/// and nothing else), so a block with no fluid tank, or one that refuses the
+/// fluid, moves nothing.
+pub(crate) fn fluid_insert(host: &mut dyn ServerHost, pos: [i32; 3], amount: u32) -> String {
+    let Some(level) = host.level(host.dimension()) else {
+        return format!("fluid: no level for {pos:?}");
+    };
+    let block = level
+        .block(&*host, pos)
+        .map_or_else(|| "nothing".to_owned(), |id| id.id(&*host));
+    let Some(handler) = level.capability(host, &FLUIDS, pos, None) else {
+        return format!(
+            "fluid: no fluid handler at {} {} {}",
+            pos[0], pos[1], pos[2]
+        );
+    };
+    let Some(water) = water_resource() else {
+        return "fluid: the water fluid key was not resolved at registration".to_owned();
+    };
+    let went = host
+        .transaction(|host, tx| Ok::<u32, ()>(handler.insert(host, tx, 0, &water, amount)))
+        .unwrap_or(0);
+    let held = handler.amount(host, 0);
+    let capacity = handler.capacity(host, 0, &water);
+    format!("fluid: inserted {went} {WATER} into {block} ({held}/{capacity})")
 }
 
 /// Whether one of this port's chemical tanks stands at `pos`: `/mekanism info`
@@ -1705,6 +2233,17 @@ pub(crate) fn info_line(host: &mut dyn ServerHost, pos: [i32; 3]) -> Option<Stri
             capacity,
             read_energy(&saved, capacity),
             &processes,
+        ));
+    }
+    if is_washer(&id) {
+        let (input, output) = read_washer_tanks(&saved);
+        return Some(washer_info_text(
+            &id,
+            capacity,
+            read_machine(&saved, capacity),
+            &read_washer_fluid(&saved),
+            &input,
+            &output,
         ));
     }
     let input = slot_stack(
@@ -2212,6 +2751,127 @@ mod factory_support_tests {
             factory_info_text(PURIFYING_FACTORY, PURIFYING_FACTORY_CAPACITY, 1_000, &mixed),
             "mekanism:basic_purifying_factory: 1000/120000 FE (3 processes), \
              progress 120/200, input mixed x3, output mixed x9"
+        );
+    }
+
+    /// The washer is the shared machine shape with the jar's own numbers, and it
+    /// has **no container**: its inputs are tanks, not slots (`MAX_FLUID` and two
+    /// `MAX_SLURRY` tanks), so `/mekanism info` reports the tanks.
+    #[test]
+    fn the_washer_is_the_jar_s_80_000_fe_buffer_and_three_tanks() {
+        assert_eq!(WASHER, "mekanism:chemical_washer");
+        assert_eq!(WASHER_TYPE, "chemical_washer");
+        assert_eq!(machine_capacity(WASHER), Some(WASHER_CAPACITY));
+        assert_eq!(WASHER_CAPACITY, 80_000, "StorageConfig.chemicalWasher");
+        assert_eq!(machine_ticks(WASHER), Some(WASHER_TICKS));
+        assert_eq!(WASHER_OPERATION.usage, 200, "UsageConfig.chemicalWasher");
+        let buffer = machine_battery(WASHER_CAPACITY);
+        assert_eq!(
+            (buffer.max_insert, buffer.max_extract),
+            (WASHER_CAPACITY, 0),
+            "a machine takes energy and gives none"
+        );
+        assert!(is_washer(WASHER));
+        assert!(!is_washer(CHEMICAL_TANK));
+    }
+
+    /// The washer's one fluid tank: 10,000 mB of water, reachable from every
+    /// face, filled by a capability call and never drained — upstream's
+    /// `BasicFluidTank.input(MAX_FLUID, ...)`.
+    #[test]
+    fn the_washer_declares_one_water_tank_a_fill_may_reach() {
+        let tanks = washer_fluids();
+        assert_eq!(tanks.tanks, vec![WASHER_WATER as i32], "MAX_FLUID");
+        assert_eq!(tanks.inputs, vec![0], "a fill may reach it");
+        assert_eq!(tanks.outputs, Vec::<usize>::new(), "a drain may not");
+        assert_eq!(
+            tanks.faces,
+            std::array::from_fn(|_| vec![0]),
+            "every face reaches the one tank"
+        );
+        // The tank a chemical block declares is none at all.
+        assert!(machine_capacity(CHEMICAL_TANK).is_none());
+    }
+
+    /// The washer's three tanks are saved beside each other: the water in the
+    /// game's `fluids` list (its own shape), the slurries in the port's
+    /// `input_*`/`output_*` keys, and each reads back exactly.
+    #[test]
+    fn the_washer_s_three_tanks_save_and_read_back() {
+        let mut saved = Tag::Compound(Compound::new());
+        write_state(&mut saved, 40_000, 67);
+        write_washer_fluid(&mut saved, &FluidTank::new(WATER, 9_995));
+        write_washer_tanks(
+            &mut saved,
+            &Tank::new("mekanism:dirty_iron", 999),
+            &Tank::new("mekanism:clean_iron", 1),
+        );
+        assert_eq!(
+            read_machine(&saved, WASHER_CAPACITY),
+            Machine {
+                energy: 40_000,
+                progress: 67
+            }
+        );
+        assert_eq!(read_washer_fluid(&saved), FluidTank::new(WATER, 9_995));
+        assert_eq!(
+            read_washer_tanks(&saved),
+            (
+                Tank::new("mekanism:dirty_iron", 999),
+                Tank::new("mekanism:clean_iron", 1)
+            )
+        );
+        // The game's own list shape, so `/data get block` and another mod's
+        // fluid handler read the same bytes.
+        let Tag::List(list) = saved.get("fluids").expect("the fluids list") else {
+            panic!("fluids is not a list");
+        };
+        let tank = &list[0];
+        assert_eq!(
+            tank.get("Fluid"),
+            Some(&Tag::String("minecraft:water".into()))
+        );
+        assert_eq!(tank.get("Amount"), Some(&Tag::Int(9_995)));
+        // An emptied tank writes the empty fluid at 0, not a stale id.
+        write_washer_fluid(&mut saved, &FluidTank::default());
+        assert_eq!(read_washer_fluid(&saved), FluidTank::default());
+        assert_eq!(
+            read_washer_tanks(&Tag::Compound(Compound::new())),
+            (Tank::default(), Tank::default()),
+            "a fresh compound reads as three empty tanks"
+        );
+    }
+
+    /// The line the in-game check asserts, with the numbers it asserts.
+    #[test]
+    fn the_washer_info_line_is_the_one_the_e2e_asserts() {
+        assert_eq!(
+            washer_info_text(
+                WASHER,
+                WASHER_CAPACITY,
+                Machine {
+                    energy: 40_000,
+                    progress: 0
+                },
+                &FluidTank::new(WATER, 9_995),
+                &Tank::new("mekanism:dirty_iron", 999),
+                &Tank::new("mekanism:clean_iron", 1),
+            ),
+            "mekanism:chemical_washer: 40000/80000 FE, progress 0/200, \
+             water 9995/10000 mB, input mekanism:dirty_iron x999, \
+             output mekanism:clean_iron x1"
+        );
+        assert_eq!(
+            washer_info_text(
+                WASHER,
+                WASHER_CAPACITY,
+                Machine::default(),
+                &FluidTank::default(),
+                &Tank::default(),
+                &Tank::default(),
+            ),
+            "mekanism:chemical_washer: 0/80000 FE, progress 0/200, \
+             water 0/10000 mB, input empty x0, output empty x0"
         );
     }
 }
