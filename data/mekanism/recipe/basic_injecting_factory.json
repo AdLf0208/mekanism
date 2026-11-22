@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "A": "minecraft:gold_ingot",
+    "C": "minecraft:redstone",
+    "I": "minecraft:iron_ingot",
+    "P": "mekanism:chemical_injection_chamber"
+  },
+  "pattern": [
+    "ACA",
+    "IPI",
+    "ACA"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:basic_injecting_factory"
+  }
+}

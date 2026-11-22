@@ -1,4 +1,4 @@
-# Mekanism for Horizon — slices 1–6: the ore-processing machines, the cable and the chemical chain.
+# Mekanism for Horizon — slices 1–7: the ore-processing machines, the cable, the chemical chain and the basic factories.
 #
 # Migrated 2026-11-18 from the retired `.hnmod` container (Horizon's mod-API merge
 # #16941; the registry closed every `.hnmod` submission with the format purge).
@@ -13,8 +13,8 @@
 # Local-only until the maintainer approves publishing (ARCHITECTURE.md §8).
 id = "mekanism"
 name = "Mekanism"
-version = "0.2.5"
-description = """A port of Mekanism for Horizon, slices 1-6. The ore-processing machines: the
+version = "0.2.6"
+description = """A port of Mekanism for Horizon, slices 1-7. The ore-processing machines: the
 Energized Smelter, the Enrichment Chamber and the Crusher (50 FE/t, 200 ticks and 10,000 FE per
 operation, a 20,000 FE buffer, three slots and the vanilla furnace menu, the jar's smelting,
 enriching and crushing recipes over the items this port registers), the Basic Energy Cube
@@ -32,10 +32,17 @@ same gas machine on oxygen (200 FE/t, 200 ticks, a 40,000 FE operation, an 80,00
 same 210-unit tank) running the jar's `mekanism:purifying` clump recipes — ore into 3 clumps, raw
 ore into 2, a raw block into 18 and a shard into 1 — and adding the iron, gold and copper clumps and
 dirty dusts, so the jar's chain works end to end: a clump crushes into a dirty dust and that dirty
-dust enriches into a dust. `/mekanism info` and `/mekanism chemical insert|drain` need an operator or
-a player within 8 blocks. Not ported: the rest of Mekanism — the Ore Washer (which needs water),
-factories, the slurries and pigments, upgrades, side configuration, the Configurator, the Digital
-Miner, the Teleporter, jetpacks, the multiblocks and the mod's own GUIs."""
+dust enriches into a dust. Slice 7 is the basic factory family: the five Basic factories (smelting,
+enriching, crushing, injecting and purifying), each running three processes of the same recipe side
+by side — one input and one output slot per process, its own progress, one shared buffer of half the
+base machine's storage per process (30,000 FE for the item machines, 240,000 for the injecting
+factory and 120,000 for the purifying one) and, for the two gas factories, one shared 630-unit tank —
+so three ore in a basic purifying factory become nine clumps for 3 x 40,000 FE and 600 oxygen while
+one ore costs one operation. `/mekanism info` and `/mekanism chemical insert|drain` need an operator
+or a player within 8 blocks. Not ported: the rest of Mekanism — the Ore Washer (which needs water),
+the advanced/elite/ultimate factory tiers, the slurries and pigments, upgrades, side configuration,
+the Configurator, the Digital Miner, the Teleporter, jetpacks, the multiblocks and the mod's own
+GUIs."""
 authors = ["Aidan C. Brady", "AdLf0208"]
 # The content API: exact and checked. This package ships carried content beside its code, so the
 # capability is a real claim; it is also the one value the manifest schema has.

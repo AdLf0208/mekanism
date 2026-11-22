@@ -7,6 +7,11 @@
     "mekanism:basic_energy_cube",
     "mekanism:basic_universal_cable",
     "mekanism:basic_chemical_tank",
-    "mekanism:purification_chamber"
+    "mekanism:purification_chamber",
+    "mekanism:basic_smelting_factory",
+    "mekanism:basic_enriching_factory",
+    "mekanism:basic_crushing_factory",
+    "mekanism:basic_injecting_factory",
+    "mekanism:basic_purifying_factory"
   ]
 }

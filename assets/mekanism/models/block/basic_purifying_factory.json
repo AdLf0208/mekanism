@@ -1,0 +1,12 @@
+{
+  "parent": "mekanism:block/machine",
+  "textures": {
+    "sides": "mekanism:block/factory/purifying/purifying_factory_side",
+    "front": "mekanism:block/factory/purifying/purifying_factory_front",
+    "west": "mekanism:block/factory/purifying/purifying_factory_side",
+    "east": "mekanism:block/factory/purifying/purifying_factory_side",
+    "south": "mekanism:block/factory/purifying/purifying_factory_back",
+    "up": "mekanism:block/factory/purifying/purifying_factory_top",
+    "down": "mekanism:block/factory/purifying/purifying_factory_bottom"
+  }
+}

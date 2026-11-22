@@ -1,4 +1,4 @@
-// The pure core of the Mekanism slices 1-2 port (clean-room rewrite).
+// The pure core of the Mekanism slices 1-7 port (clean-room rewrite).
 //
 // Four machines from Mekanism 10.7.19.85 (MIT), all inside this module's own
 // recipe-driven core where they share one:
@@ -125,6 +125,60 @@ pub const PURIFY_OPERATION: Operation = Operation {
     ticks: PURIFY_TICKS,
     usage: PURIFY_USAGE,
 };
+
+/// How many processes one Basic factory runs (`FactoryTier.BASIC.processes`).
+///
+/// Upstream's tier table is `BASIC 3`, `ADVANCED 5`, `ELITE 7`, `ULTIMATE 9`;
+/// this slice ships the basic tier, which is the only one whose blocks the port
+/// registers.
+pub const FACTORY_PROCESSES: usize = 3;
+
+/// Ticks one factory operation takes (`TileEntityFactory.BASE_TICKS_REQUIRED`,
+/// the same `10 * TICKS_PER_SECOND` the single machines use).
+pub const FACTORY_TICKS: i32 = 200;
+
+/// A Basic factory's buffer: `Factory.setMachineData` takes half the base
+/// machine's `StorageConfig` value — but never less than one operating tick's
+/// usage — and multiplies it by the tier's process count, so a smelting factory
+/// holds `20,000 / 2 × 3 = 30,000` FE.
+#[must_use]
+pub const fn factory_capacity(base_storage: i32, usage: i32, processes: usize) -> i32 {
+    // Upstream multiplies by the double 0.5; every default storage is even, so
+    // integer halving is the same number.
+    let half = base_storage / 2;
+    let per_process = if half > usage { half } else { usage };
+    per_process * processes as i32
+}
+
+/// A gas factory's one tank: `MAX_GAS` per process
+/// (`BasicChemicalTank.createModern(capacity * tier.processes)`).
+#[must_use]
+pub const fn factory_tank(base_tank: u32, processes: usize) -> u32 {
+    base_tank * processes as u32
+}
+
+/// The five basic factories' buffers, each from its base machine's numbers.
+pub const SMELTING_FACTORY_CAPACITY: i32 =
+    factory_capacity(SMELTER_CAPACITY, SMELTER_USAGE, FACTORY_PROCESSES);
+/// The Basic Enriching Factory's buffer (see [`SMELTING_FACTORY_CAPACITY`]).
+pub const ENRICHING_FACTORY_CAPACITY: i32 =
+    factory_capacity(CHAMBER_CAPACITY, CHAMBER_USAGE, FACTORY_PROCESSES);
+/// The Basic Crushing Factory's buffer (see [`SMELTING_FACTORY_CAPACITY`]).
+pub const CRUSHING_FACTORY_CAPACITY: i32 =
+    factory_capacity(CRUSHER_CAPACITY, CRUSHER_USAGE, FACTORY_PROCESSES);
+/// The Basic Injecting Factory's buffer (see [`SMELTING_FACTORY_CAPACITY`]).
+pub const INJECTING_FACTORY_CAPACITY: i32 =
+    factory_capacity(INJECTION_CAPACITY, INJECTION_USAGE, FACTORY_PROCESSES);
+/// The Basic Purifying Factory's buffer (see [`SMELTING_FACTORY_CAPACITY`]).
+pub const PURIFYING_FACTORY_CAPACITY: i32 =
+    factory_capacity(PURIFY_CAPACITY, PURIFY_USAGE, FACTORY_PROCESSES);
+
+/// The Basic Injecting Factory's tank: the injection chamber's 210 per process.
+pub const INJECTING_FACTORY_TANK: u32 = factory_tank(INJECTION_TANK, FACTORY_PROCESSES);
+
+/// The Basic Purifying Factory's tank: the purification chamber's 210 per
+/// process.
+pub const PURIFYING_FACTORY_TANK: u32 = factory_tank(PURIFY_TANK, FACTORY_PROCESSES);
 
 /// One Basic Energy Cube's storage (`EnergyCubeTier.BASIC`).
 pub const CUBE_CAPACITY: i32 = 4_000_000;
@@ -2956,6 +3010,213 @@ pub fn process_gas_tick(
     Outcome::Produced
 }
 
+// ---------------------------------------------------------------------------
+// The basic factories: the same operations, run side by side
+// ---------------------------------------------------------------------------
+
+/// One process of a factory: its own progress in ticks, its own input slot and
+/// its own output slot (`FactoryInputInventorySlot`/`OutputInventorySlot` at
+/// `TileEntityItemToItemFactory`).
+///
+/// The energy buffer and (for a gas factory) the tank are **not** here: one
+/// factory has one of each, and every process draws from it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FactoryProcess {
+    /// Ticks of this process's operation in progress, `0..operation.ticks`.
+    pub progress: i32,
+    /// The items in this process's input slot.
+    pub input: ItemAmount,
+    /// The stack in this process's output slot.
+    pub output: ItemAmount,
+}
+
+/// How many operations one process completes in a tick
+/// (`MekanismUtils.getOperationsPerTick`).
+///
+/// Upstream keeps `operationsPerTick` on the factory (default 1) and raises it
+/// only for a speed-upgraded machine whose operation takes less than a tick, so
+/// that it still finishes in one tick. `ticks_tenths` is the effective operation
+/// length × 10 (2,000 at the unupgraded 200 ticks) and `default_operations` the
+/// process's baseline (1); tenths are enough for every multiplier this port
+/// could carry, and it carries no upgrade system, so the answer is always the
+/// baseline.
+#[must_use]
+pub const fn operations_per_tick(ticks_tenths: i32, default_operations: i32) -> i32 {
+    if ticks_tenths >= 10 {
+        return default_operations;
+    }
+    let divisor = if ticks_tenths < 1 { 1 } else { ticks_tenths };
+    let operations = default_operations * 10 / divisor;
+    if operations < 1 { 1 } else { operations }
+}
+
+/// One tick of an item factory — smelting, enriching or crushing.
+///
+/// Every process runs the shared operation over **one** energy buffer: a factory
+/// with three working processes spends three times what one machine would
+/// (`energy_per_tick × processes`), and a process with no energy of its own left
+/// in the buffer holds its progress while the ones before it keep working.
+/// `limits[i]` is process `i`'s output stack size, `operations` is
+/// [`operations_per_tick`]'s answer.
+///
+/// # Panics
+/// When `limits` and `processes` differ in length: one stack limit per process
+/// is the caller's invariant.
+pub fn process_factory_tick(
+    energy: &mut i32,
+    processes: &mut [FactoryProcess],
+    operation: Operation,
+    limits: &[u32],
+    operations: i32,
+    lookup: &dyn Fn(&str) -> Option<MachineRecipe>,
+) -> Vec<Outcome> {
+    assert_eq!(
+        limits.len(),
+        processes.len(),
+        "one stack limit per factory process"
+    );
+    let mut outcomes = Vec::with_capacity(processes.len());
+    for (process, limit) in processes.iter_mut().zip(limits) {
+        let mut outcome = Outcome::Idle(IdleReason::NoInput);
+        for _ in 0..operations.max(1) {
+            let mut machine = Machine {
+                energy: *energy,
+                progress: process.progress,
+            };
+            outcome = process_tick(
+                &mut machine,
+                operation,
+                &mut process.input,
+                &mut process.output,
+                *limit,
+                lookup,
+            );
+            *energy = machine.energy;
+            process.progress = machine.progress;
+            if !matches!(outcome, Outcome::Produced) {
+                break;
+            }
+        }
+        outcomes.push(outcome);
+    }
+    outcomes
+}
+
+/// One tick of a gas factory — the Basic Injecting and Basic Purifying
+/// factories: the item factory's rules over one energy buffer **and** one tank,
+/// so every working process draws its own tick's gas
+/// (`3 × per_tick` for three processes) and a foreign or short gas holds them
+/// all.
+///
+/// # Panics
+/// When `limits` and `processes` differ in length, as
+/// [`process_factory_tick`] does.
+pub fn process_gas_factory_tick(
+    energy: &mut i32,
+    tank: &mut Tank,
+    processes: &mut [FactoryProcess],
+    operation: Operation,
+    limits: &[u32],
+    operations: i32,
+    lookup: &dyn Fn(&str) -> Option<GasRecipe>,
+) -> Vec<Outcome> {
+    assert_eq!(
+        limits.len(),
+        processes.len(),
+        "one stack limit per factory process"
+    );
+    let mut outcomes = Vec::with_capacity(processes.len());
+    for (process, limit) in processes.iter_mut().zip(limits) {
+        let mut outcome = Outcome::Idle(IdleReason::NoInput);
+        for _ in 0..operations.max(1) {
+            let mut machine = Machine {
+                energy: *energy,
+                progress: process.progress,
+            };
+            outcome = process_gas_tick(
+                &mut machine,
+                operation,
+                tank,
+                &mut process.input,
+                &mut process.output,
+                *limit,
+                lookup,
+            );
+            *energy = machine.energy;
+            process.progress = machine.progress;
+            if !matches!(outcome, Outcome::Produced) {
+                break;
+            }
+        }
+        outcomes.push(outcome);
+    }
+    outcomes
+}
+
+/// How much gas a gas factory's processes need for this tick: the sum of the
+/// per-tick amounts of the processes that can work, less what the shared tank
+/// already holds.
+///
+/// `energy` is the shared buffer's amount and `operation` the process's cost,
+/// so only the processes this tick can actually pay for are counted, in the same
+/// order [`process_gas_factory_tick`] runs them — a factory with no energy does
+/// not draw a neighbour's gas. Answers `None` when no process can work (an empty
+/// input, no recipe, a full output slot, too little energy), when the tank
+/// already holds the tick's gas, and when it holds a chemical no working recipe
+/// takes.
+#[must_use]
+pub fn factory_gas_want(
+    energy: i32,
+    operation: Operation,
+    tank: &Tank,
+    processes: &[FactoryProcess],
+    limits: &[u32],
+    lookup: &dyn Fn(&str) -> Option<GasRecipe>,
+) -> Option<(&'static str, u32)> {
+    let mut chosen: Option<&'static str> = None;
+    let mut needed = 0u32;
+    let mut affordable = energy;
+    for (process, limit) in processes.iter().zip(limits) {
+        if affordable < operation.usage {
+            break;
+        }
+        if process.input.is_empty() {
+            continue;
+        }
+        let Some(recipe) = lookup(&process.input.item) else {
+            continue;
+        };
+        if room_for(&process.output, &recipe.output, *limit) < recipe.output.count {
+            continue;
+        }
+        // One tank holds one chemical: the one it already holds when a recipe
+        // takes it, otherwise the recipe's own first id.
+        let chemical = match tank.held() {
+            Some((held, _)) => match recipe.chemical.iter().find(|id| **id == held) {
+                Some(id) => *id,
+                None => continue,
+            },
+            None => match recipe.chemical.first() {
+                Some(id) => *id,
+                None => continue,
+            },
+        };
+        if chosen.is_some_and(|already| already != chemical) {
+            continue;
+        }
+        chosen = Some(chemical);
+        needed = needed.saturating_add(recipe.per_tick);
+        affordable -= operation.usage;
+    }
+    let chemical = chosen?;
+    let have = match tank.held() {
+        Some((held, amount)) if held == chemical => amount,
+        _ => 0,
+    };
+    let want = needed.saturating_sub(have);
+    (want > 0).then_some((chemical, want))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4342,5 +4603,351 @@ mod purification_tests {
             None,
             "from_dirty_dust is an enriching recipe, not a purifying one"
         );
+    }
+}
+
+#[cfg(test)]
+mod factory_tests {
+    use super::*;
+
+    /// One factory process holding `count` of `item`, with an empty output.
+    fn process_with(item: &str, count: u32) -> FactoryProcess {
+        FactoryProcess {
+            progress: 0,
+            input: ItemAmount::new(item, count),
+            output: ItemAmount::default(),
+        }
+    }
+
+    /// A basic factory with an ore in every one of its three processes.
+    fn three_ore() -> Vec<FactoryProcess> {
+        vec![process_with("minecraft:iron_ore", 1); 3]
+    }
+
+    /// Run a whole operation's worth of ticks of the item core and answer how
+    /// many operations completed.
+    fn run_item(energy: &mut i32, processes: &mut [FactoryProcess], operation: Operation) -> usize {
+        let limits = [64; FACTORY_PROCESSES];
+        let operations = operations_per_tick(operation.ticks * 10, 1);
+        let mut produced = 0;
+        for _ in 0..operation.ticks {
+            produced += process_factory_tick(
+                energy,
+                processes,
+                operation,
+                &limits,
+                operations,
+                &smelting::lookup,
+            )
+            .iter()
+            .filter(|outcome| **outcome == Outcome::Produced)
+            .count();
+        }
+        produced
+    }
+
+    /// The same over the gas core, with the purifying table.
+    fn run_gas(energy: &mut i32, tank: &mut Tank, processes: &mut [FactoryProcess]) -> usize {
+        let operation = PURIFY_OPERATION;
+        let limits = [64; FACTORY_PROCESSES];
+        let operations = operations_per_tick(operation.ticks * 10, 1);
+        let mut produced = 0;
+        for _ in 0..operation.ticks {
+            produced += process_gas_factory_tick(
+                energy,
+                tank,
+                processes,
+                operation,
+                &limits,
+                operations,
+                &purifying::recipe_for,
+            )
+            .iter()
+            .filter(|outcome| **outcome == Outcome::Produced)
+            .count();
+        }
+        produced
+    }
+
+    /// `FactoryTier.BASIC` is three processes, and `Factory.setMachineData`
+    /// gives the factory half its base machine's storage per process — but never
+    /// less than one tick's usage per process.
+    #[test]
+    fn a_basic_factory_holds_half_its_base_machines_buffer_per_process() {
+        assert_eq!(FACTORY_PROCESSES, 3, "FactoryTier.BASIC.processes");
+        assert_eq!(
+            SMELTING_FACTORY_CAPACITY,
+            factory_capacity(SMELTER_CAPACITY, SMELTER_USAGE, FACTORY_PROCESSES)
+        );
+        assert_eq!(SMELTING_FACTORY_CAPACITY, 30_000, "20,000 / 2 x 3");
+        assert_eq!(ENRICHING_FACTORY_CAPACITY, 30_000);
+        assert_eq!(CRUSHING_FACTORY_CAPACITY, 30_000);
+        assert_eq!(INJECTING_FACTORY_CAPACITY, 240_000, "160,000 / 2 x 3");
+        assert_eq!(PURIFYING_FACTORY_CAPACITY, 120_000, "80,000 / 2 x 3");
+        assert_eq!(
+            factory_capacity(100, 50, 3),
+            150,
+            "the floor is one tick's usage per process"
+        );
+    }
+
+    /// The gas factories' one tank is `MAX_GAS` per process: 630 for a basic
+    /// factory, not the 210 a single machine carries.
+    #[test]
+    fn a_basic_factory_has_a_tank_of_one_machine_s_gas_per_process() {
+        assert_eq!(FACTORY_TICKS, 200, "TileEntityFactory.BASE_TICKS_REQUIRED");
+        assert_eq!(factory_tank(PURIFY_TANK, FACTORY_PROCESSES), 630);
+        assert_eq!(PURIFYING_FACTORY_TANK, 630);
+        assert_eq!(INJECTING_FACTORY_TANK, 630);
+        assert_eq!(
+            PURIFYING_FACTORY_TANK,
+            INJECTION_TANK * FACTORY_PROCESSES as u32
+        );
+    }
+
+    /// `MekanismUtils.getOperationsPerTick`: a whole-tick operation is one per
+    /// tick; a sub-tick one (only a speed-upgraded factory) runs more.
+    #[test]
+    fn a_whole_tick_operation_is_one_operation_per_tick() {
+        assert_eq!(operations_per_tick(FACTORY_TICKS * 10, 1), 1);
+        assert_eq!(
+            operations_per_tick(10, 1),
+            1,
+            "exactly one tick is still one"
+        );
+        assert_eq!(operations_per_tick(5, 1), 2, "half a tick runs two");
+        assert_eq!(operations_per_tick(4, 1), 2, "0.4 ticks runs 2, truncated");
+        assert_eq!(operations_per_tick(0, 1), 10, "a tenth of a tick runs ten");
+    }
+
+    /// Three ore, one per process: three operations complete in one 200-tick
+    /// window, not one after another, and the shared buffer pays for all three.
+    #[test]
+    fn three_ore_in_three_processes_make_three_operations_side_by_side() {
+        let mut energy = SMELTING_FACTORY_CAPACITY;
+        let mut processes = three_ore();
+        assert_eq!(
+            run_item(&mut energy, &mut processes, SMELTER_OPERATION),
+            3,
+            "one operation per process, all in the same 200 ticks"
+        );
+        assert_eq!(
+            processes.iter().map(|p| p.output.count).sum::<u32>(),
+            3,
+            "one ingot each, not three in one slot"
+        );
+        assert!(
+            processes
+                .iter()
+                .all(|p| p.input.is_empty() && p.progress == 0),
+            "every process consumed its ore and reset its progress"
+        );
+        assert_eq!(energy, 0, "three operations at 10,000 FE each");
+    }
+
+    /// One process working costs one operation, not the whole factory: the other
+    /// two idle processes must not be charged.
+    #[test]
+    fn one_process_working_costs_one_operation_not_the_whole_factory() {
+        let mut energy = SMELTING_FACTORY_CAPACITY;
+        let mut processes = vec![
+            process_with("minecraft:iron_ore", 1),
+            FactoryProcess::default(),
+            FactoryProcess::default(),
+        ];
+        assert_eq!(run_item(&mut energy, &mut processes, SMELTER_OPERATION), 1);
+        assert_eq!(processes[0].output.count, 1);
+        assert_eq!(processes[1].output, ItemAmount::default());
+        assert_eq!(processes[2].output, ItemAmount::default());
+        assert_eq!(energy, 20_000, "10,000 FE, not the factory's 30,000");
+    }
+
+    /// The buffer is shared and each working process draws its own tick: 40,000
+    /// FE at 3 x 200 FE/t buys exactly 200 progress ticks in total, so no
+    /// operation completes. A factory that charged once per tick would have
+    /// finished all three.
+    #[test]
+    fn the_shared_buffer_pays_for_every_working_process() {
+        let mut energy = 40_000;
+        let mut tank = Tank::new("mekanism:oxygen", 4_000);
+        let mut processes = three_ore();
+        assert_eq!(run_gas(&mut energy, &mut tank, &mut processes), 0);
+        assert!(
+            processes.iter().all(|p| p.output.is_empty()),
+            "nothing completes on a third of the energy"
+        );
+        assert_eq!(
+            processes.iter().map(|p| p.progress).sum::<i32>(),
+            200,
+            "40,000 FE = 200 progress ticks at 200 FE/t, not 600"
+        );
+        assert_eq!(energy, 0);
+        assert_eq!(
+            tank.held(),
+            Some(("mekanism:oxygen", 3_800)),
+            "and only the ticks that ran drew gas"
+        );
+    }
+
+    /// An empty process resets its own progress and leaves its neighbours alone.
+    #[test]
+    fn an_empty_process_resets_while_its_neighbours_keep_working() {
+        let mut energy = SMELTING_FACTORY_CAPACITY;
+        let mut processes = vec![
+            process_with("minecraft:iron_ore", 1),
+            FactoryProcess::default(),
+            process_with("minecraft:iron_ore", 1),
+        ];
+        assert_eq!(run_item(&mut energy, &mut processes, SMELTER_OPERATION), 2);
+        assert_eq!(processes[1].progress, 0, "the empty process resets");
+        assert_eq!(processes[0].output.count, 1);
+        assert_eq!(processes[2].output.count, 1);
+        assert_eq!(energy, 10_000, "two operations at 10,000 FE each");
+    }
+
+    /// The gas factory draws one tick of the gas for every working process: three
+    /// iron ore in a basic purifying factory spend 3 x 200 = 600 units, not 200.
+    #[test]
+    fn a_gas_factory_spends_one_tick_of_each_process_s_gas() {
+        let mut energy = PURIFYING_FACTORY_CAPACITY;
+        let mut tank = Tank::new("mekanism:oxygen", 4_000);
+        let mut processes = three_ore();
+        assert_eq!(run_gas(&mut energy, &mut tank, &mut processes), 3);
+        assert_eq!(
+            processes.iter().map(|p| p.output.count).sum::<u32>(),
+            9,
+            "three clumps per ore, three processes"
+        );
+        assert_eq!(
+            tank.held(),
+            Some(("mekanism:oxygen", 3_400)),
+            "4,000 - 3 x 200"
+        );
+        assert_eq!(energy, 0, "3 x 40,000 FE");
+    }
+
+    /// How much gas the factory's working processes need this tick: the sum of
+    /// their per-tick amounts, less what the shared tank already holds. An idle
+    /// process asks for nothing, and a tank of another gas asks for nothing.
+    #[test]
+    fn a_gas_factory_asks_for_one_tick_of_gas_per_working_process() {
+        let empty = Tank::default();
+        let processes = three_ore();
+        let op = PURIFY_OPERATION;
+        assert_eq!(
+            factory_gas_want(
+                PURIFYING_FACTORY_CAPACITY,
+                op,
+                &empty,
+                &processes,
+                &[64; 3],
+                &purifying::recipe_for
+            ),
+            Some(("mekanism:oxygen", 3)),
+            "three ore, three units this tick"
+        );
+        let one = Tank::new("mekanism:oxygen", 1);
+        assert_eq!(
+            factory_gas_want(
+                PURIFYING_FACTORY_CAPACITY,
+                op,
+                &one,
+                &processes,
+                &[64; 3],
+                &purifying::recipe_for
+            ),
+            Some(("mekanism:oxygen", 2)),
+            "the tank's own unit counts toward the three"
+        );
+        let full = Tank::new("mekanism:oxygen", 3);
+        assert_eq!(
+            factory_gas_want(
+                PURIFYING_FACTORY_CAPACITY,
+                op,
+                &full,
+                &processes,
+                &[64; 3],
+                &purifying::recipe_for
+            ),
+            None,
+            "a tank that already holds the tick's gas is not drawn from"
+        );
+        let idle = [
+            process_with("minecraft:iron_ore", 1),
+            FactoryProcess::default(),
+            FactoryProcess::default(),
+        ];
+        assert_eq!(
+            factory_gas_want(
+                PURIFYING_FACTORY_CAPACITY,
+                op,
+                &empty,
+                &idle,
+                &[64; 3],
+                &purifying::recipe_for
+            ),
+            Some(("mekanism:oxygen", 1)),
+            "an empty process asks for nothing"
+        );
+        let foreign = Tank::new("mekanism:hydrogen_chloride", 4_000);
+        assert_eq!(
+            factory_gas_want(
+                PURIFYING_FACTORY_CAPACITY,
+                op,
+                &foreign,
+                &processes,
+                &[64; 3],
+                &purifying::recipe_for
+            ),
+            None,
+            "a tank of a gas the recipe does not take is not drawn from"
+        );
+        // The buffer pays the processes in order, as the tick does: with one
+        // tick's energy only the first process is paid for, and with none
+        // nothing is drawn at all (the defect the 0.2.6 in-game run found: an
+        // unpowered factory sipped its neighbour's gas).
+        assert_eq!(
+            factory_gas_want(
+                PURIFY_USAGE,
+                op,
+                &empty,
+                &processes,
+                &[64; 3],
+                &purifying::recipe_for
+            ),
+            Some(("mekanism:oxygen", 1)),
+            "one tick's energy buys one process's gas"
+        );
+        assert_eq!(
+            factory_gas_want(0, op, &empty, &processes, &[64; 3], &purifying::recipe_for),
+            None,
+            "no energy, no gas"
+        );
+    }
+
+    /// A gas the recipe does not take holds every process and draws nothing.
+    #[test]
+    fn a_gas_factory_with_a_foreign_gas_holds_every_process() {
+        let mut energy = PURIFYING_FACTORY_CAPACITY;
+        let mut tank = Tank::new("mekanism:hydrogen_chloride", 4_000);
+        let mut processes = three_ore();
+        assert_eq!(run_gas(&mut energy, &mut tank, &mut processes), 0);
+        assert!(processes.iter().all(|p| p.progress == 0));
+        assert_eq!(tank.held(), Some(("mekanism:hydrogen_chloride", 4_000)));
+        assert_eq!(energy, PURIFYING_FACTORY_CAPACITY);
+    }
+
+    /// Each process owns its output slot, so one full slot blocks only itself.
+    #[test]
+    fn a_full_output_slot_blocks_only_its_own_process() {
+        let mut energy = SMELTING_FACTORY_CAPACITY;
+        let mut processes = three_ore();
+        processes[1].output = ItemAmount::new("minecraft:cobblestone", 64);
+        assert_eq!(run_item(&mut energy, &mut processes, SMELTER_OPERATION), 2);
+        assert_eq!(processes[1].progress, 0, "the blocked process stays held");
+        assert_eq!(processes[1].output.item, "minecraft:cobblestone");
+        assert_eq!(processes[0].output.count, 1);
+        assert_eq!(processes[2].output.count, 1);
+        assert_eq!(energy, 10_000);
     }
 }

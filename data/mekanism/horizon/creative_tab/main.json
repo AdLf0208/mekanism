@@ -22,6 +22,11 @@
     "mekanism:clump_copper",
     "mekanism:dirty_dust_iron",
     "mekanism:dirty_dust_gold",
-    "mekanism:dirty_dust_copper"
+    "mekanism:dirty_dust_copper",
+    "mekanism:basic_smelting_factory",
+    "mekanism:basic_enriching_factory",
+    "mekanism:basic_crushing_factory",
+    "mekanism:basic_injecting_factory",
+    "mekanism:basic_purifying_factory"
   ]
 }

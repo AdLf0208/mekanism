@@ -15,13 +15,17 @@ use mod_api::{
 use crate::chemical::{CHEMICAL, Chemical, ITEM_CHEMICAL, ITEM_COMPONENT};
 use crate::runtime::{
     CABLE_CAPACITY, CHAMBER_CAPACITY, CHAMBER_OPERATION, CHAMBER_TICKS, CHEMICALS,
-    CRUSHER_CAPACITY, CRUSHER_OPERATION, CRUSHER_TICKS, CUBE_CAPACITY, CUBE_RATE, DROPPER_CAPACITY,
-    EMPTY_CHEMICAL, GasRecipe, INJECTION_CAPACITY, INJECTION_OPERATION, INJECTION_TANK,
-    INJECTION_TICKS, IdleReason, ItemAmount, Machine, MachineRecipe, Operation, Outcome,
-    PURIFY_CAPACITY, PURIFY_OPERATION, PURIFY_TANK, PURIFY_TICKS, SMELTER_CAPACITY,
-    SMELTER_OPERATION, SMELTER_TICKS, TANK_CAPACITY, Tank, clamp_energy, crushing, dropper_move,
-    energy_after_extract, energy_after_insert, enriching, extract_chemical, gas_pull, injecting,
-    insert_chemical, process_gas_tick, process_tick, purifying, room_for, smelting,
+    CRUSHER_CAPACITY, CRUSHER_OPERATION, CRUSHER_TICKS, CRUSHING_FACTORY_CAPACITY, CUBE_CAPACITY,
+    CUBE_RATE, DROPPER_CAPACITY, EMPTY_CHEMICAL, ENRICHING_FACTORY_CAPACITY, FACTORY_PROCESSES,
+    FACTORY_TICKS, FactoryProcess, GasRecipe, INJECTING_FACTORY_CAPACITY, INJECTING_FACTORY_TANK,
+    INJECTION_CAPACITY, INJECTION_OPERATION, INJECTION_TANK, INJECTION_TICKS, IdleReason,
+    ItemAmount, Machine, MachineRecipe, Operation, Outcome, PURIFY_CAPACITY, PURIFY_OPERATION,
+    PURIFY_TANK, PURIFY_TICKS, PURIFYING_FACTORY_CAPACITY, PURIFYING_FACTORY_TANK,
+    SMELTER_CAPACITY, SMELTER_OPERATION, SMELTER_TICKS, SMELTING_FACTORY_CAPACITY, TANK_CAPACITY,
+    Tank, clamp_energy, crushing, dropper_move, energy_after_extract, energy_after_insert,
+    enriching, extract_chemical, factory_gas_want, gas_pull, injecting, insert_chemical,
+    operations_per_tick, process_factory_tick, process_gas_factory_tick, process_gas_tick,
+    process_tick, purifying, room_for, smelting,
 };
 
 /// The five blocks of slices 1-3.
@@ -42,6 +46,15 @@ pub(crate) const INJECTION: &str = "mekanism:chemical_injection_chamber";
 /// Slice 6's machine: the same gas machine on oxygen.
 pub(crate) const PURIFICATION: &str = "mekanism:purification_chamber";
 
+/// Slice 7's five machines: the basic factory of each item machine this port
+/// runs (`FactoryType.SMELTING`, `ENRICHING`, `CRUSHING`, `INJECTING`,
+/// `PURIFYING`).
+pub(crate) const SMELTING_FACTORY: &str = "mekanism:basic_smelting_factory";
+pub(crate) const ENRICHING_FACTORY: &str = "mekanism:basic_enriching_factory";
+pub(crate) const CRUSHING_FACTORY: &str = "mekanism:basic_crushing_factory";
+pub(crate) const INJECTING_FACTORY: &str = "mekanism:basic_injecting_factory";
+pub(crate) const PURIFYING_FACTORY: &str = "mekanism:basic_purifying_factory";
+
 /// The block entity types, in this mod's namespace (`/mekanism` has no
 /// bearing on them). One type per block, as the retired bundle's
 /// `block_entity` hook named the block it was asked about.
@@ -53,6 +66,11 @@ const CRUSHER_TYPE: &str = "crusher";
 const TANK_TYPE: &str = "basic_chemical_tank";
 const INJECTION_TYPE: &str = "chemical_injection_chamber";
 const PURIFICATION_TYPE: &str = "purification_chamber";
+const SMELTING_FACTORY_TYPE: &str = "basic_smelting_factory";
+const ENRICHING_FACTORY_TYPE: &str = "basic_enriching_factory";
+const CRUSHING_FACTORY_TYPE: &str = "basic_crushing_factory";
+const INJECTING_FACTORY_TYPE: &str = "basic_injecting_factory";
+const PURIFYING_FACTORY_TYPE: &str = "basic_purifying_factory";
 
 /// A machine's menu slots: input, unused (the furnace menu's fuel slot) and
 /// output.
@@ -62,6 +80,12 @@ const OUTPUT_SLOT: usize = 2;
 
 /// How many item slots a machine's container declares (the furnace menu's three).
 const MENU_SLOTS: usize = 3;
+
+/// A factory's slots: one input and one output per process, the inputs first so
+/// that automation can fill a process without knowing the layout.
+const FACTORY_SLOTS: usize = FACTORY_PROCESSES * 2;
+const FACTORY_INPUT_SLOTS: [usize; FACTORY_PROCESSES] = [0, 1, 2];
+const FACTORY_OUTPUT_SLOTS: [usize; FACTORY_PROCESSES] = [3, 4, 5];
 
 /// The vanilla furnace menu's four data slots: flame (stored / capacity) then
 /// arrow (progress / required ticks).
@@ -88,6 +112,26 @@ struct MachineDecl {
 /// tuple trips `clippy::type_complexity`, and the loop then reads as the table
 /// it is).
 struct GasDecl {
+    block: &'static str,
+    kind: &'static str,
+    operation: Operation,
+    capacity: i32,
+    tank: u32,
+    recipe_for: fn(&str) -> Option<GasRecipe>,
+}
+
+/// One basic factory's registration: the block, its block entity type's path,
+/// its operation, its buffer, and the table its processes read.
+struct FactoryDecl {
+    block: &'static str,
+    kind: &'static str,
+    operation: Operation,
+    capacity: i32,
+    lookup: fn(&str) -> Option<MachineRecipe>,
+}
+
+/// A gas factory's registration: the same, plus its one shared tank.
+struct GasFactoryDecl {
     block: &'static str,
     kind: &'static str,
     operation: Operation,
@@ -228,6 +272,95 @@ pub(crate) fn declare(registrar: &mut dyn Registrar, context: &RegistrationConte
             context.refuse(&error.to_string());
         }
     }
+    // Slice 7: the basic factories. The same operations as the five machines
+    // above, run side by side — one input and one output slot per process over
+    // one shared buffer — and, for the two gas factories, over one shared tank
+    // of `MAX_GAS` per process. Upstream draws its own factory GUI, which this
+    // port does not have, so the container declares no menu; automation and
+    // `/mekanism info` reach the six slots.
+    let factories = [
+        FactoryDecl {
+            block: SMELTING_FACTORY,
+            kind: SMELTING_FACTORY_TYPE,
+            operation: SMELTER_OPERATION,
+            capacity: SMELTING_FACTORY_CAPACITY,
+            lookup: smelting::lookup,
+        },
+        FactoryDecl {
+            block: ENRICHING_FACTORY,
+            kind: ENRICHING_FACTORY_TYPE,
+            operation: CHAMBER_OPERATION,
+            capacity: ENRICHING_FACTORY_CAPACITY,
+            lookup: enriching::lookup,
+        },
+        FactoryDecl {
+            block: CRUSHING_FACTORY,
+            kind: CRUSHING_FACTORY_TYPE,
+            operation: CRUSHER_OPERATION,
+            capacity: CRUSHING_FACTORY_CAPACITY,
+            lookup: crushing::lookup,
+        },
+    ];
+    for factory in factories {
+        let key = registrar.block_key(factory.block);
+        registrar.block_container(&key, factory_container());
+        registrar.block_energy(&key, machine_battery(factory.capacity));
+        let kind = registrar
+            .block_entity_type(factory.kind)
+            .blocks(&[factory.kind])
+            .build();
+        let part = FactoryPart {
+            operation: factory.operation,
+            capacity: factory.capacity,
+            lookup: factory.lookup,
+        };
+        if let Err(error) = registrar.block_entity_part(&kind, part) {
+            context.refuse(&error.to_string());
+        }
+    }
+    let gas_factories = [
+        GasFactoryDecl {
+            block: INJECTING_FACTORY,
+            kind: INJECTING_FACTORY_TYPE,
+            operation: INJECTION_OPERATION,
+            capacity: INJECTING_FACTORY_CAPACITY,
+            tank: INJECTING_FACTORY_TANK,
+            recipe_for: injecting::recipe_for,
+        },
+        GasFactoryDecl {
+            block: PURIFYING_FACTORY,
+            kind: PURIFYING_FACTORY_TYPE,
+            operation: PURIFY_OPERATION,
+            capacity: PURIFYING_FACTORY_CAPACITY,
+            tank: PURIFYING_FACTORY_TANK,
+            recipe_for: purifying::recipe_for,
+        },
+    ];
+    for factory in gas_factories {
+        let key = registrar.block_key(factory.block);
+        registrar.block_container(&key, factory_container());
+        registrar.block_energy(&key, machine_battery(factory.capacity));
+        let kind = registrar
+            .block_entity_type(factory.kind)
+            .blocks(&[factory.kind])
+            .build();
+        let tank = factory.tank;
+        registrar.block_entity_capability(&CHEMICAL, &kind, move |_, at| {
+            Some(Box::new(ChemicalTank {
+                side: at,
+                capacity: tank,
+            }) as Box<dyn ResourceHandler<Chemical>>)
+        });
+        let part = GasFactoryPart {
+            operation: factory.operation,
+            capacity: factory.capacity,
+            tank: factory.tank,
+            recipe_for: factory.recipe_for,
+        };
+        if let Err(error) = registrar.block_entity_part(&kind, part) {
+            context.refuse(&error.to_string());
+        }
+    }
 }
 
 /// The smelter's and the chamber's container: three slots every face reaches,
@@ -240,6 +373,20 @@ pub(crate) fn container() -> ModContainer {
         inputs: vec![INPUT_SLOT],
         outputs: vec![OUTPUT_SLOT],
         menu: Some("minecraft:furnace".to_owned()),
+    }
+}
+
+/// A factory's container: one input and one output slot per process, every
+/// face reaching all six, and no vanilla menu (the six-slot factory GUI is
+/// upstream's, which this port does not draw).
+pub(crate) fn factory_container() -> ModContainer {
+    let all = (0..FACTORY_SLOTS).collect::<Vec<_>>();
+    ModContainer {
+        slots: FACTORY_SLOTS,
+        faces: std::array::from_fn(|_| all.clone()),
+        inputs: FACTORY_INPUT_SLOTS.to_vec(),
+        outputs: FACTORY_OUTPUT_SLOTS.to_vec(),
+        menu: None,
     }
 }
 
@@ -285,6 +432,11 @@ pub(crate) fn machine_capacity(id: &str) -> Option<i32> {
         CRUSHER => Some(CRUSHER_CAPACITY),
         INJECTION => Some(INJECTION_CAPACITY),
         PURIFICATION => Some(PURIFY_CAPACITY),
+        SMELTING_FACTORY => Some(SMELTING_FACTORY_CAPACITY),
+        ENRICHING_FACTORY => Some(ENRICHING_FACTORY_CAPACITY),
+        CRUSHING_FACTORY => Some(CRUSHING_FACTORY_CAPACITY),
+        INJECTING_FACTORY => Some(INJECTING_FACTORY_CAPACITY),
+        PURIFYING_FACTORY => Some(PURIFYING_FACTORY_CAPACITY),
         CUBE => Some(CUBE_CAPACITY),
         CABLE => Some(CABLE_CAPACITY),
         _ => None,
@@ -299,8 +451,22 @@ pub(crate) fn machine_ticks(id: &str) -> Option<i32> {
         CRUSHER => Some(CRUSHER_TICKS),
         INJECTION => Some(INJECTION_TICKS),
         PURIFICATION => Some(PURIFY_TICKS),
+        SMELTING_FACTORY | ENRICHING_FACTORY | CRUSHING_FACTORY | INJECTING_FACTORY
+        | PURIFYING_FACTORY => Some(FACTORY_TICKS),
         _ => None,
     }
+}
+
+/// Whether one of the five basic factories stands at `id`.
+pub(crate) fn is_factory(id: &str) -> bool {
+    matches!(
+        id,
+        SMELTING_FACTORY
+            | ENRICHING_FACTORY
+            | CRUSHING_FACTORY
+            | INJECTING_FACTORY
+            | PURIFYING_FACTORY
+    )
 }
 
 /// A saved int, 0 when absent or of another type.
@@ -330,6 +496,54 @@ pub(crate) fn read_progress(saved: &Tag) -> i32 {
     int(saved, "progress").max(0)
 }
 
+/// A factory's saved progress: the `progress` int array upstream writes, one
+/// entry per process, zeros when it is absent or of another length (a factory
+/// saved before this slice, or by another tier).
+pub(crate) fn read_factory_progress(saved: &Tag, processes: usize) -> Vec<i32> {
+    match saved.get("progress") {
+        Some(Tag::IntArray(values)) if values.len() == processes => {
+            values.iter().map(|value| (*value).max(0)).collect()
+        }
+        _ => vec![0; processes],
+    }
+}
+
+/// Write a factory's tick result: the shared buffer's amount and every
+/// process's progress, as the `progress` int array upstream saves.
+pub(crate) fn write_factory_state(saved: &mut Tag, energy: i32, processes: &[FactoryProcess]) {
+    write_energy(saved, energy);
+    if let Tag::Compound(nbt) = saved {
+        let progress = processes.iter().map(|process| process.progress).collect();
+        nbt.insert("progress".into(), Tag::IntArray(progress));
+    }
+}
+
+/// A factory's processes as the pure core reads them: one input and one output
+/// slot per process, and the saved progress.
+fn factory_processes(
+    host: &dyn Host,
+    items: &[Option<ItemStack>],
+    progress: &[i32],
+) -> Vec<FactoryProcess> {
+    (0..FACTORY_PROCESSES)
+        .map(|index| FactoryProcess {
+            progress: progress.get(index).copied().unwrap_or(0),
+            input: slot_stack(
+                host,
+                items
+                    .get(FACTORY_INPUT_SLOTS[index])
+                    .and_then(Option::as_ref),
+            ),
+            output: slot_stack(
+                host,
+                items
+                    .get(FACTORY_OUTPUT_SLOTS[index])
+                    .and_then(Option::as_ref),
+            ),
+        })
+        .collect()
+}
+
 /// Write a buffer's amount: the int `energy` the energy capability reads.
 pub(crate) fn write_energy(saved: &mut Tag, energy: i32) {
     if let Tag::Compound(nbt) = saved {
@@ -347,6 +561,15 @@ pub(crate) fn write_state(saved: &mut Tag, energy: i32, progress: i32) {
     }
 }
 
+/// The name a stack reports in `/mekanism info`: its item id, or `empty`.
+fn stack_name(stack: &ItemAmount) -> String {
+    if stack.is_empty() {
+        "empty".to_owned()
+    } else {
+        stack.item.clone()
+    }
+}
+
 /// The `/mekanism info` report line for one machine.
 pub(crate) fn info_text(
     id: &str,
@@ -356,22 +579,68 @@ pub(crate) fn info_text(
     input: &ItemAmount,
     output: &ItemAmount,
 ) -> String {
-    fn name(stack: &ItemAmount) -> String {
-        if stack.is_empty() {
-            "empty".to_owned()
-        } else {
-            stack.item.clone()
-        }
-    }
     format!(
         "{id}: {}/{} FE, progress {}/{}, input {} x{}, output {} x{}",
         machine.energy,
         capacity,
         machine.progress,
         ticks,
-        name(input),
+        stack_name(input),
         input.count,
-        name(output),
+        stack_name(output),
+        output.count
+    )
+}
+
+/// The sum of a factory's process slots: empty when they all are, the common
+/// item with the summed count when they agree, and `mixed` otherwise — one line
+/// for `/mekanism info`, exactly as a single machine answers.
+pub(crate) fn aggregate_stacks(stacks: &[ItemAmount]) -> ItemAmount {
+    let Some(first) = stacks.iter().find(|stack| !stack.is_empty()) else {
+        return ItemAmount::default();
+    };
+    let count = stacks.iter().map(|stack| stack.count).sum();
+    if stacks
+        .iter()
+        .all(|stack| stack.is_empty() || stack.item == first.item)
+    {
+        ItemAmount::new(&first.item, count)
+    } else {
+        ItemAmount::new("mixed", count)
+    }
+}
+
+/// The `/mekanism info` report line for one factory: its shared buffer, the
+/// furthest-along process, and the sum of its three input and output slots.
+pub(crate) fn factory_info_text(
+    id: &str,
+    capacity: i32,
+    energy: i32,
+    processes: &[FactoryProcess],
+) -> String {
+    let progress = processes
+        .iter()
+        .map(|process| process.progress)
+        .max()
+        .unwrap_or(0);
+    let ticks = machine_ticks(id).unwrap_or(0);
+    let inputs: Vec<ItemAmount> = processes
+        .iter()
+        .map(|process| process.input.clone())
+        .collect();
+    let outputs: Vec<ItemAmount> = processes
+        .iter()
+        .map(|process| process.output.clone())
+        .collect();
+    let input = aggregate_stacks(&inputs);
+    let output = aggregate_stacks(&outputs);
+    format!(
+        "{id}: {energy}/{capacity} FE ({} processes), progress {progress}/{ticks}, \
+         input {} x{}, output {} x{}",
+        processes.len(),
+        stack_name(&input),
+        input.count,
+        stack_name(&output),
         output.count
     )
 }
@@ -676,6 +945,191 @@ impl BlockEntityPart for GasPart {
                 IdleReason::NoEnergy | IdleReason::NoOutputSpace | IdleReason::NoChemical
             )
         );
+        if idle && !resized && pulled == 0 {
+            *event.reply = BlockEntityTickReply::Unchanged;
+        }
+    }
+}
+
+/// A basic item factory's behaviour — the Basic Smelting, Enriching and
+/// Crushing factories: three processes of the shared operation, each with its
+/// own slots and progress, over one shared energy buffer.
+pub(crate) struct FactoryPart {
+    operation: Operation,
+    capacity: i32,
+    lookup: fn(&str) -> Option<MachineRecipe>,
+}
+
+#[mod_api::horizon_part]
+impl BlockPart for FactoryPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for FactoryPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    /// One server tick of all three processes. Every working process spends its
+    /// own tick's energy from the one buffer, so a factory working flat out
+    /// spends three times what a single machine would. An idle tick where every
+    /// process is out of energy or out of output room changes nothing and
+    /// answers `Unchanged`, as the single machines do.
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        let resized = event.entity.items.len() != FACTORY_SLOTS;
+        if resized {
+            event.entity.items.resize(FACTORY_SLOTS, None);
+        }
+        let mut saved = Tag::Compound(event.entity.nbt.clone());
+        let mut energy = read_energy(&saved, self.capacity);
+        let saved_progress = read_factory_progress(&saved, FACTORY_PROCESSES);
+        let mut processes = factory_processes(&*host, &event.entity.items, &saved_progress);
+        let ceiling = (self.operation.ticks - 1).max(0);
+        for process in &mut processes {
+            process.progress = process.progress.clamp(0, ceiling);
+        }
+        let limits: Vec<u32> = processes
+            .iter()
+            .map(|process| stack_limit(&*host, &process.output))
+            .collect();
+        let operations = operations_per_tick(self.operation.ticks * 10, 1);
+        let outcomes = process_factory_tick(
+            &mut energy,
+            &mut processes,
+            self.operation,
+            &limits,
+            operations,
+            &self.lookup,
+        );
+        write_factory_state(&mut saved, energy, &processes);
+        if let Tag::Compound(nbt) = saved {
+            event.entity.nbt = nbt;
+        }
+        for (index, process) in processes.iter().enumerate() {
+            set_slot(
+                &*host,
+                &mut event.entity.items,
+                FACTORY_INPUT_SLOTS[index],
+                &process.input,
+            );
+            set_slot(
+                &*host,
+                &mut event.entity.items,
+                FACTORY_OUTPUT_SLOTS[index],
+                &process.output,
+            );
+        }
+        let idle = outcomes.iter().all(|outcome| {
+            matches!(
+                outcome,
+                Outcome::Idle(IdleReason::NoEnergy | IdleReason::NoOutputSpace)
+            )
+        });
+        if idle && !resized {
+            *event.reply = BlockEntityTickReply::Unchanged;
+        }
+    }
+}
+
+/// A basic gas factory's behaviour — the Basic Injecting and Basic Purifying
+/// factories: the item factory's three processes over one shared tank, which is
+/// topped up from an adjacent chemical handler for every process that can work
+/// this tick.
+pub(crate) struct GasFactoryPart {
+    operation: Operation,
+    capacity: i32,
+    tank: u32,
+    recipe_for: fn(&str) -> Option<GasRecipe>,
+}
+
+#[mod_api::horizon_part]
+impl BlockPart for GasFactoryPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for GasFactoryPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    /// One server tick: draw the gas every working process needs (one tick's
+    /// worth each) through the chemical capability, then run all three. The
+    /// factory holds none of the gas after a working tick: the tank is a buffer,
+    /// as the single machines' 210-unit tanks are.
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        let resized = event.entity.items.len() != FACTORY_SLOTS;
+        if resized {
+            event.entity.items.resize(FACTORY_SLOTS, None);
+        }
+        let mut saved = Tag::Compound(event.entity.nbt.clone());
+        let mut energy = read_energy(&saved, self.capacity);
+        let mut tank = read_tank(&saved);
+        let saved_progress = read_factory_progress(&saved, FACTORY_PROCESSES);
+        let mut processes = factory_processes(&*host, &event.entity.items, &saved_progress);
+        let ceiling = (self.operation.ticks - 1).max(0);
+        for process in &mut processes {
+            process.progress = process.progress.clamp(0, ceiling);
+        }
+        let limits: Vec<u32> = processes
+            .iter()
+            .map(|process| stack_limit(&*host, &process.output))
+            .collect();
+        let pulled = match factory_gas_want(
+            energy,
+            self.operation,
+            &tank,
+            &processes,
+            &limits,
+            &self.recipe_for,
+        ) {
+            Some((chemical, want)) => {
+                let room = self.tank.saturating_sub(tank.amount);
+                let want = want.min(room);
+                if want == 0 {
+                    0
+                } else {
+                    let pulled = pull_chemical(host, event.pos, chemical, want);
+                    let _ = insert_chemical(&mut tank, chemical, pulled, self.tank);
+                    pulled
+                }
+            }
+            None => 0,
+        };
+        let operations = operations_per_tick(self.operation.ticks * 10, 1);
+        let outcomes = process_gas_factory_tick(
+            &mut energy,
+            &mut tank,
+            &mut processes,
+            self.operation,
+            &limits,
+            operations,
+            &self.recipe_for,
+        );
+        write_factory_state(&mut saved, energy, &processes);
+        write_tank(&mut saved, &tank);
+        if let Tag::Compound(nbt) = saved {
+            event.entity.nbt = nbt;
+        }
+        for (index, process) in processes.iter().enumerate() {
+            set_slot(
+                &*host,
+                &mut event.entity.items,
+                FACTORY_INPUT_SLOTS[index],
+                &process.input,
+            );
+            set_slot(
+                &*host,
+                &mut event.entity.items,
+                FACTORY_OUTPUT_SLOTS[index],
+                &process.output,
+            );
+        }
+        let idle = outcomes.iter().all(|outcome| {
+            matches!(
+                outcome,
+                Outcome::Idle(
+                    IdleReason::NoEnergy | IdleReason::NoOutputSpace | IdleReason::NoChemical
+                )
+            )
+        });
         if idle && !resized && pulled == 0 {
             *event.reply = BlockEntityTickReply::Unchanged;
         }
@@ -1240,6 +1694,19 @@ pub(crate) fn info_line(host: &mut dyn ServerHost, pos: [i32; 3]) -> Option<Stri
     let level = host.level(host.dimension())?;
     let entity = host.block_entity(level, pos)?;
     let saved = Tag::Compound(entity.data(&*host)?);
+    if is_factory(&id) {
+        let progress = read_factory_progress(&saved, FACTORY_PROCESSES);
+        let items: Vec<Option<ItemStack>> = (0..FACTORY_SLOTS)
+            .map(|slot| entity.item_slot(&*host, slot as u32).ok().flatten())
+            .collect();
+        let processes = factory_processes(&*host, &items, &progress);
+        return Some(factory_info_text(
+            &id,
+            capacity,
+            read_energy(&saved, capacity),
+            &processes,
+        ));
+    }
     let input = slot_stack(
         &*host,
         entity
@@ -1272,6 +1739,15 @@ pub(crate) fn progress_line(host: &mut dyn ServerHost, pos: [i32; 3]) -> Option<
     let level = host.level(host.dimension())?;
     let entity = host.block_entity(level, pos)?;
     let saved = Tag::Compound(entity.data(&*host)?);
+    if is_factory(&id) {
+        let progress = read_factory_progress(&saved, FACTORY_PROCESSES);
+        let furthest = progress.iter().copied().max().unwrap_or(0);
+        return Some(format!(
+            "Progress {furthest}/{} of {} processes.",
+            machine_ticks(&id).unwrap_or(0),
+            progress.len()
+        ));
+    }
     Some(format!(
         "Progress {}/{}.",
         read_progress(&saved),
@@ -1633,6 +2109,109 @@ mod tests {
             ),
             "mekanism:enrichment_chamber: 0/20000 FE, progress 0/200, input minecraft:iron_ore x1, \
              output mekanism:dust_iron x2"
+        );
+    }
+}
+
+#[cfg(test)]
+mod factory_support_tests {
+    use super::*;
+
+    /// Every basic factory declares one input and one output slot per process,
+    /// and no vanilla menu (upstream draws its own factory GUI, which this port
+    /// does not have).
+    #[test]
+    fn a_basic_factory_declares_one_input_output_pair_per_process() {
+        let container = factory_container();
+        assert_eq!(container.slots, FACTORY_SLOTS, "three pairs");
+        assert_eq!(
+            container.inputs,
+            vec![0, 1, 2],
+            "automation fills the three process inputs"
+        );
+        assert_eq!(
+            container.outputs,
+            vec![3, 4, 5],
+            "and takes the three process outputs"
+        );
+        assert_eq!(
+            container.faces,
+            std::array::from_fn(|_| vec![0, 1, 2, 3, 4, 5]),
+            "every face reaches all six slots: there is no side configuration"
+        );
+        assert_eq!(container.menu, None, "no vanilla menu fits six slots");
+    }
+
+    /// The five basic factories carry the jar's own numbers: half the base
+    /// machine's buffer per process, the base machine's usage, a 200-tick
+    /// operation and (through the gas rows) a 630-unit tank.
+    #[test]
+    fn the_five_basic_factories_declare_the_jar_s_numbers() {
+        assert_eq!(machine_capacity(SMELTING_FACTORY), Some(30_000));
+        assert_eq!(machine_capacity(ENRICHING_FACTORY), Some(30_000));
+        assert_eq!(machine_capacity(CRUSHING_FACTORY), Some(30_000));
+        assert_eq!(machine_capacity(INJECTING_FACTORY), Some(240_000));
+        assert_eq!(machine_capacity(PURIFYING_FACTORY), Some(120_000));
+        assert_eq!(machine_ticks(PURIFYING_FACTORY), Some(FACTORY_TICKS));
+        assert_eq!(machine_ticks(SMELTING_FACTORY), Some(FACTORY_TICKS));
+        let buffer = machine_battery(PURIFYING_FACTORY_CAPACITY);
+        assert_eq!(
+            (buffer.max_insert, buffer.max_extract),
+            (PURIFYING_FACTORY_CAPACITY, 0),
+            "a factory takes energy and gives none"
+        );
+        assert_eq!(
+            INJECTING_FACTORY_TANK, 630,
+            "MAX_GAS x FactoryTier.BASIC.processes"
+        );
+        assert_eq!(PURIFYING_FACTORY_TANK, 630);
+    }
+
+    /// `/mekanism info` at a factory reports the sum of its process slots, so
+    /// nine clumps in three output slots read as `x9` — one line, as the single
+    /// machines answer.
+    #[test]
+    fn a_factory_reports_the_sum_of_its_process_slots() {
+        let processes = [
+            FactoryProcess {
+                progress: 0,
+                input: ItemAmount::default(),
+                output: ItemAmount::new("mekanism:clump_iron", 3),
+            },
+            FactoryProcess {
+                progress: 0,
+                input: ItemAmount::default(),
+                output: ItemAmount::new("mekanism:clump_iron", 3),
+            },
+            FactoryProcess {
+                progress: 0,
+                input: ItemAmount::default(),
+                output: ItemAmount::new("mekanism:clump_iron", 3),
+            },
+        ];
+        assert_eq!(
+            factory_info_text(PURIFYING_FACTORY, PURIFYING_FACTORY_CAPACITY, 0, &processes),
+            "mekanism:basic_purifying_factory: 0/120000 FE (3 processes), \
+             progress 0/200, input empty x0, output mekanism:clump_iron x9"
+        );
+        // Different items in different slots are not summed into a lie.
+        let mixed = [
+            FactoryProcess {
+                progress: 120,
+                input: ItemAmount::new("minecraft:iron_ore", 1),
+                output: ItemAmount::new("mekanism:clump_iron", 3),
+            },
+            FactoryProcess {
+                progress: 120,
+                input: ItemAmount::new("minecraft:copper_ore", 2),
+                output: ItemAmount::new("mekanism:clump_copper", 6),
+            },
+            FactoryProcess::default(),
+        ];
+        assert_eq!(
+            factory_info_text(PURIFYING_FACTORY, PURIFYING_FACTORY_CAPACITY, 1_000, &mixed),
+            "mekanism:basic_purifying_factory: 1000/120000 FE (3 processes), \
+             progress 120/200, input mixed x3, output mixed x9"
         );
     }
 }

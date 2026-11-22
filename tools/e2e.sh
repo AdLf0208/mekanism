@@ -85,10 +85,17 @@
 #     purification chamber makes nothing;
 #  J  the purifying sweep: every carried purifying row (15) runs in a real
 #     chamber, the input consumed and the tank short 200 x its per-tick gas.
+#  K  the five basic factories (slice 7): three processes of the same operation
+#     side by side — three ore in a basic purifying factory become nine clumps
+#     for 3 x 40,000 FE and 3 x 200 oxygen, one ore costs one operation (40,000
+#     and 200), and 40,000 FE buys 200 progress ticks at 3 x 200 FE/t rather
+#     than three operations; a basic smelting factory smelts three ore into
+#     three ingots for its 30,000 FE buffer, an input with no recipe burns
+#     nothing, and a factory's progress array survives save + relaunch.
 #
 # NOCABLE=1 runs the cable scenario without the cable and asserts that the
 # smelter and the chamber stay empty (the differential control passing).
-# SELFTEST=1 flips the purification chamber's output assertion of phase I (it
+# SELFTEST=1 flips the basic purifying factory's output assertion of phase K (it
 # must FAIL): the newest family's own check is the one proven able to fail.
 #
 # CONTROL=1 (needs CONTROL_GAME=<an unmodded horizon-client>) first launches
@@ -130,6 +137,11 @@ DUST=mekanism:dust_iron
 INJECTION=mekanism:chemical_injection_chamber
 SHARD=mekanism:shard_iron
 PURIFICATION=mekanism:purification_chamber
+SMELTING_FACTORY=mekanism:basic_smelting_factory
+ENRICHING_FACTORY=mekanism:basic_enriching_factory
+CRUSHING_FACTORY=mekanism:basic_crushing_factory
+INJECTING_FACTORY=mekanism:basic_injecting_factory
+PURIFYING_FACTORY=mekanism:basic_purifying_factory
 CLUMP=mekanism:clump_iron
 DIRTY=mekanism:dirty_dust_iron
 
@@ -345,6 +357,11 @@ arena() {
     ctl command "execute in minecraft:the_end run fill -8 63 -8 26 63 30 minecraft:stone"
     ctl command "execute in minecraft:the_end run fill -8 64 -8 26 74 30 minecraft:air"
     ctl command "execute in minecraft:the_end run kill @e[type=!player]"
+    # No hostile spawns for the rest of the run: the crafting phase needs
+    # survival (a creative hand does not consume an ingredient), and a wandering
+    # Enderman killed the player mid-check on the 2026-11-22 no-cable leg.
+    ctl command "difficulty peaceful"
+    ctl command "execute in minecraft:the_end run gamerule doMobSpawning false"
     ctl wait 20
 }
 
@@ -410,7 +427,9 @@ arena
 # A. Content: every carried block and item, the unknown id, the loot tables
 # ---------------------------------------------------------------------------
 echo "== A1: every carried block and item is give-able =="
-BLOCKS=("$SMELTER" "$CHAMBER" "$CRUSHER" "$INJECTION" "$PURIFICATION" "$CUBE" "$CABLE" "$TANK")
+BLOCKS=("$SMELTER" "$CHAMBER" "$CRUSHER" "$INJECTION" "$PURIFICATION" "$CUBE" "$CABLE" "$TANK" \
+    "$SMELTING_FACTORY" "$ENRICHING_FACTORY" "$CRUSHING_FACTORY" "$INJECTING_FACTORY" \
+    "$PURIFYING_FACTORY")
 ITEMS=("mekanism:dust_iron" "mekanism:dust_gold" "mekanism:dust_copper" \
     "mekanism:shard_iron" "mekanism:shard_gold" "mekanism:shard_copper" \
     "mekanism:clump_iron" "mekanism:clump_gold" "mekanism:clump_copper" \
@@ -428,15 +447,16 @@ ctl command "clear @s" >/dev/null
 echo "== A2: every block stands where it is put, and an unknown id is refused =="
 i=0
 for id in "${BLOCKS[@]}"; do
-    place "$((-6 + 2 * i))" 64 26 "$id"
+    place "$((-6 + i))" 64 26 "$id"
     i=$((i + 1))
 done
-# Past the array: eight blocks now stand at x=-6..8, so the probe sits at 10
-# (a new member of BLOCKS moves every hard-coded probe, as slice 5 learned).
-end "setblock 10 64 26 mekanism:not_a_block" >/dev/null 2>&1 || true
+# Past the array: thirteen blocks now stand at x=-6..6, so the probe sits at 8
+# (a new member of BLOCKS moves every hard-coded probe, as slices 5 and 6
+# learned).
+end "setblock 8 64 26 mekanism:not_a_block" >/dev/null 2>&1 || true
 ctl wait 3
-[ "$(block_name 10 64 26)" = "minecraft:air" ] \
-    || fail "an unknown block id was accepted: $(block_name 10 64 26)"
+[ "$(block_name 8 64 26)" = "minecraft:air" ] \
+    || fail "an unknown block id was accepted: $(block_name 8 64 26)"
 echo "  ${#BLOCKS[@]} blocks place and read back; an unknown id is refused"
 
 # ---------------------------------------------------------------------------
@@ -661,31 +681,26 @@ ctl wait 6
 # took the energy at all (the exact 40,000 is asserted after the operation).
 expect_energy 1 66 16 "$PURIFICATION" gt 0
 ctl wait 230
-if [ "$SELFTEST" = 1 ]; then
-    echo "(selftest: asserting the chamber's output is still empty)"
-    expect_contains 1 66 16 "$PURIFICATION" "output empty x0"
-else
-    # The jar's c:ores/iron x1 + 1 oxygen per tick -> 3 clumps.
-    expect_contains 1 66 16 "$PURIFICATION" "input empty x0, output $CLUMP x3"
-    # 200 ticks x 200 FE: exactly half the 80,000 buffer.
-    expect_energy 1 66 16 "$PURIFICATION" eq 40000
-    # The oxygen came from the neighbour, through the capability: 4,000 - 200.
-    expect_chem "holds mekanism:oxygen 3800/64000 (answered by mekanism)" \
-        -- read 0 66 16
-    TANK_LEFT=$(block_data 0 66 16 amount)
-    echo "  data get block 0 66 16 amount: $TANK_LEFT"
-    case "$TANK_LEFT" in
-        *"3800"*) ;;
-        *) fail "the neighbour tank should hold 3800 after one operation: $TANK_LEFT" ;;
-    esac
-    MACHINE_GAS=$(block_data 1 66 16 amount)
-    echo "  data get block 1 66 16 amount: $MACHINE_GAS"
-    case "$MACHINE_GAS" in
-        *" 0"*|*": 0"*) ;;
-        *) fail "the chamber's own tank should be empty after the operation: $MACHINE_GAS" ;;
-    esac
-    expect_chem "holds nothing 0/210 (answered by mekanism)" -- read 1 66 16
-fi
+# The jar's c:ores/iron x1 + 1 oxygen per tick -> 3 clumps.
+expect_contains 1 66 16 "$PURIFICATION" "input empty x0, output $CLUMP x3"
+# 200 ticks x 200 FE: exactly half the 80,000 buffer.
+expect_energy 1 66 16 "$PURIFICATION" eq 40000
+# The oxygen came from the neighbour, through the capability: 4,000 - 200.
+expect_chem "holds mekanism:oxygen 3800/64000 (answered by mekanism)" \
+    -- read 0 66 16
+TANK_LEFT=$(block_data 0 66 16 amount)
+echo "  data get block 0 66 16 amount: $TANK_LEFT"
+case "$TANK_LEFT" in
+    *"3800"*) ;;
+    *) fail "the neighbour tank should hold 3800 after one operation: $TANK_LEFT" ;;
+esac
+MACHINE_GAS=$(block_data 1 66 16 amount)
+echo "  data get block 1 66 16 amount: $MACHINE_GAS"
+case "$MACHINE_GAS" in
+    *" 0"*|*": 0"*) ;;
+    *) fail "the chamber's own tank should be empty after the operation: $MACHINE_GAS" ;;
+esac
+expect_chem "holds nothing 0/210 (answered by mekanism)" -- read 1 66 16
 
 echo "== I2: without oxygen, or with the injection chamber's hydrogen chloride, nothing moves =="
 # Two controls in one wait: no neighbour at all (4,66,16), and a neighbour whose
@@ -771,7 +786,7 @@ fi
 # ---------------------------------------------------------------------------
 # B. Recipes: the five shaped recipes in a real table, and the blocks' loot
 # ---------------------------------------------------------------------------
-echo "== B1: the nine carried shaped recipes in a real crafting table =="
+echo "== B1: the fourteen carried shaped recipes in a real crafting table =="
 place 10 64 28 minecraft:crafting_table
 ctl command "execute in minecraft:the_end run tp @s 9.5 64 28.5" >/dev/null
 ctl wait 4
@@ -792,13 +807,13 @@ ctl select minecraft:iron_pickaxe >/dev/null
 ctl wait 2
 i=0
 for id in "${BLOCKS[@]}"; do
-    x=$((-6 + 2 * i))
+    x=$((-6 + i))
     place "$x" 64 26 "$id"
     i=$((i + 1))
 done
 i=0
 for id in "${BLOCKS[@]}"; do
-    x=$((-6 + 2 * i))
+    x=$((-6 + i))
     ctl command "execute in minecraft:the_end run tp @s $((x)).5 64 27.5" >/dev/null
     ctl wait 5
     ctl look-at-block "$x" 64 26 >/dev/null 2>&1 || true
@@ -826,14 +841,9 @@ if [ "$NOCABLE" = 0 ]; then
     say "mekanism energy 10000 0 64 22"
     ctl wait 6
     ctl wait 230
-    if [ "$SELFTEST" = 1 ]; then
-        echo "(selftest: asserting the crusher's output is still empty)"
-        expect_contains 0 64 22 "$CRUSHER" "output empty x0"
-    else
-        expect_contains 0 64 22 "$CRUSHER" "input empty x0, output minecraft:gravel x1"
-        # 200 ticks at 50 FE/t is exactly 10,000 FE: the buffer is emptied.
-        expect_energy 0 64 22 "$CRUSHER" eq 0
-    fi
+    expect_contains 0 64 22 "$CRUSHER" "input empty x0, output minecraft:gravel x1"
+    # 200 ticks at 50 FE/t is exactly 10,000 FE: the buffer is emptied.
+    expect_energy 0 64 22 "$CRUSHER" eq 0
     # The uncharged crusher beside it never started, so its cobblestone is intact.
     expect_contains 2 64 22 "$CRUSHER" "progress 0/200, input minecraft:cobblestone x1, output empty x0"
     expect_energy 2 64 22 "$CRUSHER" eq 0
@@ -937,9 +947,6 @@ ctl wait 420
 if [ "$NOCABLE" = 1 ]; then
     # No cable, no energy: the two ore are still there and nothing smelted.
     expect_contains 0 64 0 "$SMELTER" "progress 0/200, input minecraft:iron_ore x2, output empty x0"
-elif [ "$SELFTEST" = 1 ]; then
-    echo "(selftest: asserting the output is still empty)"
-    expect_contains 0 64 0 "$SMELTER" "output empty x0"
 else
     expect_contains 0 64 0 "$SMELTER" "input empty x0, output minecraft:iron_ingot x2"
 fi
@@ -976,9 +983,6 @@ if [ "$NOCABLE" = 1 ]; then
     expect_contains 0 64 12 "$CHAMBER" "progress 0/200, input minecraft:iron_ore x1, output empty x0"
     expect_energy 0 64 12 "$CHAMBER" eq 0
     expect_energy 2 64 12 "$CUBE" eq 20000
-elif [ "$SELFTEST" = 1 ]; then
-    echo "(selftest: asserting the chamber's output is still empty)"
-    expect_contains 0 64 12 "$CHAMBER" "output empty x0"
 else
     expect_contains 0 64 12 "$CHAMBER" "input empty x0, output $DUST x2"
     # The cube's 20,000 FE all reach the chamber and one operation spends
@@ -987,7 +991,7 @@ else
 fi
 
 echo "== the chain: the chamber's two dust smelt into two more iron ingots =="
-if [ "$NOCABLE" = 1 ] || [ "$SELFTEST" = 1 ]; then
+if [ "$NOCABLE" = 1 ]; then
     echo "  (skipped: no dust was made)"
 else
     # The cube and its cable have done their job. Cutting them leaves the
@@ -1027,6 +1031,93 @@ ctl wait 4
 ctl wait 40
 expect_energy 0 64 16 "$CHAMBER" eq 0
 expect_energy 2 64 16 "$CUBE" eq 10000
+
+
+# ---------------------------------------------------------------------------
+# K. The basic factories (slice 7): three processes side by side
+# ---------------------------------------------------------------------------
+# The jar's numbers, re-read for this machine family: a basic factory runs
+# `FactoryTier.BASIC`'s three processes, each with its own input/output pair
+# and its own progress, over ONE buffer given by `Factory.setMachineData` — half
+# the base machine's storage per process, never less than one tick's usage — and
+# (for the gas factories) one tank of `MAX_GAS` per process. So a basic
+# purifying factory holds 120,000 FE and 630 oxygen, and three ore in its three
+# inputs cost 3 x 40,000 FE and 3 x 200 oxygen. Two counterfactuals keep the
+# numbers honest: ONE ore must cost one operation (40,000 and 200, not three),
+# and 40,000 FE at 3 x 200 FE/t must buy exactly 200 progress ticks — a factory
+# that charged once per tick instead of once per process would finish all three.
+echo "== K1: three ore in three processes become nine clumps for 600 oxygen and 120,000 FE =="
+place 0 70 0 "$TANK"
+expect_chem "inserted 4000 mekanism:oxygen into mekanism:basic_chemical_tank (4000/64000)" \
+    -- insert 4000 mekanism:oxygen 0 70 0
+place 1 70 0 "$PURIFYING_FACTORY"
+for slot in 0 1 2; do
+    ctl command "execute in minecraft:the_end run item replace block 1 70 0 container.$slot with minecraft:iron_ore 1" >/dev/null
+done
+ctl wait 6
+expect_contains 1 70 0 "$PURIFYING_FACTORY" "0/120000 FE (3 processes), progress 0/200, input minecraft:iron_ore x3"
+say "mekanism energy 120000 1 70 0"
+
+echo "== K2: one ore in one process is one operation, not three =="
+place 0 70 4 "$TANK"
+expect_chem "inserted 4000 mekanism:oxygen into mekanism:basic_chemical_tank (4000/64000)" \
+    -- insert 4000 mekanism:oxygen 0 70 4
+place 1 70 4 "$PURIFYING_FACTORY"
+ctl command "execute in minecraft:the_end run item replace block 1 70 4 container.0 with minecraft:iron_ore 1" >/dev/null
+ctl wait 6
+say "mekanism energy 120000 1 70 4"
+
+echo "== K3: the buffer is shared: 40,000 FE buys 200 progress ticks, not three operations =="
+place 0 70 8 "$TANK"
+expect_chem "inserted 4000 mekanism:oxygen into mekanism:basic_chemical_tank (4000/64000)" \
+    -- insert 4000 mekanism:oxygen 0 70 8
+place 1 70 8 "$PURIFYING_FACTORY"
+for slot in 0 1 2; do
+    ctl command "execute in minecraft:the_end run item replace block 1 70 8 container.$slot with minecraft:iron_ore 1" >/dev/null
+done
+ctl wait 6
+say "mekanism energy 40000 1 70 8"
+
+echo "== K4: the item factory path: three ore smelt side by side for the 30,000 FE buffer =="
+place 0 70 12 "$SMELTING_FACTORY"
+for slot in 0 1 2; do
+    ctl command "execute in minecraft:the_end run item replace block 0 70 12 container.$slot with minecraft:iron_ore 1" >/dev/null
+done
+ctl wait 6
+expect_contains 0 70 12 "$SMELTING_FACTORY" "0/30000 FE (3 processes), progress 0/200, input minecraft:iron_ore x3"
+say "mekanism energy 30000 0 70 12"
+
+echo "== K5: a factory with an input it has no recipe for makes no progress and burns nothing =="
+place 0 70 16 "$SMELTING_FACTORY"
+ctl command "execute in minecraft:the_end run item replace block 0 70 16 container.0 with minecraft:diamond 1" >/dev/null
+ctl wait 6
+say "mekanism energy 30000 0 70 16"
+ctl wait 6
+ctl wait 230
+
+if [ "$SELFTEST" = 1 ]; then
+    echo "(selftest: asserting the factory's output is still empty)"
+    expect_contains 1 70 0 "$PURIFYING_FACTORY" "output empty x0"
+else
+    expect_contains 1 70 0 "$PURIFYING_FACTORY" "input empty x0, output mekanism:clump_iron x9"
+    expect_energy 1 70 0 "$PURIFYING_FACTORY" eq 0
+    expect_chem "holds mekanism:oxygen 3400/64000 (answered by mekanism)" -- read 0 70 0
+fi
+# K2: one ore, one process, one operation.
+expect_contains 1 70 4 "$PURIFYING_FACTORY" "input empty x0, output mekanism:clump_iron x3"
+expect_energy 1 70 4 "$PURIFYING_FACTORY" eq 80000
+expect_chem "holds mekanism:oxygen 3800/64000 (answered by mekanism)" -- read 0 70 4
+# K3: no operation completes, the buffer is gone, and exactly 200 units of gas
+# were spent for the 200 charged ticks.
+expect_contains 1 70 8 "$PURIFYING_FACTORY" "0/120000 FE (3 processes), progress 67/200, input minecraft:iron_ore x3, output empty x0"
+expect_energy 1 70 8 "$PURIFYING_FACTORY" eq 0
+expect_chem "holds mekanism:oxygen 3800/64000 (answered by mekanism)" -- read 0 70 8
+# K4: three operations, three ingots, the whole buffer.
+expect_contains 0 70 12 "$SMELTING_FACTORY" "input empty x0, output minecraft:iron_ingot x3"
+expect_energy 0 70 12 "$SMELTING_FACTORY" eq 0
+# K5: the control.
+expect_contains 0 70 16 "$SMELTING_FACTORY" "progress 0/200, input minecraft:diamond x1, output empty x0"
+expect_energy 0 70 16 "$SMELTING_FACTORY" eq 30000
 
 echo "== persistence: save, quit and relaunch read the block entities back =="
 # Cut the smelter's cable so nothing feeds it while it stalls, empty its buffer
@@ -1071,6 +1162,8 @@ case "$AFTER_SMELTER" in
     *" 0/20000 FE, progress 60/200, input minecraft:iron_ore x1"*) ;;
     *) fail "the smelter's energy, progress and slots did not survive the save: $AFTER_SMELTER" ;;
 esac
+echo "  after relaunch, factory: $(info_once 1 70 8 "$PURIFYING_FACTORY")"
+expect_contains 1 70 8 "$PURIFYING_FACTORY" "0/120000 FE (3 processes), progress 67/200, input minecraft:iron_ore x3"
 echo "  (the saved compound survives: FE, progress and slots read back)"
 
 echo "== the chamber opens its three-slot menu =="
@@ -1085,10 +1178,10 @@ jq -e '.ok == true and .screen == "container"' <<<"$state" >/dev/null \
 SCREEN_OPEN=1
 
 if [ "$NOCABLE" = 1 ]; then
-    echo "PASS: the chemical capability works (an insert lands in the tank's saved data, part of it drains into the gauge dropper, an unknown id and a block that answers no chemical both move nothing), its consumers pull a gas from a neighbour through the same capability and spend exactly one operation's worth on one operation (or nothing without a usable gas), and without a cable the charged cube moves no energy into the adjacent smelter or chamber, which never smelt or enrich"
+    echo "PASS: the chemical capability works (an insert lands in the tank's saved data, part of it drains into the gauge dropper, an unknown id and a block that answers no chemical both move nothing), its consumers pull a gas from a neighbour through the same capability and spend exactly one operation's worth on one operation (or nothing without a usable gas), the five basic factories run three processes of the same operation side by side (three ore -> nine clumps for 3 x 40,000 FE and 600 oxygen; one ore -> three clumps for one operation; 40,000 FE buys 200 progress ticks, not three operations), and without a cable the charged cube moves no energy into the adjacent smelter or chamber, which never smelt or enrich"
 elif [ "$SELFTEST" = 1 ]; then
     echo "SELFTEST finished without failing (this is a bug in the test)"
     exit 1
 else
-    echo "PASS: the eight blocks, their nine shaped recipes and their loot tables work, every carried crushing recipe runs in a real crusher, every carried injecting recipe runs in a real chemical injection chamber and every carried purifying recipe in a real purification chamber, both pulling their gas from a neighbour's tank through mekanism:chemical and spending exactly the operation's gas - 200 oxygen for one iron ore into three clumps at 40,000 FE - the jar's chain runs end to end (a clump crushes into a dirty dust and that dirty dust enriches into a dust, while a purification chamber has no row for it), the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input, a no-gas and a wrong-gas neighbour do nothing - the menus open, the machines' FE, progress and slots survive a save and relaunch, and the chemical capability moves one chemical into the tank's saved data, drains part of it into the gauge dropper through the item capability, and refuses an unknown id by name while a block that answers no chemical moves nothing"
+    echo "PASS: the thirteen blocks, their fourteen shaped recipes and their loot tables work, every carried crushing recipe runs in a real crusher, every carried injecting recipe runs in a real chemical injection chamber and every carried purifying recipe in a real purification chamber, both pulling their gas from a neighbour's tank through mekanism:chemical and spending exactly the operation's gas - 200 oxygen for one iron ore into three clumps at 40,000 FE - the jar's chain runs end to end (a clump crushes into a dirty dust and that dirty dust enriches into a dust, while a purification chamber has no row for it), the five basic factories run three processes of the same operation side by side (three ore in the purifying factory become nine clumps for 3 x 40,000 FE and exactly 600 of the neighbour's oxygen, one ore costs one operation, and 40,000 FE buys 200 progress ticks rather than three operations, while a smelting factory turns three ore into three ingots for its 30,000 FE buffer), the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input, a no-gas and a wrong-gas neighbour do nothing - the menus open, the machines' and the factories' FE, progress and slots survive a save and relaunch, and the chemical capability moves one chemical into the tank's saved data, drains part of it into the gauge dropper through the item capability, and refuses an unknown id by name while a block that answers no chemical moves nothing"
 fi

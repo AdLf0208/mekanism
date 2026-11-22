@@ -1,4 +1,4 @@
-# Mekanism → Horizon, slices 1–3 (smelter, enrichment chamber, crusher, cube, cable)
+# Mekanism → Horizon, slices 1–7 (the ore-processing machines, the cable, the chemical chain and the basic factories)
 
 > **0.2.0 (2026-11-18): migrated to the flat SDK package** (`api = "0.2"`, one
 > `impl mod_api::Hooks`, `src/runtime.rs` byte-identical, content at the package
@@ -20,7 +20,7 @@ translated. See `FINDINGS.md` for the files read and the numbers.
 **LOCAL-ONLY** until the maintainer approves publishing (ARCHITECTURE.md §8).
 MIT is licence rank 0 (permissive); the approval is still required.
 
-Status: **slices 1–5 implemented and verified in-game** — an Energized Smelter
+Status: **slices 1–7 implemented and verified in-game** — an Energized Smelter
 (50 FE/t × 200 t, 20,000 FE buffer), an Enrichment Chamber on the same machine
 core (ore → two dust, raw ore 3 → 4, raw block 1 → 12, plus the jar's other
 recipes over items the port registers), a Crusher on the same core (the jar's
@@ -28,8 +28,13 @@ recipes over items the port registers), a Crusher on the same core (the jar's
 (400 FE/t × 200 t, 160,000 FE buffer, a 210-unit gas tank it fills from a
 neighbour through `mekanism:chemical`, the jar's 72 `mekanism:injecting` rows this
 port can finish), a Basic Energy Cube
-(4,000,000 FE) and a Basic Universal Cable (8,000 FE/t). Everything else in
-Mekanism is a planned gap (below).
+(4,000,000 FE), a Basic Universal Cable (8,000 FE/t), the chemical capability
+(one 64,000-unit tank block and a chemical item) and its two consumers (the
+Chemical Injection Chamber and the Purification Chamber), and the **five basic
+factories** — smelting, enriching, crushing, injecting and purifying — each
+running three processes of the same recipe side by side over one buffer and, for
+the two gas factories, one tank. Everything else in Mekanism is a planned gap
+(below).
 
 ## Class + tier, approach, licence
 
@@ -1861,3 +1866,260 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > for` at the pin and `fits` at `0b14f8a`; 78 tests, clippy `-D warnings` clean; in game `PASS` +
 > `EXIT:0` with all 15 purifying rows and the chain proven, the unmodded game `EXIT:1`, `SELFTEST=1`
 > `EXIT:1`, `NOCABLE=1` `PASS` + `EXIT:0`.
+
+## Slice 7 — the basic factory family (0.2.6, 2026-11-22)
+
+### The scope authority, quoted
+
+The slice is the port's own next gap, named by both lists:
+
+> **Factories** (`basic_smelting_factory` etc.): the same recipe in parallel, hearts of the
+> `TileEntityFactory` family; needs multi-operation-per-tick (`operationsPerTick`) and a larger
+> energy buffer. (`FINDINGS.md` "Next slices" 2)
+
+> Ore processing beyond smelting, enriching, crushing and injection … plus factories and the rest of
+> the chain … (`notes.md` "Gaps / deviations" 1)
+
+and the 0.2.5 report's own next-slice proposal: **the basic factory family — `mekanism:basic_purifying_factory`
+plus its four siblings**, the same recipes in parallel, `operationsPerTick`, a larger buffer and one
+input/output pair per process.
+
+**Chosen: all five Basic factories** (`basic_smelting_factory`, `basic_enriching_factory`,
+`basic_crushing_factory`, `basic_injecting_factory`, `basic_purifying_factory`) — one block per item
+machine the port already runs. It fits the **`deep` tier** as a machines-shaped feature (five block
+entities with their own saved state, containers, energy balances, and two capability consumers), and
+it ships nothing the port does not already have a recipe table for.
+
+### What the jar says (upstream truth, re-read for this family)
+
+Every number was re-read from `v1.21.1-10.7.19.85`; none is carried over from slices 5–6, whose
+usage figures differ from each other and from these.
+
+| value | source | port |
+|---|---|---|
+| **three processes** in a basic factory | `common/tier/FactoryTier.java` — `BASIC(BaseTier.BASIC, 3)` | `FACTORY_PROCESSES = 3` |
+| **buffer = max(base storage / 2, base usage) × processes** | `common/content/blocktype/Factory.java` — `setMachineData`: `clampToLong(Math.max(origEnergy.getConfigStorage() * 0.5, origEnergy.getUsage()) * tier.processes)` | `factory_capacity`, so **30,000** FE for smelting/enriching/crushing (20,000/2 × 3), **240,000** for injecting (160,000/2 × 3) and **120,000** for purifying (80,000/2 × 3) |
+| **usage is the base machine's, per process** | `MekanismBlockTypes.…withEnergyConfig(MekanismConfig.usage.<machine>, …)`; `UsageConfig.java`: smelter/enrichment/crusher **50**, purification **200**, injection **400** | `SMELTER_OPERATION`/`CHAMBER_OPERATION`/`CRUSHER_OPERATION`/`PURIFY_OPERATION`/`INJECTION_OPERATION` — a working process spends its own tick, so three working processes cost 3 × usage per tick |
+| **200 ticks per operation** | `TileEntityFactory.BASE_TICKS_REQUIRED = 10 * TICKS_PER_SECOND` | `FACTORY_TICKS = 200` |
+| **one input and one output slot per process** | `TileEntityItemToItemFactory.addSlots`: a `FactoryInputInventorySlot` and an `OutputInventorySlot` at x = base + i × mult, one `FactoryRecipeCacheLookupMonitor` per process | slots 0–2 inputs, 3–5 outputs; one progress per process |
+| **`operationsPerTick`** | `TileEntityFactory.recalculateUpgrades`: `MekanismUtils.getOperationsPerTick(this, BASE_TICKS_REQUIRED, 1)`; `MekanismUtils.java:339` — one per tick unless a speed-upgraded operation takes less than a tick | `operations_per_tick(ticks × 10, 1)`; the port ships no upgrades, so **1**, and the rule is unit-tested |
+| **one shared tank of `MAX_GAS` × processes** | `TileEntityItemStackChemicalToItemStackFactory.getInitialChemicalTanks`: `BasicChemicalTank.inputModern(capacity * tier.processes, …)`, `cap = AttributeFactoryType…` → `TileEntityAdvancedElectricMachine.MAX_GAS` (**210**) | `INJECTING_FACTORY_TANK` = `PURIFYING_FACTORY_TANK` = **630** |
+| **one energy container for all processes** | `TileEntityFactory.getInitialEnergyContainers`: one `MachineEnergyContainer.input(this, …)`; `onUpdateServer` runs each process's monitor against it | one buffer for the block; every process's tick draws from it |
+| recipe type per factory type | `TileEntityItemStackToItemStackFactory.getRecipeType` (SMELTING/ENRICHING/CRUSHING) and `TileEntityItemStackChemicalToItemStackFactory.getRecipeType` (INJECTING/PURIFYING) | the existing `smelting`, `enriching`, `crushing`, `injecting`, `purifying` tables |
+| block 3.5 / 16, `facing` × `active` | `MekanismBlockTypes.getFactory(tier, type)` → `FactoryBuilder`, `blockstates/basic_<type>_factory.json` | barrel template (3.5/16, stone, requires a tool), `facing` × `open` — the other machines' recorded deviation |
+| recipe `mekanism:mek_data`, `ACA/IPI/ACA` over `mekanism:alloys/basic`, `c:circuits/basic`, `c:ingots/iron` and the base machine | `data/mekanism/recipe/factory/basic/<type>.json` | `minecraft:crafting_shaped`, the same pattern and base machine, gold/redstone/iron as the stand-ins (the precedent of the nine earlier recipes) |
+
+### The family, in the port's three layers
+
+- **`src/runtime.rs`** — the `FACTORY_*` constants and the pure rules: `factory_capacity`
+  (`Factory.setMachineData`), `factory_tank`, `operations_per_tick` (`getOperationsPerTick`), the
+  `FactoryProcess` (progress + its own input/output pair), `process_factory_tick` and
+  `process_gas_factory_tick` (the existing single-machine cores run once per process over one shared
+  buffer/tank), and `factory_gas_want` (one tick's gas per **working** process, less what the tank
+  already holds, and nothing at all while the buffer cannot pay for a tick).
+- **`src/support.rs`** — `FactorPart`/`GasFactoryPart` and the two declaration tables
+  (`FactoryDecl`, `GasFactoryDecl`), a six-slot container (`factory_container`, no menu), the
+  `factory_capacity`/`factory_ticks` entries in the two tables `/mekanism` reads, the factory branch
+  of `/mekanism info` (the sum of the three process slots, so nine clumps in three output slots
+  read `x9`), the `progress` **int array** the factory saves (upstream's `SerializationConstants.PROGRESS`),
+  and the 630-unit chemical capability on the two gas factories.
+- **Content** — five blocks (`basic_{smelting,enriching,crushing,injecting,purifying}_factory`) with
+  their blockstates/models/textures (the jar's per-type fronts, sides, backs, tops and bottoms, plus
+  the shared back panel and the enriching `elements` texture), item models, block declarations,
+  loot tables, the five shaped recipes, the pickaxe tag, the creative tab and the lang keys.
+
+### Red → green
+
+The new rules were written as tests first and ran red on the untouched tree
+(`../_shared/evidence/mekanism/slice7-unit-red.log`, then `slice7-unit-red-2.log` for the gas-ask
+function):
+
+```
+error[E0425]: cannot find value `FACTORY_SLOTS` in this scope
+error[E0425]: cannot find value `SMELTING_FACTORY` in this scope
+...
+error[E0425]: cannot find function `factory_gas_want` in this scope
+error: could not compile `mekanism` (lib test) due to 71 previous errors
+```
+
+Then the constants, the two tick loops and the declarations made the crate green: **92 tests**
+(was 78) — 11 new `runtime::factory_tests` and 3 new `support::factory_support_tests`.
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the five factory blocks, block entities, buffers and six slots | **tested** | `A1`/`A2` (13 blocks give-able/place/read back), `B2` (loot), `B1` (the five craft), `K1`/`K4` (`/mekanism info` reports each buffer and the three-process line) |
+| a basic purifying factory: three ore in three processes → 9 clumps, 3 × 40,000 FE, 3 × 200 oxygen | **tested** | `K1`: `input empty x0, output mekanism:clump_iron x9`, `energy eq 0`, tank `3400/64000`; unit: `three_ore_in_three_processes_make_three_operations_side_by_side`, `a_gas_factory_spends_one_tick_of_each_process_s_gas` |
+| **one** ore in one process is **one** operation (3 clumps, 40,000 FE, 200 gas) | **tested** | `K2`: `output mekanism:clump_iron x3`, `energy eq 80000`, tank `3800/64000`; unit: `one_process_working_costs_one_operation_not_the_whole_factory` |
+| the buffer is shared per process: 40,000 FE buys 200 progress ticks, not three operations | **tested** | `K3`: `0/120000 FE (3 processes), progress 67/200, input minecraft:iron_ore x3, output empty x0`, `energy eq 0`, tank `3800/64000`; unit: `the_shared_buffer_pays_for_every_working_process` |
+| a basic smelting factory: three ore → three ingots for the 30,000 FE buffer | **tested** | `K4`: `output minecraft:iron_ingot x3`, `energy eq 0` |
+| a factory with an input it has no recipe for burns nothing | **tested** | `K5`: `progress 0/200, input minecraft:diamond x1`, `eq 30000` |
+| the factories' FE, progress array and slots survive save + relaunch | **tested** | persistence phase: the drained K3 factory reads back `0/120000 FE (3 processes), progress 67/200, input minecraft:iron_ore x3` |
+| `operationsPerTick` | **tested** | unit `a_whole_tick_operation_is_one_operation_per_tick` (200 ticks → 1; 0.5 tick → 2) |
+| the five recipes craft, ingredients consumed | **tested** | `B1` (`craft_check.py`) and one wrong-ingredient factory control |
+| the `active` front texture and the `_active` models | **not ported** | carried, unused: the block template's `open` stands in for `active` (the other machines' deviation) |
+| the factories' own GUI (six slots, three progress bars, sorting) | **not ported** | `menu: None`; `/mekanism info` and hoppers reach the six slots |
+| upgrades, side configuration, ejector, sorting | **not ported** | no upgrade system in this port, so `operationsPerTick` is the baseline 1 |
+| advanced/elite/ultimate factories | **not ported** | `FactoryTier` rows 5/7/9; the five basic blocks are the slice |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| runtime + glue tests (RED) | `cargo test --offline` on the untouched tree | **71 errors**, the new API missing (`slice7-unit-red.log`; the gas ask, `slice7-unit-red-2.log`, 32 errors) |
+| tests | `cargo test --offline` | **92 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` | clean (`sdk-fmt.log`) |
+| recipe tables | the five `gen_*.py --check` (`HORIZON_RES` = the prepared 26.3 root) | 163 / 132 / 148 / 72 / 15 rows (`slice7-recipe-tables.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` | `Built ./target/horizon-mod/mekanism.hmod` (`slice7-build.log`) |
+| same package twice | the same again | **`cmp` identical** (`slice7-build-second.log`, `slice7-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | `mekanism 0.2.6 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **161,073 B, SHA-256 `6633dde7…0e67`**, exit 0 (`slice7-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, `FIT-PIN-EXIT:0` (`slice7-fits.log`, sha printed first) |
+| fits, **a different build** | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, `FIT-OTHER-EXIT:0` (`slice7-fits.log`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (220 entries, no packed `Cargo.lock`) |
+| archive shape | `unzip -l mekanism.hmod` | 220 files, no `Cargo.lock` |
+
+The launcher build (`launcher-game.sh build mekanism`, in a lease) printed `Compiling mekanism (1 of
+1)` and produced `native-0a875da-c9d32f247453` (`slice7-launcher-build.log`). The stale
+`native-0a875da-ec80a5edc241` build (same 0.2.6 manifest, older code) was removed first — the
+launcher reuses a build when the manifest is byte-identical, so an edit inside an unpublished
+version is invisible until the old `versions/native-*` folder and its export are gone.
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`../_shared/evidence/mekanism-e2e/e2e-package.log` → `PASS` + `EXIT:0`, quoted from phase K and the
+persistence phase:
+
+```
+== K1: three ore in three processes become nine clumps for 600 oxygen and 120,000 FE ==
+  chemical insert 4000 mekanism:oxygen 0 70 0: chemical: inserted 4000 mekanism:oxygen into mekanism:basic_chemical_tank (4000/64000)
+  info(1,70,0): mekanism:basic_purifying_factory: 0/120000 FE (3 processes), progress 0/200, input minecraft:iron_ore x3, output empty x0
+== K2: one ore in one process is one operation, not three ==
+== K3: the buffer is shared: 40,000 FE buys 200 progress ticks, not three operations ==
+== K4: the item factory path: three ore smelt side by side for the 30,000 FE buffer ==
+  info(0,70,12): mekanism:basic_smelting_factory: 0/30000 FE (3 processes), progress 0/200, input minecraft:iron_ore x3, output empty x0
+== K5: a factory with an input it has no recipe for makes no progress and burns nothing ==
+  info(1,70,0): mekanism:basic_purifying_factory: 0/120000 FE (3 processes), progress 0/200, input empty x0, output mekanism:clump_iron x9
+  energy(1,70,0): 0
+  chemical read 0 70 0: chemical: mekanism:basic_chemical_tank holds mekanism:oxygen 3400/64000 (answered by mekanism)
+  info(1,70,4): mekanism:basic_purifying_factory: 80000/120000 FE (3 processes), progress 0/200, input empty x0, output mekanism:clump_iron x3
+  energy(1,70,4): 80000
+  chemical read 0 70 4: chemical: mekanism:basic_chemical_tank holds mekanism:oxygen 3800/64000 (answered by mekanism)
+  info(1,70,8): mekanism:basic_purifying_factory: 0/120000 FE (3 processes), progress 67/200, input minecraft:iron_ore x3, output empty x0
+  energy(1,70,8): 0
+  chemical read 0 70 8: chemical: mekanism:basic_chemical_tank holds mekanism:oxygen 3800/64000 (answered by mekanism)
+  info(0,70,12): mekanism:basic_smelting_factory: 0/30000 FE (3 processes), progress 0/200, input empty x0, output minecraft:iron_ingot x3
+  energy(0,70,12): 0
+  info(0,70,16): mekanism:basic_smelting_factory: 30000/30000 FE (3 processes), progress 0/200, input minecraft:diamond x1, output empty x0
+  energy(0,70,16): 30000
+== persistence: save, quit and relaunch read the block entities back ==
+  after relaunch, factory: mekanism:basic_purifying_factory: 0/120000 FE (3 processes), progress 67/200, input minecraft:iron_ore x3, output empty x0
+```
+
+and from phase A/B, the content and recipe half:
+
+```
+  13 blocks and 13 items are give-able
+  13 blocks place and read back; an unknown id is refused
+  13 blocks each dropped their own item
+  basic purifying factory: 4 gold + 2 redstone + 2 iron + a mekanism:purification_chamber -> {"count": 1, "item": "mekanism:basic_purifying_factory", "slot": 200}
+  (… the other four factories, the nine earlier recipes and the wrong-ingredient controls …)
+```
+
+What the numbers prove:
+
+- **three processes, not three operations in a row**: three ore all leave their slots in the same
+  200 ticks and the three output slots hold **nine** clumps; the buffer goes 120,000 → **0** and the
+  neighbour tank 4,000 → **3,400**, so the electricity and the gas were charged **once per process**
+  (`3 × 40,000 FE`, `3 × 200` units);
+- **one ore costs one operation**: 3 clumps, the buffer at **80,000** (one 40,000 operation) and the
+  tank at **3,800** (one 200-unit operation). A factory that silently ran one operation three times,
+  or that charged per factory rather than per process, fails one of these two;
+- **the shared buffer pays every working process**: with only 40,000 FE in a 120,000 FE buffer at
+  3 × 200 FE/t, exactly **200** progress ticks happen (67 + 67 + 66), **no** operation completes and
+  exactly **200** units of gas are drawn — a factory that charged 200 FE/t for the whole block would
+  have finished all three;
+- **the item path is the same core**: three ore become three ingots for the 30,000 FE buffer, and a
+  diamond makes no progress with its 30,000 FE intact;
+- **the state is the block entity's**: after `save`, quit and relaunch the drained factory still
+  reads `progress 67/200` with its three ore in their three input slots.
+
+| leg | result | evidence |
+|---|---|---|
+| package (default) | **`PASS` + `EXIT:0`** | `e2e-package.log` |
+| unmodded game (`GAME=$CONTROL_GAME CONTROL=0`) | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** | `e2e-control.log` |
+| fail-capable (`SELFTEST=1`) | **`FAIL: expected /mekanism info at 1,70,0 to say 'output empty x0', got … output mekanism:clump_iron x9` + `EXIT:1`** | `e2e-selftest.log` |
+| differential (`NOCABLE=1`) | **`PASS` + `EXIT:0`** (the factory phases need no cable and still pass) | `e2e-nocable.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+| regression | phases D/H/J | **148/148 crushing, 72/72 injecting, 15/15 purifying** rows still sweep |
+
+The `SELFTEST=1` flip moved to **this** slice's assertion: the four older flips (crusher, smelter,
+chamber, purification chamber) are now ordinary assertions, so the newest family is the one that
+proves it can fail.
+
+### What the harness taught this slice
+
+1. **The first run found a real defect and the unit tests had not.** The factory drew its
+   neighbour's gas while it had no energy, so `K3` read 3,797 units instead of 3,800: an unpowered
+   factory sipped gas it could not use. `factory_gas_want` now takes the buffer and the operation
+   and only counts the processes this tick can pay for, in the tick's own order; the regression test
+   pins `energy 0 → no gas` and `one tick's energy → one process's gas`.
+2. **The launcher reuses a build while the manifest is byte-identical.** After the gas fix the
+   package was still 0.2.6, so `native-build` would have reused the pre-fix `native-0a875da-ec80a5edc241`;
+   removing that version folder and its export made it print `Compiling mekanism (1 of 1)` again.
+3. **A wandering Enderman killed the player during the survival crafting phase** on the no-cable
+   leg. `arena()` now sets `difficulty peaceful` and `doMobSpawning false` alongside its
+   `kill @e[type=!player]`, so the check no longer depends on what spawned while it ran.
+4. **`gen_smelting.py` needs the prepared resources**: without `HORIZON_RES` it reads an absent
+   `~/.local/horizon-client/26.3`, finds 0 recipes and reports the committed table as stale. Set
+   `HORIZON_RES=/home/adlf/Desktop/horizon/.local/horizon-client/26.3` for the recipe-table gate.
+
+### Gaps after slice 7
+
+Everything in *Gaps / deviations*, *Gaps after the migration*, and *Gaps after slices 3–6* still
+stands. Changed: the **basic factory tier is ported** for all five item machines. Still missing: the
+advanced/elite/ultimate factory tiers (the same code with a different process count and buffer), the
+Ore Washer (water as a gas), the crystals and slurries, the chemicals as items, upgrades (so
+`operationsPerTick` stays 1), side configuration and the mod's own GUIs.
+
+### `## Upstream defects fixed`
+
+None found in this slice. The gas sip was a defect in **this port's** new code, not upstream's (the
+upstream machine fills its tank from the chemical slot regardless of energy, but this port's
+recorded deviation is to pull from a neighbour, and it only pulls what it is about to spend).
+
+### Deviations this slice records
+
+- **The factories have no GUI**: `menu: None`; the six slots are reachable by hoppers and
+  `/mekanism info` reports their sum. Upstream draws a six-slot screen with three progress bars.
+- **`operationsPerTick` is the baseline 1**: there is no upgrade system to make an operation take
+  less than a tick; the rule and its formula are ported and tested, not exercised above the baseline.
+- **The one tank is pulled from a neighbour**, not filled from a chemical slot item — the same
+  deviation the injection and purification chambers record.
+- **The block is the barrel template** (`facing`×`open`), not upstream's `facing`×`active`; the
+  `_active` front textures are carried, unused.
+- **No sorting, ejector, side configuration or security**, as on every other machine of this port.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+### Changelog (0.2.6) — supersedes 0.2.5
+
+> **0.2.6 — the basic factory family.** Five new blocks — `basic_smelting_factory`,
+> `basic_enriching_factory`, `basic_crushing_factory`, `basic_injecting_factory` and
+> `basic_purifying_factory` — each running the same recipe **three times side by side**
+> (`FactoryTier.BASIC.processes`), with one input and one output slot per process, its own progress
+> and one shared buffer given by `Factory.setMachineData`: **max(base storage / 2, base usage) × 3**,
+> so **30,000 FE** for the three item factories, **240,000** for the injecting factory and
+> **120,000** for the purifying one. The two gas factories share one tank of **630** units
+> (`MAX_GAS` 210 × 3) and draw one tick's gas for every **working** process through
+> `mekanism:chemical`. Worked in the wrong direction: three ore in a basic purifying factory become
+> **nine** clumps for **3 × 40,000 FE** and **600** oxygen, while **one** ore costs one operation
+> (3 clumps, 40,000 FE, 200 oxygen) and 40,000 FE buys exactly **200** progress ticks, not three
+> operations. `operationsPerTick` is ported and tested (baseline 1 without upgrades). The five
+> shaped recipes use the upstream `ACA/IPI/ACA` pattern around each base machine with vanilla
+> stand-ins for the alloys/circuits this port does not register. Package: **220 entries, 161,073 B**,
+> sha256 `6633dde7616f86fb8d8a6baad3cbaa1f842d977ae500a207000345a8a8b60e67`; `check` exit 0; `fits`
+> `made for` at the pin and `fits` at `0b14f8a`; 92 tests, clippy `-D warnings` clean; in game
+> `PASS` + `EXIT:0` with the factory phase and the 148/72/15-row sweeps, the unmodded game `EXIT:1`,
+> `SELFTEST=1` `EXIT:1` on the factory's own assertion, `NOCABLE=1` `PASS` + `EXIT:0`.

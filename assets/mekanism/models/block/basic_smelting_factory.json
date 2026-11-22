@@ -1,0 +1,12 @@
+{
+  "parent": "mekanism:block/machine",
+  "textures": {
+    "sides": "mekanism:block/factory/smelting/smelting_factory_side",
+    "front": "mekanism:block/factory/smelting/smelting_factory_front",
+    "west": "mekanism:block/factory/smelting/smelting_factory_side",
+    "east": "mekanism:block/factory/smelting/smelting_factory_side",
+    "south": "mekanism:block/factory/factory_front_back",
+    "up": "mekanism:block/factory/smelting/smelting_factory_top",
+    "down": "mekanism:block/factory/smelting/smelting_factory_bottom"
+  }
+}

@@ -1,5 +1,47 @@
 # Validation
 
+## 0.2.6 — the basic factory family, slice 7 (2026-11-22)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`).
+
+| Check | Command | Result |
+|---|---|---|
+| runtime + glue rules, RED first | `cargo test --offline` on the untouched tree | **71 errors**, the new API missing (`slice7-unit-red.log`; `slice7-unit-red-2.log` for the gas ask) |
+| tests | `cargo test --offline` | **92 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`sdk-fmt.log`) |
+| recipe tables | the five `gen_*.py --check` (`HORIZON_RES` set) | 163 / 132 / 148 / 72 / 15 rows (`slice7-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **161,073 B**, `cmp` identical, sha256 `6633dde7616f86fb8d8a6baad3cbaa1f842d977ae500a207000345a8a8b60e67` (`slice7-build.log`, `slice7-build-second.log`, `slice7-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.6 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 220 entries (`slice7-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`slice7-fits.log`, sha printed beside it) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`slice7-fits.log`) |
+| archive | `unzip -l mekanism.hmod` | 220 entries, no `Cargo.lock` |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (220 entries, no packed `Cargo.lock`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 1,70,0 to say 'output empty x0', got '… output mekanism:clump_iron x9'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+| launcher build | `launcher-game.sh build mekanism` (in a lease) | `Compiling mekanism (1 of 1)`, `native-0a875da-c9d32f247453` (`slice7-launcher-build.log`) |
+
+The in-game leg proves, per the parity rule: the thirteen blocks and thirteen items are give-able and
+placeable, an unknown id is refused, the **fourteen** carried shaped recipes craft (id, count,
+ingredients consumed, seven wrong-ingredient controls empty), the thirteen blocks' loot tables drop
+the block, every carried crushing (148), injecting (72) and purifying (15) recipe still runs, and the
+new family: a basic purifying factory beside a tank of 4,000 oxygen turns **three ore in three
+processes** into **nine clumps** for **3 × 40,000 FE** and exactly **600** units — the tank at
+3,400 — with the buffer at 0; **one** ore in one process costs **one** operation (3 clumps, 40,000
+FE, 200 oxygen, the tank at 3,800); **40,000 FE in the 120,000 FE buffer buys exactly 200 progress
+ticks** (67 + 67 + 66) and no operation, while a per-factory charge would have finished three; a
+basic smelting factory turns three ore into three ingots for its 30,000 FE buffer, a diamond makes
+nothing, and the factories' FE, progress array and six slots survive a save and relaunch. See
+[notes.md](notes.md) §"Slice 7 — the basic factory family" for the transcript.
+
 ## 0.2.5 — the Purification Chamber, slice 6 (2026-11-21)
 
 Validated on Linux against the campaign pin **Horizon

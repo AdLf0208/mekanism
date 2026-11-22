@@ -100,8 +100,10 @@ def main() -> int:
         wait(5)
 
     failures = []
+    recipes = [0]
 
     def check(label, ingredients, placements, want_item, want_count, consumed_item):
+        recipes[0] += 1
         setup(ingredients)
         for item, targets in placements:
             place(item, targets)
@@ -268,6 +270,31 @@ def main() -> int:
         "mekanism:purification_chamber", 1, "mekanism:enrichment_chamber",
     )
 
+    # --- slice 7: the five basic factories --------------------------------
+    for factory, base in (
+        ("smelting", "mekanism:energized_smelter"),
+        ("enriching", "mekanism:enrichment_chamber"),
+        ("crushing", "mekanism:crusher"),
+        ("injecting", "mekanism:chemical_injection_chamber"),
+        ("purifying", "mekanism:purification_chamber"),
+    ):
+        check(
+            f"basic {factory} factory: 4 gold + 2 redstone + 2 iron + a {base}",
+            [
+                ("minecraft:gold_ingot", 4),
+                ("minecraft:redstone", 2),
+                ("minecraft:iron_ingot", 2),
+                (base, 1),
+            ],
+            [
+                ("minecraft:gold_ingot", every(100, 102, 106, 108)),
+                ("minecraft:redstone", every(101, 107)),
+                ("minecraft:iron_ingot", every(103, 105)),
+                (base, every(104)),
+            ],
+            f"mekanism:basic_{factory}_factory", 1, base,
+        )
+
     # --- controls: a wrong ingredient leaves the result empty -------------
     empty_control(
         "smelter with a stick where the glass goes",
@@ -337,6 +364,21 @@ def main() -> int:
         ],
     )
     empty_control(
+        "basic smelting factory with a stick where the energized smelter goes",
+        [
+            ("minecraft:gold_ingot", 4),
+            ("minecraft:redstone", 2),
+            ("minecraft:iron_ingot", 2),
+            ("minecraft:stick", 1),
+        ],
+        [
+            ("minecraft:gold_ingot", every(100, 102, 106, 108)),
+            ("minecraft:redstone", every(101, 107)),
+            ("minecraft:iron_ingot", every(103, 105)),
+            ("minecraft:stick", every(104)),
+        ],
+    )
+    empty_control(
         "injection chamber with a stick where the iron block goes",
         [
             ("minecraft:gold_ingot", 4),
@@ -358,7 +400,7 @@ def main() -> int:
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)
         return 1
-    print("recipe PASS: all nine carried shaped recipes craft with their declared id and "
+    print(f"recipe PASS: all {recipes[0]} carried shaped recipes craft with their declared id and "
           "count, their ingredients are consumed, and every wrong-ingredient control leaves "
           "the result empty")
     return 0
