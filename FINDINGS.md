@@ -172,10 +172,13 @@ entity's NBT and the cable still balances it on its own tick.
 
 ## Next slices (planned gap list)
 
-1. **The four missing crystals** (`crystal_{lead,osmium,tin,uranium}`): the washer already makes their
-   clean slurries and `gen_crystallizing.py` drops those four rows because the items do not exist. Four
-   items (jar textures) and the table's `--check` closes the washer → crystallizer → enricher chain for
-   every slurry this port can make. Smallest next slice with a user-visible gain.
+1. ~~**The four missing crystals**~~ — **done in slice 10** (`crystal_{lead,osmium,tin,uranium}`, the
+   four crystallizing rows now run). The washer's slurries all continue into a crystal and a shard
+   (slice 11) and the four metals' ore chain closes through clump → dirty dust → dust → ingot (slice
+   12); the whole smelting table is swept (slice 13). Next: **the storage-block and nugget family for
+   the four metals** (`processing/<m>/storage_blocks/from_ingots.json`, `nugget/from_ingot.json`,
+   `ingot/from_block.json`, `ingot/from_nuggets.json` in the jar, plus the `c:storage_blocks/<m>` art)
+   — block-entity-free content with loot tables and shaped/shapeless recipes.
 2. **Ore-processing chain, remaining**: the **Osmium Compressor** (needs osmium and a refined-ingot
    chain), the **Chemical Dissolution Chamber** (needs sulfuric acid + an ore-shard family) and the
    **Chemical Oxidizer** (item → gas). The dissolution chamber is the one the brief allowed as a
@@ -198,7 +201,9 @@ entity's NBT and the cable still balances it on its own tick.
    (API 307) plus a battery item.
 
 Done since this list was written: the Purification Chamber (slice 6), the five basic factories
-(slice 7), the Chemical Washer (slice 8) and the Chemical Crystallizer (slice 9).
+(slice 7), the Chemical Washer (slice 8), the Chemical Crystallizer (slice 9), the four missing
+crystals (slice 10), the crystal → shard leg (slice 11), the four metals' ore chain with the first
+enriching sweep (slice 12), and the smelting sweep plus the four ingot → dust rows (slice 13).
 
 ## Slice boundary (what this port ships, slices 1–2)
 

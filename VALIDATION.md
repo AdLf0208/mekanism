@@ -1,5 +1,51 @@
 # Validation
 
+## 0.2.12 — the smelting sweep and the four ingot → dust rows, slice 13 (2026-11-23)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`); the package-building steps used `BUILD_LOCAL=1` because the second
+machine's cargo has no `cargo-horizon-mod` subcommand, while `test` and `lint` forwarded.
+
+| Check | Command | Result |
+|---|---|---|
+| the family tests, RED first | `cargo test --offline` on the 0.2.11 tree | `E0425` (no `smelting::rows()`), then **130 passed, 1 failed** (`mekanism:ingot_lead: left: None`) (`slice13-unit-red.log`) |
+| tests | `cargo test --offline` | **131 passed**, 0 failed (`slice13-test.log`, `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`slice13-clippy.log`, `sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`slice13-fmt.log`, `sdk-fmt.log`) |
+| recipe tables | the seven `gen_*.py --check` + `carry_crystallizer.py --check` + `carry_shards.py --check` + `carry_ore_chain.py --check` (`HORIZON_RES` set) | 163 / 136 / **156** / 79 / 15 / 7 / 7 rows; 18 + 14 + 50 carried files match the jar (`slice13-recipe-tables.log`) |
+| recipe types | `python3 ports/tools/check-recipe-types.py mekanism` | `mekanism: ok`, exit 0 (`slice13-recipe-types.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **220,447 B**, `cmp` identical, sha256 `0b20e8dbdfd9f5c82bd721305b8b883664b12a35864c1fbcc5588d7d18bfdb71` (`slice13-build.log`, `slice13-build-second.log`, `slice13-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.12 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **322 entries** (`slice13-check.log`, `sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`slice13-fits.log`, `sdk-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something |
+| archive | `unzip -l mekanism.hmod` | 322 entries, 40 item files, no `Cargo.lock` (`slice13-entries.txt`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (322 entries, no packed `Cargo.lock`, runtime byte-identical, 131 tests) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 0,64,-10 to say 'output empty x0', got '… output minecraft:coal x1'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+| launcher build | `launcher-game.sh build mekanism` (in a lease; no `native-*` tag carried this mod before it) | `Compiling mekanism (1 of 1)`, `native-0a875da-a340191b3e97` (`slice13-launcher-build.log`) |
+
+The in-game leg proves, per the parity rule: the fifteen blocks and **forty** items are give-able and
+placeable, an unknown id is refused, the sixteen carried shaped recipes craft, the fifteen blocks' loot
+tables drop the block, every carried crushing (**156**, the four new `c:ingots/<m>` → dust rows
+included), smelting (**163 vanilla + the jar's 7**), enriching (136), injecting (79), purifying (15),
+washing (7) and crystallizing (7) recipe runs — and the new family: a coal ore in a charged smelter
+becomes exactly one `minecraft:coal` for **10,000 FE** (`10000/20000 FE, progress 0/200, input empty
+x0`), clay becomes terracotta, a tin dust becomes this port's `mekanism:ingot_tin`, and a dirt the
+table has no row for stays in its input at `20000/20000 FE` and makes nothing. The smelting sweeps run
+**163 of 163** and **7 of 7** rows, each asserted by its own output id and count with the input
+consumed, and a `dirt` control makes nothing; `SELFTEST=1` fails on the coal ore's own output
+assertion; the unmodded game still cannot give the blocks (`EXIT:1`) and the no-cable differential
+still passes. See [notes.md](notes.md) §"Slice 13 — the smelting sweep and the four ingot → dust rows"
+for the transcript, the sweep's budget, the coverage table and what is deliberately not closed (the
+ingots' blocks, nuggets and crafting recipes).
+
 ## 0.2.11 — the four extra metals' ore chain, slice 12 (2026-11-23)
 
 Validated on Linux against the campaign pin **Horizon

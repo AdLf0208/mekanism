@@ -20,7 +20,9 @@
 #   z=12  x=0 chamber   x=1 cable   x=2 energy cube   (the ore -> dust chain)
 #   z=22  x=0 crusher (charged) and x=2 crusher (never charged)
 # and one-machine controls at z=4, 8, 16, 20 and 24. The crusher sweep uses
-# x=6..24, z=-8..20 (ten crushers per batch), and the content/recipe rows use
+# x=6..24, z=-8 (ten crushers per batch), the smelting sweeps x=-6..32 at z=-12
+# and z=-14 (twenty and ten smelters per batch) with their headline and control
+# at z=-10, and the content/recipe rows use
 # x=-6..2 and x=10 at z=26..28. The injection chamber's phases stand above that
 # floor at y=66: the headline at z=12 (a tank at x=0 and the chamber at x=1, the
 # no-neighbour control at x=4, the wrong-gas pair at x=7/8) and the injecting
@@ -37,8 +39,9 @@
 #  C  the crusher: a charged crusher turns cobblestone into gravel for exactly
 #     10,000 FE, an uncharged one does nothing, an input with no recipe burns
 #     nothing, and its three-slot menu opens;
-#  D  the sweep: every carried crushing row (145) runs in a real crusher with its
-#     declared input count and output stack, and the input is consumed;
+#  D  the sweep: every carried crushing row (156, slice 13's four ingot ->
+#     dust rows included) runs in a real crusher with its declared input count
+#     and output stack, and the input is consumed;
 #  E  the four blocks of slices 1-2 place and report their buffers through
 #     `/mekanism info`;
 #  E  with the smelter unpowered, an ore in its input does not smelt (control 1);
@@ -118,13 +121,20 @@
 #  Q  the ore chain for lead, osmium, tin and uranium (slice 12): a dirty dust in
 #     a charged enrichment chamber becomes its dust for 10,000 FE, the dust in a
 #     smelter becomes its ingot, and the clump in a crusher becomes the dirty
-#     dust — the three new rows of the jar's chain, each in a real machine. This
-#     is the assertion SELFTEST=1 flips (it must then read `output empty x0`
-#     from the enrichment chamber and FAIL).
+#     dust — the three new rows of the jar's chain, each in a real machine.
 #  R  the enriching sweep: every carried enriching row (136, slice 12's four
 #     dirty dust -> dust rows included) runs in a real enrichment chamber with
 #     its declared input count and output stack, and a no-recipe control does
 #     nothing.
+#  S  the smelting table's named rows (slice 13): a coal ore becomes coal, clay
+#     becomes terracotta, a tin dust becomes this port's ingot_tin for 10,000 FE
+#     each, and a dirt the table has no row for stays put and makes nothing.
+#     This is the assertion SELFTEST=1 flips (it must then read `output empty x0`
+#     from the coal ore's smelter and FAIL).
+#  T  the smelting sweeps: every carried smelting row — the 163 the 26.3 data
+#     expands to (rows smelted: 163 of 163) and the jar's own 7 dust -> ingot
+#     rows (rows smelted: 7 of 7) — runs in a real Energized Smelter with its
+#     input consumed and its declared output stack, plus a no-recipe control.
 #  K  the five basic factories (slice 7): three processes of the same operation
 #     side by side — three ore in a basic purifying factory become nine clumps
 #     for 3 x 40,000 FE and 3 x 200 oxygen, one ore costs one operation (40,000
@@ -135,9 +145,9 @@
 #
 # NOCABLE=1 runs the cable scenario without the cable and asserts that the
 # smelter and the chamber stay empty (the differential control passing).
-# SELFTEST=1 flips the enrichment chamber's output assertion of phase Q (it must
-# FAIL on `output empty x0`): the newest family's own check is the one proven
-# able to fail.
+# SELFTEST=1 flips the coal ore's output assertion of phase S (it must FAIL on
+# `output empty x0`): the newest family's own check is the one proven able to
+# fail.
 #
 # CONTROL=1 (needs CONTROL_GAME=<an unmodded horizon-client>) first launches
 # that game in its own scratch home and world and shows that the block ids are
@@ -961,7 +971,9 @@ else
     python3 -u "$PORT/tools/gen_crushing.py" --rows >"$ROWS" \
         || fail "the crushing rows could not be read from the jar"
     rows=$(jq 'length' "$ROWS")
-    [ "$rows" -ge 130 ] || fail "the jar yielded only $rows crushing rows"
+    # 156 rows since slice 13 (152 + the four `dust/from_ingot` rows): a tag
+    # mapping that drops one must fail the leg, not quietly sweep a smaller table.
+    [ "$rows" -ge 156 ] || fail "the jar yielded only $rows crushing rows, expected 156"
     echo "  rows from the jar's mekanism:crushing data: $rows"
     python3 -u "$PORT/tools/crush_sweep.py" "$SOCK" "$CTL" "$ROWS" 6 64 -8 --batch 10 \
         || fail "the crushing sweep failed"
@@ -1430,7 +1442,7 @@ expect_chem "holds nothing 0/210 (answered by mekanism)" -- read 1 72 16
 # Energized Smelter takes). Each machine is charged with its whole 20,000 FE
 # buffer; one operation is 200 ticks at 50 FE/t, so exactly 10,000 FE is spent
 # and the buffer reads 10,000 afterwards. The three machines run side by side in
-# one wait; this phase is the assertion `SELFTEST=1` flips.
+# one wait.
 echo "== Q: slice 12's chain — a lead clump, its dirty dust, its dust and its ingot =="
 place 2 64 18 "$CHAMBER"
 place 4 64 18 "$SMELTER"
@@ -1444,17 +1456,14 @@ say "mekanism energy 20000 4 64 18"
 say "mekanism energy 20000 6 64 18"
 ctl wait 6
 ctl wait 230
-if [ "$SELFTEST" = 1 ]; then
-    echo "(selftest: asserting the enrichment chamber's output slot is still empty)"
-    expect_contains 2 64 18 "$CHAMBER" "output empty x0"
-else
-    expect_contains 2 64 18 "$CHAMBER" "10000/20000 FE, progress 0/200, input empty x0, output mekanism:dust_lead x1"
-    expect_energy 2 64 18 "$CHAMBER" eq 10000
-    expect_contains 4 64 18 "$SMELTER" "10000/20000 FE, progress 0/200, input empty x0, output mekanism:ingot_lead x1"
-    expect_energy 4 64 18 "$SMELTER" eq 10000
-    expect_contains 6 64 18 "$CRUSHER" "10000/20000 FE, progress 0/200, input empty x0, output mekanism:dirty_dust_lead x1"
-    expect_energy 6 64 18 "$CRUSHER" eq 10000
-fi
+# Slice 13 moved the `SELFTEST=1` flip to the newest family (the smelting table,
+# phase S): this phase asserts the chain's real answer on every run.
+expect_contains 2 64 18 "$CHAMBER" "10000/20000 FE, progress 0/200, input empty x0, output mekanism:dust_lead x1"
+expect_energy 2 64 18 "$CHAMBER" eq 10000
+expect_contains 4 64 18 "$SMELTER" "10000/20000 FE, progress 0/200, input empty x0, output mekanism:ingot_lead x1"
+expect_energy 4 64 18 "$SMELTER" eq 10000
+expect_contains 6 64 18 "$CRUSHER" "10000/20000 FE, progress 0/200, input empty x0, output mekanism:dirty_dust_lead x1"
+expect_energy 6 64 18 "$CRUSHER" eq 10000
 
 # ---------------------------------------------------------------------------
 # R. The sweep: every carried enriching row through a real Enrichment Chamber
@@ -1595,6 +1604,98 @@ else
         || fail "the crystallizing sweep failed"
 fi
 
+# ---------------------------------------------------------------------------
+# S. The carried smelting table's headline (slice 13): three named vanilla rows,
+#    one of the jar's own dust rows, and a no-recipe control. This phase's
+#    assertion is the one SELFTEST=1 flips.
+# ---------------------------------------------------------------------------
+# The Energized Smelter smelts every `minecraft:smelting` recipe — upstream adds
+# them all to its own `mekanism:smelting` type — so its table is the 163 rows the
+# 26.3 data expands to plus the jar's seven dust -> ingot rows; phase T sweeps
+# all 170. This phase is the headline on named rows: an ore into its item, a
+# block into its fired product, a tin dust into this port's own ingot, and a
+# dirt the table has no row for, which must stay put and make nothing.
+echo "== S: the smelting table's named rows — coal ore, clay, a tin dust and a dirt control =="
+# Stand where the row is built: a `setblock` in a chunk the player has left
+# answers "Could not set the block".
+ctl command "execute in minecraft:the_end run tp @s 10.5 64 -10.5" >/dev/null
+ctl wait 10
+place 0 64 -10 "$SMELTER"
+place 2 64 -10 "$SMELTER"
+place 4 64 -10 "$SMELTER"
+place 6 64 -10 "$SMELTER"
+ctl command "execute in minecraft:the_end run item replace block 0 64 -10 container.0 with minecraft:coal_ore 1" >/dev/null
+ctl command "execute in minecraft:the_end run item replace block 2 64 -10 container.0 with minecraft:clay 1" >/dev/null
+ctl command "execute in minecraft:the_end run item replace block 4 64 -10 container.0 with mekanism:dust_tin 1" >/dev/null
+ctl command "execute in minecraft:the_end run item replace block 6 64 -10 container.0 with minecraft:dirt 1" >/dev/null
+ctl wait 6
+say "mekanism energy 20000 0 64 -10"
+say "mekanism energy 20000 2 64 -10"
+say "mekanism energy 20000 4 64 -10"
+say "mekanism energy 20000 6 64 -10"
+ctl wait 6
+ctl wait 230
+if [ "$SELFTEST" = 1 ]; then
+    echo "(selftest: asserting the coal ore's output slot is still empty)"
+    expect_contains 0 64 -10 "$SMELTER" "output empty x0"
+else
+    # One operation is 200 ticks at 50 FE/t: 10,000 FE of the 20,000 charged.
+    expect_contains 0 64 -10 "$SMELTER" "10000/20000 FE, progress 0/200, input empty x0, output minecraft:coal x1"
+    expect_energy 0 64 -10 "$SMELTER" eq 10000
+    expect_contains 2 64 -10 "$SMELTER" "10000/20000 FE, progress 0/200, input empty x0, output minecraft:terracotta x1"
+    expect_energy 2 64 -10 "$SMELTER" eq 10000
+    # The jar's own row, in the same machine as the vanilla ones.
+    expect_contains 4 64 -10 "$SMELTER" "10000/20000 FE, progress 0/200, input empty x0, output mekanism:ingot_tin x1"
+    expect_energy 4 64 -10 "$SMELTER" eq 10000
+    # The control: dirt has no row, so the machine keeps it, spends nothing and
+    # makes nothing.
+    expect_contains 6 64 -10 "$SMELTER" "20000/20000 FE, progress 0/200, input minecraft:dirt x1, output empty x0"
+    expect_energy 6 64 -10 "$SMELTER" eq 20000
+fi
+
+# ---------------------------------------------------------------------------
+# T. The sweeps: every carried smelting row through a real Energized Smelter
+# ---------------------------------------------------------------------------
+# The parity rule's debt for a table the port has carried since slice 1, paid
+# the way phase R pays the enriching one: 163 vanilla rows and the jar's 7 own
+# rows, each one operation in its own machine, the input consumed and the
+# declared output stack asserted. Batch 20 keeps 163 rows to nine waits; the
+# ctl calls per row, not the ticks, are the sweep's cost.
+echo "== T: every carried smelting recipe in a real Energized Smelter =="
+if [ "$NOCABLE" = 1 ]; then
+    echo "  (NOCABLE: the sweeps are skipped with the cable scenario)"
+elif [ "$SELFTEST" = 1 ]; then
+    echo "  (selftest: the sweeps are skipped)"
+else
+    ctl command "execute in minecraft:the_end run tp @s 12.5 64 -12.5" >/dev/null
+    ctl wait 10
+    SURFACE_ROWS=$SCRATCH/smelting-rows.json
+    if [ -n "$RES" ]; then
+        python3 -u "$PORT/tools/gen_smelting.py" --resources "$RES" --rows >"$SURFACE_ROWS" \
+            || fail "the 26.3 smelting rows could not be read"
+    else
+        python3 -u "$PORT/tools/gen_smelting.py" --rows >"$SURFACE_ROWS" \
+            || fail "the 26.3 smelting rows could not be read"
+    fi
+    rows=$(jq 'length' "$SURFACE_ROWS")
+    # 163 vanilla rows: a recipe or tag mapping that drops one must fail the leg,
+    # not quietly sweep a smaller table.
+    [ "$rows" -ge 163 ] || fail "the 26.3 data yielded only $rows smelting rows, expected 163"
+    echo "  rows from the 26.3 data's minecraft:smelting recipes: $rows"
+    python3 -u "$PORT/tools/smelt_sweep.py" "$SOCK" "$CTL" "$SURFACE_ROWS" -6 64 -12 --batch 20 \
+        || fail "the smelting sweep failed"
+    JAR_ROWS=$SCRATCH/smelting-jar-rows.json
+    python3 -u "$PORT/tools/gen_smelting.py" --mekanism-rows >"$JAR_ROWS" \
+        || fail "the jar's dust rows could not be read"
+    rows=$(jq 'length' "$JAR_ROWS")
+    [ "$rows" -ge 7 ] || fail "the jar yielded only $rows dust -> ingot smelting rows, expected 7"
+    echo "  rows from the jar's processing/*/ingot/from_dust_smelting.json: $rows"
+    python3 -u "$PORT/tools/smelt_sweep.py" "$SOCK" "$CTL" "$JAR_ROWS" -6 64 -14 --batch 10 \
+        --label "jar " || fail "the jar's dust -> ingot sweep failed"
+    python3 -u "$PORT/tools/smelt_sweep.py" "$SOCK" "$CTL" --control 0 64 -16 \
+        || fail "the smelter's no-recipe control failed"
+fi
+
 echo "== persistence: save, quit and relaunch read the block entities back =="
 # Stand in the arena first: a `setblock` in a chunk the player has left answered
 # "Could not set the block" and left the cable in place, so the player is brought
@@ -1695,5 +1796,5 @@ elif [ "$SELFTEST" = 1 ]; then
     echo "SELFTEST finished without failing (this is a bug in the test)"
     exit 1
 else
-    echo "PASS: the fifteen blocks, their forty items and sixteen shaped recipes and their loot tables work, every carried crushing recipe runs in a real crusher, every carried enriching recipe runs in a real enrichment chamber (136 rows, slice 12's four dirty dust -> dust rows included), every carried injecting recipe - the seven crystal->shard rows slice 11 adds included - runs in a real chemical injection chamber and every carried purifying recipe in a real purification chamber, both pulling their gas from a neighbour's tank through mekanism:chemical and spending exactly the operation's gas - 200 oxygen for one iron ore into three clumps at 40,000 FE - every carried washing recipe runs in a real chemical washer, whose water arrives through horizon:fluids and whose dirty slurry arrives through mekanism:chemical, one operation spending exactly 5 mB of water, one unit of dirty slurry and 40,000 FE for one unit of clean slurry, every carried crystallizing recipe - all seven slurries the washer makes, lead through uranium included - runs in a real chemical crystallizer that turns 200 units of its clean slurry into one crystal for 80,000 FE (five operations into five crystals from 1,000 units, a lead tank's 1,000 units into exactly two crystal_lead with 600 left, a hopper pulling them out, a dirty slurry refused by the tank and making nothing in a neighbour, and the crystallizer's own crystal_lead in an injection chamber becoming exactly one shard_lead for 80,000 FE and 200 of a neighbour tank's hydrogen chloride), the jar's chain runs end to end (a clump crushes into a dirty dust and that dirty dust enriches into a dust, while a purification chamber has no row for it), and slice 12's four metals run their own chain in real machines (a dirty_dust_lead enriches into dust_lead for 10,000 FE, that dust smelts into ingot_lead, and a clump_lead crushes into dirty_dust_lead), the five basic factories run three processes of the same operation side by side (three ore in the purifying factory become nine clumps for 3 x 40,000 FE and exactly 600 of the neighbour's oxygen, one ore costs one operation, and 40,000 FE buys 200 progress ticks rather than three operations, while a smelting factory turns three ore into three ingots for its 30,000 FE buffer), the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input, a no-gas and a wrong-gas neighbour do nothing - the menus open, the machines', the factories' and the crystallizer's FE, progress and tanks survive a save and relaunch, and the chemical capability moves one chemical into the tank's saved data, drains part of it into the gauge dropper through the item capability, and refuses an unknown id by name while a block that answers no chemical moves nothing"
+    echo "PASS: the fifteen blocks, their forty items and sixteen shaped recipes and their loot tables work, every carried crushing recipe runs in a real crusher (156 rows, slice 13's four ingot -> dust rows included), every carried smelting recipe - the 163 rows the 26.3 data expands to and the jar's own seven dust -> ingot rows - runs in a real Energized Smelter with its input consumed and its output stack asserted (a coal ore into coal, clay into terracotta and a tin dust into ingot_tin for 10,000 FE each, while a dirt the table has no row for stays put), every carried enriching recipe runs in a real enrichment chamber (136 rows, slice 12's four dirty dust -> dust rows included), every carried injecting recipe - the seven crystal->shard rows slice 11 adds included - runs in a real chemical injection chamber and every carried purifying recipe in a real purification chamber, both pulling their gas from a neighbour's tank through mekanism:chemical and spending exactly the operation's gas - 200 oxygen for one iron ore into three clumps at 40,000 FE - every carried washing recipe runs in a real chemical washer, whose water arrives through horizon:fluids and whose dirty slurry arrives through mekanism:chemical, one operation spending exactly 5 mB of water, one unit of dirty slurry and 40,000 FE for one unit of clean slurry, every carried crystallizing recipe - all seven slurries the washer makes, lead through uranium included - runs in a real chemical crystallizer that turns 200 units of its clean slurry into one crystal for 80,000 FE (five operations into five crystals from 1,000 units, a lead tank's 1,000 units into exactly two crystal_lead with 600 left, a hopper pulling them out, a dirty slurry refused by the tank and making nothing in a neighbour, and the crystallizer's own crystal_lead in an injection chamber becoming exactly one shard_lead for 80,000 FE and 200 of a neighbour tank's hydrogen chloride), the jar's chain runs end to end (a clump crushes into a dirty dust and that dirty dust enriches into a dust, while a purification chamber has no row for it), and slice 12's four metals run their own chain in real machines (a dirty_dust_lead enriches into dust_lead for 10,000 FE, that dust smelts into ingot_lead, and a clump_lead crushes into dirty_dust_lead), the five basic factories run three processes of the same operation side by side (three ore in the purifying factory become nine clumps for 3 x 40,000 FE and exactly 600 of the neighbour's oxygen, one ore costs one operation, and 40,000 FE buys 200 progress ticks rather than three operations, while a smelting factory turns three ore into three ingots for its 30,000 FE buffer), the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input, a no-gas and a wrong-gas neighbour do nothing - the menus open, the machines', the factories' and the crystallizer's FE, progress and tanks survive a save and relaunch, and the chemical capability moves one chemical into the tank's saved data, drains part of it into the gauge dropper through the item capability, and refuses an unknown id by name while a block that answers no chemical moves nothing"
 fi

@@ -9,18 +9,24 @@ below is a `data/minecraft/recipe/*.json` file of the 26.3 resources.
 
 Usage:
   python3 tools/gen_smelting.py [--resources DIR] [--check]
+  python3 tools/gen_smelting.py --rows            # the 163 vanilla rows as JSON
+  python3 tools/gen_smelting.py --mekanism-rows   # the jar's own dust rows as JSON
 
 `--check` reads the rows back out of the committed file (whatever rustfmt did to
-their layout) and fails if they differ from the 26.3 recipes.
+their layout) and fails if they differ from the 26.3 recipes. `--rows` and
+`--mekanism-rows` are what the in-game sweep (`tools/smelt_sweep.py`) drives real
+smelters with, so the scenario and the tables cannot drift apart.
 """
 import argparse
 import json
 import os
 import re
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RESOURCES = Path(os.environ.get("HORIZON_RES", str(Path.home() / ".local/horizon-client/26.3")))
+DEFAULT_JAR = ROOT.parent / "_shared" / "carry-work" / "mekanism" / "Mekanism-1.21.1-10.7.19.85.jar"
 OUT = ROOT / "src" / "runtime.rs"
 BEGIN = "    // BEGIN GENERATED SMELTING TABLE (tools/gen_smelting.py)\n"
 END = "    // END GENERATED SMELTING TABLE\n"
@@ -95,6 +101,43 @@ def render(resources: Path) -> str:
     return HEADER.format(recipes=count, rows=len(table)) + body + "    ];\n"
 
 
+def registered_items() -> set[str]:
+    """The non-vanilla items this port registers: one file per id under `horizon/item/`."""
+    item_dir = ROOT / "data" / "mekanism" / "horizon" / "item"
+    return {f"mekanism:{path.stem}" for path in item_dir.glob("*.json")}
+
+
+def mekanism_rows(jar: Path) -> list[tuple[str, str, int]]:
+    """The jar's own `minecraft:smelting` recipes whose both ends this port has.
+
+    `data/mekanism/recipe/processing/<material>/ingot/from_dust_smelting.json` is
+    a vanilla-type recipe (one dust, 200 ticks) that Mekanism adds to its own
+    smelting type, so the Energized Smelter smelts it. A row whose ingredient or
+    result the port does not register is dropped, exactly as `gen_crushing.py`
+    does; bronze, for instance, has no dust or ingot here.
+    """
+    known = registered_items()
+    table: dict[str, tuple[str, int]] = {}
+    with zipfile.ZipFile(jar) as archive:
+        for name in sorted(archive.namelist()):
+            if not name.startswith("data/mekanism/recipe/processing/"):
+                continue
+            if not name.endswith("/ingot/from_dust_smelting.json"):
+                continue
+            data = json.loads(archive.read(name))
+            if data.get("type") != "minecraft:smelting":
+                continue
+            item = data["ingredient"].get("item", "")
+            result = data["result"]
+            output = result["id"]
+            if item not in known:
+                continue
+            if not output.startswith("minecraft:") and output not in known:
+                continue
+            table[item] = (output, int(result.get("count", 1)))
+    return sorted((item, output, count) for item, (output, count) in table.items())
+
+
 def replace(text: str, block: str) -> str:
     start = text.index(BEGIN)
     end = text.index(END)
@@ -115,8 +158,23 @@ def committed_rows(text: str) -> list[tuple[str, str, int]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resources", type=Path, default=DEFAULT_RESOURCES)
+    parser.add_argument("--jar", type=Path, default=DEFAULT_JAR)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--rows", action="store_true", help="print the vanilla rows as JSON")
+    parser.add_argument(
+        "--mekanism-rows", action="store_true", help="print the jar's own dust rows as JSON"
+    )
     args = parser.parse_args()
+    if args.rows or args.mekanism_rows:
+        if args.mekanism_rows:
+            table = mekanism_rows(args.jar)
+        else:
+            table, _ = rows(args.resources)
+        print(json.dumps(
+            [{"input": i, "output": o, "count": c} for i, o, c in table],
+            indent=1,
+        ))
+        return 0
     text = OUT.read_text()
     expected, count = rows(args.resources)
     if args.check:

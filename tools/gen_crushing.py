@@ -61,6 +61,10 @@ TAGS: dict[str, list[str]] = {
     "c:ingots/iron": ["minecraft:iron_ingot"],
     "c:ingots/gold": ["minecraft:gold_ingot"],
     "c:ingots/copper": ["minecraft:copper_ingot"],
+    "c:ingots/lead": ["mekanism:ingot_lead"],
+    "c:ingots/osmium": ["mekanism:ingot_osmium"],
+    "c:ingots/tin": ["mekanism:ingot_tin"],
+    "c:ingots/uranium": ["mekanism:ingot_uranium"],
     "c:clumps/copper": ["mekanism:clump_copper"],
     "c:clumps/gold": ["mekanism:clump_gold"],
     "c:clumps/iron": ["mekanism:clump_iron"],
@@ -74,7 +78,9 @@ TAGS: dict[str, list[str]] = {
 # 1-3, the clumps and dirty dusts of slice 6 and slice 12's four extra metals
 # (lead, osmium, tin, uranium), all declared in
 # `data/mekanism/horizon/item/`. The clump rows (clump -> dirty dust) need both
-# ends registered: the tag above names the input, this list the output.
+# ends registered: the tag above names the input, this list the output. The four
+# ingots are inputs only (`processing/<m>/dust/from_ingot.json`, slice 13), but
+# the `inputs` filter below drops any item this list does not name.
 DUSTS = [
     "mekanism:dust_copper",
     "mekanism:dust_gold",
@@ -83,6 +89,12 @@ DUSTS = [
     "mekanism:dust_osmium",
     "mekanism:dust_tin",
     "mekanism:dust_uranium",
+]
+INGOTS = [
+    "mekanism:ingot_lead",
+    "mekanism:ingot_osmium",
+    "mekanism:ingot_tin",
+    "mekanism:ingot_uranium",
 ]
 CLUMPS = [
     "mekanism:clump_copper",
@@ -105,8 +117,8 @@ DIRTY_DUSTS = [
 
 
 def registered_items() -> set[str]:
-    """The non-vanilla items this port registers (dusts, clumps, dirty dusts)."""
-    return set(DUSTS) | set(CLUMPS) | set(DIRTY_DUSTS)
+    """The non-vanilla items this port registers (dusts, clumps, dirty dusts, ingots)."""
+    return set(DUSTS) | set(CLUMPS) | set(DIRTY_DUSTS) | set(INGOTS)
 
 
 def ingredient_inputs(ingredient: dict) -> list[str]:

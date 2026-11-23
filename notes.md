@@ -1,4 +1,4 @@
-# Mekanism → Horizon, slices 1–11 (the ore-processing machines, the cable, the chemical chain, the factories, the washer, the crystallizer and the crystal → shard leg)
+# Mekanism → Horizon, slices 1–13 (the ore-processing machines, the cable, the chemical chain, the factories, the washer, the crystallizer, the crystal → shard leg, the four extra metals' ore chain and the smelting sweep)
 
 > **0.2.0 (2026-11-18): migrated to the flat SDK package** (`api = "0.2"`, one
 > `impl mod_api::Hooks`, `src/runtime.rs` byte-identical, content at the package
@@ -37,9 +37,11 @@ the two gas factories, one tank. **Slice 8** added the Chemical Washer (the port
 first fluid machine) and **slice 9** the Chemical Crystallizer; their sections
 are below, and **slice 10** the four crystals that complete the crystallizer's seven slurries, and
 **slice 11** the crystal → shard leg that carries every one of those crystals on into the injecting
-chamber's shards, and **slice 12** the rest of the ore chain for the four metals those crystals are
+chamber's shards, **slice 12** the rest of the ore chain for the four metals those crystals are
 made of (clump → dirty dust → dust → ingot), with the port's first **enriching sweep** proving all
-136 enriching rows in a real machine. Everything else in Mekanism is a planned gap (below).
+136 enriching rows in a real machine, and **slice 13** the smelting sweep (all 163 vanilla rows and
+the jar's seven dust → ingot rows) plus the jar's four ingot → dust crushing rows. Everything else in
+Mekanism is a planned gap (below).
 
 ## Class + tier, approach, licence
 
@@ -3417,4 +3419,263 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > unchanged. Package: **322 entries, 219,678 B**, sha256
 > `e487f3aebb981725c422219904b3c89a0f4c845944efe437327a5e801c623f66`; `check` exit 0; `fits` `made
 > for` at the pin and `fits` at `0b14f8a`; 129 tests, clippy `-D warnings` clean; in game `PASS` +
+> `EXIT:0`, control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` + `EXIT:0`, log gate 6/6.
+
+## Slice 13 — the smelting sweep and the four ingot → dust rows (0.2.12, 2026-11-23)
+
+### The scope authority, quoted
+
+Both gaps are this port's own, "Gaps after slice 12" items 1 and 2 — the previous slice's own
+next-slice proposal:
+
+> 1. **The jar's `dust/from_ingot.json` rows for the four now-registered ingots** are four crushing
+>    rows (`c:ingots/<m>` → `dust_<m>`, 152 → 156) this slice does not take: they are outside the
+>    brief's chain and counts, and the crushing sweep would prove them at no extra cost.
+> 2. **The 163-row vanilla smelting table is still not swept.** Phases E/Q prove a handful of rows
+>    (ore → ingot, sand → glass, the seven dust → ingot); the parity rule's next debt is an smelting
+>    sweep over all 163, the way R pays the enriching one.
+
+**Chosen: both, in one version**, because they are the same debt seen from two sides — the last
+carried table never swept (smelting: 163 vanilla rows plus the jar's seven dust rows) and the last
+four jar rows the generators can now expand (the four `c:ingots/<m>` → `dust_<m>` crushing rows
+slice 12's four ingots made possible). It is machines-shaped work on the ledger's `deep` row: no new
+capability, hook, block entity, menu or state — four table rows the shipped Crusher already serves
+and the in-game proof for a table the shipped Energized Smelter has carried since slice 1.
+
+### What the jar and the data say
+
+| value | source | port |
+|---|---|---|
+| one ingot → one dust, no gas | `processing/{lead,osmium,tin,uranium}/dust/from_ingot.json` (`type: mekanism:crushing`, input `c:ingots/<m>`, count 1) | `crushing::TABLE`, four new rows (152 → 156) |
+| one dust → one ingot, 200 ticks, 0.3 xp | `processing/<m>/ingot/from_dust_smelting.json` (`type: minecraft:smelting`) | already `smelting::MEKANISM_ROWS` (7 rows since slice 12); swept for the first time |
+| every vanilla smelting recipe | the prepared 26.3 `data/minecraft/recipe/*.json`, 73 recipes expanded over item tags | `smelting::TABLE`, 163 rows; swept for the first time |
+
+The generators now report **313 crushing recipes → 156 rows** (179 skipped) and **73 smelting recipes
+→ 163 rows**, and the jar holds **eight** `from_dust_smelting.json` files: bronze's dust and ingot are
+not registered here, so `gen_smelting.py --mekanism-rows` keeps **7** — the same seven
+`smelting::MEKANISM_ROWS` carries.
+
+### The slice in the port's three layers
+
+- **`src/runtime.rs`** — the generated `crushing::TABLE` grows by the four rows; `smelting` gains a
+  `#[cfg(test)] rows()` accessor so a test can assert every row is reachable through the binary
+  search the machine calls. Two new tests state the family rule: one ingot crushes into its dust
+  (four new rows, plus the three vanilla-metal rows beside them), and the smelting table holds
+  exactly 163 vanilla rows plus 7 jar rows with every one of them reachable.
+- **`src/support.rs`** — unchanged. The Crusher and the Energized Smelter are generic over their
+  tables, which is why four new rows and a 163-row sweep work with no line of glue.
+- **Content** — unchanged: the four ingots and four dusts were registered in slice 12, and every
+  smelting input and output is a vanilla item or one of the port's own.
+
+### Red → green
+
+The first red is the new `smelting::rows()` accessor missing, on the 0.2.11 tree
+(`../_shared/evidence/mekanism/slice13-unit-red.log`):
+
+```
+error[E0425]: cannot find function `rows` in module `smelting`
+    --> src/runtime.rs:4570:30
+     |
+4570 |         let rows = smelting::rows();
+     |                              ^^^^ not found in `smelting`
+```
+
+Then the family test red — the four rows the slice adds, written first and run against the tree with
+only the accessor added:
+
+```
+---- runtime::tests::the_crusher_turns_every_registered_ingot_into_its_dust stdout ----
+
+thread 'runtime::tests::the_crusher_turns_every_registered_ingot_into_its_dust' panicked at src/runtime.rs:4559:13:
+assertion `left == right` failed: mekanism:ingot_lead
+  left: None
+ right: Some(MachineRecipe { input: 1, output: ItemAmount { item: "mekanism:dust_lead", count: 1 } })
+
+test result: FAILED. 130 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Then green: **131 tests** (was 129; +2), 0 failed.
+
+The smelting test is the sweep's unit half and is *green on the old tree by construction* — the table
+was already complete, which is exactly why it had been unswept. It is the count pin (163 + 7 = 170,
+and every row reachable through `lookup`), not a red; the fail-capability for the smelting family is
+the in-game counterfactual pair below.
+
+### Coverage — every family this slice ships
+
+Per the parity rule (AGENTS.md, 2026-11-20), and the earlier slices' rows still stand:
+
+| family | status | proof |
+|---|---|---|
+| ingot → dust for the four metals (crushing 156 rows) | **tested** | D: `rows crushed: 156 of 156`, the four new rows shown as `mekanism:ingot_lead|osmium|tin|uranium x1 -> {"count": 1, "item": "mekanism:dust_*"}`, input consumed |
+| the 163-row vanilla smelting table | **tested** | T: `rows smelted: 163 of 163`, every row asserted by its own output id/count with the input consumed |
+| the jar's 7 `from_dust_smelting` rows | **tested** | T: `jar  rows smelted: 7 of 7` (copper, gold, iron into vanilla ingots; lead, osmium, tin, uranium into this port's) |
+| named smelting rows, headline | **tested** | S: coal ore → `minecraft:coal`, clay → `minecraft:terracotta`, `dust_tin` → `mekanism:ingot_tin`, each `10000/20000 FE, progress 0/200, input empty x0` |
+| a smelter has no row for an arbitrary input | **tested** | S control: `20000/20000 FE, progress 0/200, input minecraft:dirt x1, output empty x0` (nothing spent, nothing made) and T: `smelter's no-recipe control` (`control PASS`) |
+| the newest family's assertion is fail-capable | **tested** | `SELFTEST=1`: `FAIL: expected /mekanism info at 0,64,-10 to say 'output empty x0', got 'mekanism:energized_smelter: 10000/20000 FE, progress 0/200, input empty x0, output minecraft:coal x1'` + `EXIT:1` |
+| the crushing sweep cannot pass on a non-row | **tested** | D control: a crusher fed `minecraft:dirt` still holds it (`control PASS`) |
+| everything slices 1–12 proved | **still green** | same leg: 156/156 crushing, 163/163 + 7/7 smelting, 136/136 enriching, 79/79 injecting, 15/15 purifying, 7/7 washing, 7/7 crystallizing, the five factories, the menus, save + relaunch, the control game (`EXIT:1`), the no-cable differential (`PASS`), log gate 6/6 |
+| the jar's `c:storage_blocks/<m>` blocks, nuggets and crafting recipes for the four metals | **not ported** | gap 3 below (a block/recipe slice, not this one's) |
+| the `data/c/tags/item/*` tags for the port's items | **not ported** | slice 11's gap 3: the tables are Rust and the generators' `TAGS` plays the tag's role; needs an in-game tag readout to be provable |
+
+### The sweep's budget (163 rows in one leg)
+
+`tools/smelt_sweep.py` runs one operation per row (200 ticks, `TICKS=225`) on **one shared row of
+smelters, batch 20** — 163 rows are **nine waits**, not 163, because a smelter only ever works on one
+input so twenty of them do not interact. The waits are not the cost: the 163 × 4 ctl calls (setblock,
+read-back, insert, charge) are. Measured on the delivered build, the two sweeps (163 + 7 rows, plus
+the control) span **~5,800 game ticks** from phase T's start to the persistence phase, and the whole
+package leg took **2,292 s** of the e2e guard's 3,600 s leg limit (`build-slot.sh events`). Every
+failure message names the **row's 1-based index and input id**, not just a count:
+`row 57 minecraft:coal_ore: expected {"item": "minecraft:coal", "count": 1}, got null`.
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| the family test, RED first | `cargo test --offline` on the 0.2.11 tree | `E0425` (no `rows()`), then **130 passed, 1 failed** (`slice13-unit-red.log`) |
+| tests | `cargo test --offline` | **131 passed**, 0 failed (`slice13-test.log`, `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`slice13-clippy.log`, `sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`slice13-fmt.log`, `sdk-fmt.log`) |
+| recipe tables | the seven `gen_*.py --check` + `carry_crystallizer.py --check` + `carry_shards.py --check` + `carry_ore_chain.py --check` (`HORIZON_RES` set) | 163 / 136 / **156** / 79 / 15 / 7 / 7 rows; 18 + 14 + 50 carried files match the jar (`slice13-recipe-tables.log`) |
+| recipe types | `python3 ports/tools/check-recipe-types.py mekanism` | `mekanism: ok`, exit 0 (`slice13-recipe-types.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **220,447 B**, `cmp` identical, sha256 `0b20e8dbdfd9f5c82bd721305b8b883664b12a35864c1fbcc5588d7d18bfdb71` (`slice13-build.log`, `slice13-build-second.log`, `slice13-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.12 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **322 entries** (`slice13-check.log`, `sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`slice13-fits.log`, `sdk-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (same log) |
+| archive | `unzip -l mekanism.hmod` | 322 entries, 40 item files, no `Cargo.lock` (`slice13-entries.txt`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (322 entries, no packed `Cargo.lock`, runtime byte-identical, 131 tests) |
+| launcher build | `launcher-game.sh build mekanism` (in a lease; no `native-*` tag carried this mod before it) | `Compiling mekanism (1 of 1)`, `native-0a875da-a340191b3e97` (`slice13-launcher-build.log`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 0,64,-10 to say 'output empty x0', got '… output minecraft:coal x1'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+
+The package-building steps ran with **`BUILD_LOCAL=1`**: the slot runner forwards `build`/`check` to
+the second machine, whose cargo has no `cargo-horizon-mod` subcommand (`error: no such command:
+horizon-mod`), while `test` and `lint` forward fine. The lease, the per-step job count and the
+`CARGO_INCREMENTAL=0` rule are unchanged.
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`../_shared/evidence/mekanism-e2e/e2e-package.log`, this slice's phases:
+
+```
+== D: every carried crushing recipe in a real crusher ==
+  …
+  mekanism:ingot_lead x1 -> {"count": 1, "item": "mekanism:dust_lead"}
+  mekanism:ingot_osmium x1 -> {"count": 1, "item": "mekanism:dust_osmium"}
+  mekanism:ingot_tin x1 -> {"count": 1, "item": "mekanism:dust_tin"}
+  mekanism:ingot_uranium x1 -> {"count": 1, "item": "mekanism:dust_uranium"}
+  …
+rows crushed: 156 of 156
+  crushed dirt: [{"count": 1, "item": "minecraft:dirt"}, null, null]
+  control PASS: the dirt is still in the input and nothing was made
+== S: the smelting table's named rows — coal ore, clay, a tin dust and a dirt control ==
+  info(0,64,-10): mekanism:energized_smelter: 10000/20000 FE, progress 0/200, input empty x0, output minecraft:coal x1
+  info(2,64,-10): mekanism:energized_smelter: 10000/20000 FE, progress 0/200, input empty x0, output minecraft:terracotta x1
+  info(4,64,-10): mekanism:energized_smelter: 10000/20000 FE, progress 0/200, input empty x0, output mekanism:ingot_tin x1
+  info(6,64,-10): mekanism:energized_smelter: 20000/20000 FE, progress 0/200, input minecraft:dirt x1, output empty x0
+== T: every carried smelting recipe in a real Energized Smelter ==
+  rows from the 26.3 data's minecraft:smelting recipes: 163
+  row 1 minecraft:acacia_leaves x1 -> {"count": 1, "item": "minecraft:leaf_litter"}
+  …
+  row 163 minecraft:yellow_terracotta x1 -> {"count": 1, "item": "minecraft:yellow_glazed_terracotta"}
+rows smelted: 163 of 163
+sweep PASS: all 163 carried smelting recipes ran in a real energized smelter with their declared output stack, and the input was consumed
+  rows from the jar's processing/*/ingot/from_dust_smelting.json: 7
+  row 4 mekanism:dust_lead x1 -> {"count": 1, "item": "mekanism:ingot_lead"}
+  row 7 mekanism:dust_uranium x1 -> {"count": 1, "item": "mekanism:ingot_uranium"}
+jar  rows smelted: 7 of 7
+  control PASS: the dirt is still in the input and nothing was made
+```
+
+What the numbers prove:
+
+- **every one of the 163 vanilla smelting rows** the table carries runs in a real Energized Smelter:
+  its declared input is consumed, its declared output stack appears in the output slot, the unused
+  middle slot stays empty, and the machine's own answer names it (`row N <input> x1 -> {…}`);
+- **the jar's seven dust → ingot rows** run the same way, including the four slice 12 made reachable
+  (`mekanism:dust_lead` → `mekanism:ingot_lead`, …, `dust_uranium` → `ingot_uranium`);
+- **the four new crushing rows** run in a real Crusher (`156 of 156`), and the dirt control proves
+  the sweep's assertion can distinguish a row from an input the table has no row for;
+- the headline (phase S) asserts one named row per direction — a vanilla ore, a block, and one of the
+  jar's own dusts — at exactly **10,000 FE** an operation, with the dirt machine holding its dirt at
+  **20,000/20,000 FE** and making nothing;
+- the selftest flips **that** assertion (`output empty x0` against a real `minecraft:coal x1`), so the
+  newest family's check is the one proven able to fail;
+- the earlier legs are unchanged: 156/156 crushing, 163/163 + 7/7 smelting, 136/136 enriching,
+  79/79 injecting, 15/15 purifying, 7/7 washing, 7/7 crystallizing, the five factories, the menus,
+  save + relaunch, the control game's refusal (`EXIT:1`) and the no-cable differential (`PASS`).
+
+All four legs ran on the final launcher build `native-0a875da-a340191b3e97`, whose exported
+`horizon-native-mods/mekanism/` is `cmp`-identical to this tree (the manifest, `src/`, `assets/`,
+`data/` and the two licence files) and names **0.2.12**, so the `PASS`/`EXIT` verdicts belong to the
+package recorded below.
+
+### What the harness taught this slice
+
+- **A 163-row sweep is affordable; the ctl calls are the cost.** Nine waits of 225 ticks for 163
+  rows (batch 20) keeps the *tick* budget below 2,300 for both tables; the per-row placement is what
+  makes the leg long (2,292 s of a 3,600 s limit). A later slice that adds another sweep should
+  either share the row between two tables or drop the per-machine block read-back (the `container`
+  insert already fails on a block that is not a container).
+- **A green count pin is not the same as a proof.** `the_smelting_table_covers_every_carried_smelting_row`
+  passed on the old tree because the table was already complete — the missing evidence was in game,
+  not in the code. State that plainly instead of dressing a passing test as a red.
+- **The first run of the new leg died in an unchanged phase (H) with `container … answered without
+  slots: the integrated server stopped or did not answer within 10 s`** while three other ports' e2e
+  legs ran on the same box. The same build and package passed H on the re-run, and the failing leg's
+  own log had no panic. It is machine contention, not this slice — but a re-run is the only honest
+  way to say so.
+- **The flip has to move with the newest family.** Phase Q no longer flips; phase S does. A selftest
+  that keeps flipping an older phase stops proving the latest slice the moment the next one lands.
+- **The stale tag had to go.** No `native-*` tag carried this mod before the build, so
+  `Compiling mekanism (1 of 1)` and `native-0a875da-a340191b3e97` cannot be a reused binary.
+
+### Gaps after slice 13
+
+1. **The four ingots still have no block, nugget or crafting recipes** (`ingot/from_block`,
+   `from_nuggets`, the nine-ingot block family) and the jar's `c:storage_blocks/<m>` art is not
+   carried: blocks are block-entity-free content and the natural next slice, with their loot tables
+   and the `dust/from_block`/`ingot/from_block` rows.
+2. **The jar's `data/c/tags/item/{clumps,dirty_dusts,dusts,ingots}/<material>.json` are still not
+   declared** (slice 11's gap 3): nothing in this port breaks, but another mod asking by tag would not
+   see these items. Needs an in-game tag readout to be provable.
+3. The chemical-container and energy slots, the composite model, the `active` state and the GUI are
+   slice 9's recorded deviations and still stand; everything else in *Gaps / deviations* and the
+   earlier slices' gap lists still stands.
+
+### `## Upstream defects fixed`
+
+None found in this slice: the jar's eight `from_dust_smelting.json` files are consistent with its
+dusts and ingots (bronze's is correctly dropped — this port has no bronze), the four `from_ingot`
+rows are one-ingot-to-one-dust in both the jar and the regenerated table, and the 26.3 smelting data
+reproduces exactly (163 rows from 73 recipes, unchanged by this slice).
+
+### Deviations this slice records
+
+- The four new crushing rows read `c:ingots/<m>`, expanded to this port's `ingot_<m>` — the only
+  member the game has, exactly as the clump and dirty-dust expansions before them.
+- The smelting sweep drives the *generated* rows (the 26.3 resources and the jar), not a hard-coded
+  list, so the scenario and the tables cannot drift apart; `gen_smelting.py --check` keeps the
+  committed table equal to the data, and the unit test pins 163 + 7.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+### Changelog (0.2.12) — supersedes 0.2.11
+
+> **0.2.12 — the smelting sweep and the four ingot → dust rows.** The Energized Smelter's table has
+> been carried since slice 1 and never swept; now **every carried smelting row runs in a real
+> machine**: `rows smelted: 163 of 163` for the vanilla table and `rows smelted: 7 of 7` for the jar's
+> own dust → ingot rows, each asserted by its output id and count with the input consumed, and a
+> dirt in a charged smelter holds its dirt and makes nothing. The Crusher gains the jar's four
+> `c:ingots/<m>` → dust rows for lead, osmium, tin and uranium — `rows crushed: 156 of 156` (152
+> before). Headline in game: a coal ore becomes coal, clay becomes terracotta and a tin dust becomes
+> `mekanism:ingot_tin` for exactly 10,000 FE each; `SELFTEST=1` fails on the coal ore's own output
+> (`output empty x0`), the unmodded game still cannot give the blocks, and the no-cable differential
+> still passes. Package: **322 entries, 220,447 B**, sha256
+> `0b20e8dbdfd9f5c82bd721305b8b883664b12a35864c1fbcc5588d7d18bfdb71`; `check` exit 0; `fits` `made
+> for` at the pin and `fits` at `0b14f8a`; 131 tests, clippy `-D warnings` clean; in game `PASS` +
 > `EXIT:0`, control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` + `EXIT:0`, log gate 6/6.

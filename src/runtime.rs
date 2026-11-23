@@ -521,6 +521,14 @@ pub mod smelting {
             .and_then(|row| one(row.1, row.2))
     }
 
+    /// The vanilla rows themselves, so a test can assert every one of them is
+    /// reachable through [`lookup`] and fix the count e2e phase T must sweep.
+    #[cfg(test)]
+    #[must_use]
+    pub fn rows() -> &'static [(&'static str, &'static str, u32)] {
+        TABLE
+    }
+
     /// How many recipe rows the table holds (the tests' size check).
     #[cfg(test)]
     #[must_use]
@@ -1058,7 +1066,7 @@ pub mod crushing {
     // `(input item, items consumed, output item, output count)`; a `c:`
     // tag is expanded to the members 26.3 has (see the tool's TAGS), and
     // a recipe whose output the port does not register is left out.
-    // Source recipes: 313. Rows: 152. Skipped: 183.
+    // Source recipes: 313. Rows: 156. Skipped: 179.
     static TABLE: &[(&str, u32, &str, u32)] = &[
         ("mekanism:clump_copper", 1, "mekanism:dirty_dust_copper", 1),
         ("mekanism:clump_gold", 1, "mekanism:dirty_dust_gold", 1),
@@ -1072,6 +1080,10 @@ pub mod crushing {
             "mekanism:dirty_dust_uranium",
             1,
         ),
+        ("mekanism:ingot_lead", 1, "mekanism:dust_lead", 1),
+        ("mekanism:ingot_osmium", 1, "mekanism:dust_osmium", 1),
+        ("mekanism:ingot_tin", 1, "mekanism:dust_tin", 1),
+        ("mekanism:ingot_uranium", 1, "mekanism:dust_uranium", 1),
         ("minecraft:black_wool", 1, "minecraft:string", 4),
         ("minecraft:blaze_rod", 1, "minecraft:blaze_powder", 4),
         ("minecraft:blue_wool", 1, "minecraft:string", 4),
@@ -4521,8 +4533,9 @@ mod tests {
         }
         assert_eq!(
             crushing::len(),
-            152,
-            "the rows the generator keeps from the jar's 313 crushing recipes"
+            156,
+            "the rows the generator keeps from the jar's 313 crushing recipes \
+             (152 through slice 12, plus slice 13's four c:ingots rows)"
         );
     }
 
@@ -4537,6 +4550,49 @@ mod tests {
             enriching::len(),
             136,
             "the rows the generator keeps from the jar's 322 enriching recipes"
+        );
+    }
+
+    /// Slice 13: the jar's `processing/<material>/dust/from_ingot.json` rows, the
+    /// `c:ingots/<m>` tag expanded to the four ingots slice 12 registered — an
+    /// ingot crushes back into its dust the way copper, gold and iron already do.
+    #[test]
+    fn the_crusher_turns_every_registered_ingot_into_its_dust() {
+        for material in ["lead", "osmium", "tin", "uranium"] {
+            let ingot = format!("mekanism:ingot_{material}");
+            let dust = format!("mekanism:dust_{material}");
+            assert_eq!(crushing::lookup(&ingot), Some(one(&dust, 1)), "{ingot}");
+        }
+        // The three vanilla-metal `from_ingot` rows the table has carried since
+        // slice 3: the same recipe family, so they are asserted beside them.
+        for (ingot, dust) in [
+            ("minecraft:iron_ingot", "mekanism:dust_iron"),
+            ("minecraft:gold_ingot", "mekanism:dust_gold"),
+            ("minecraft:copper_ingot", "mekanism:dust_copper"),
+        ] {
+            assert_eq!(crushing::lookup(ingot), Some(one(dust, 1)), "{ingot}");
+        }
+    }
+
+    /// Slice 13's other half: the Energized Smelter's table is *the whole* 26.3
+    /// vanilla smelting table plus the jar's own dust rows, and every row is
+    /// reachable through the binary search the machine calls — the unit half of
+    /// e2e phase T, which smelts exactly these row counts in real smelters.
+    #[test]
+    fn the_smelting_table_covers_every_carried_smelting_row() {
+        let rows = smelting::rows();
+        for &(input, output, count) in rows {
+            assert_eq!(smelting::lookup(input), Some(one(output, count)), "{input}");
+        }
+        assert_eq!(
+            rows.len(),
+            163,
+            "every row the 26.3 data's smelting recipes expand to"
+        );
+        assert_eq!(
+            rows.len() + smelting::mekanism_rows(),
+            170,
+            "163 vanilla rows plus the jar's 7 dust -> ingot rows"
         );
     }
 
