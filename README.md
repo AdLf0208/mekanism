@@ -1,4 +1,4 @@
-# Mekanism for Horizon — slices 1–8
+# Mekanism for Horizon — slices 1–9
 
 One flat **SDK package** (`horizon-mod.toml`, `api = "0.2"`) for Mekanism
 10.7.19.85 (MIT), the exact ATM10 jar. The carried blocks, items, models,
@@ -30,6 +30,16 @@ here; the behaviour is `src/lib.rs` (one `impl mod_api::Hooks`) and
   through `mekanism:chemical` — dirty in, clean out — over the jar's seven
   `mekanism:washing` rows (5 mB of water + 1 unit of a dirty slurry → 1 unit of
   its clean slurry, for copper, gold, iron, lead, osmium, tin and uranium);
+- `mekanism:chemical_crystallizer` — **the washer's consumer**: 400 FE/t, 200
+  ticks per operation (80,000 FE), a 160,000 FE buffer (exactly two operations)
+  and a 10,000-unit tank that takes a clean slurry with a row and nothing else
+  (upstream's `containsRecipe` predicate), over the jar's `mekanism:crystallizing`
+  rows this port has crystals for — **200 units of a clean slurry make one**
+  `mekanism:crystal_{iron,gold,copper}`, and a hopper pulls the crystals out;
+- **the five basic factories** — `mekanism:basic_{smelting,enriching,crushing,injecting,purifying}_factory`
+  — each running three processes of its recipe side by side over one buffer and,
+  for the two gas factories, one shared tank (half the base machine's storage per
+  process);
 - `mekanism:basic_energy_cube` — 4,000,000 FE at 4,000 FE/t;
 - `mekanism:basic_universal_cable` — moves 8,000 FE/t between the block
   entities beside it, on its own tick;
@@ -54,12 +64,14 @@ upstream analysis (the numbers and the files read from tag
 
 The recipe tables are generated into `src/runtime.rs` by
 `tools/gen_smelting.py` (the 26.3 vanilla smelting recipes),
-`tools/gen_enriching.py`, `tools/gen_crushing.py` and `tools/gen_injecting.py`
-(the jar's `mekanism:enriching`, `mekanism:crushing` and `mekanism:injecting`
-recipes over the items the port registers); all four have `--check`, and
-`gen_crushing.py --rows` / `gen_injecting.py --rows` feed the in-game sweeps
-(`tools/crush_sweep.py`, `tools/inject_sweep.py`) so the scenario and the table
-cannot drift apart.
+`tools/gen_enriching.py`, `tools/gen_crushing.py`, `tools/gen_injecting.py`,
+`tools/gen_purifying.py`, `tools/gen_washing.py` and `tools/gen_crystallizing.py`
+(the jar's `mekanism:*` recipes over the items and chemicals the port registers);
+all seven have `--check`, and `--rows` feeds the in-game sweeps
+(`tools/crush_sweep.py`, `tools/inject_sweep.py`, `tools/gas_sweep.py`,
+`tools/wash_sweep.py`, `tools/crystal_sweep.py`) so the scenario and the table
+cannot drift apart. `tools/carry_crystallizer.py --check` re-derives the
+crystallizer's carried art from the jar.
 
 ```sh
 # the pure rules and the glue's declarations, on the host target

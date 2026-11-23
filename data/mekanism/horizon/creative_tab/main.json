@@ -28,6 +28,10 @@
     "mekanism:basic_enriching_factory",
     "mekanism:basic_crushing_factory",
     "mekanism:basic_injecting_factory",
-    "mekanism:basic_purifying_factory"
+    "mekanism:basic_purifying_factory",
+    "mekanism:chemical_crystallizer",
+    "mekanism:crystal_iron",
+    "mekanism:crystal_gold",
+    "mekanism:crystal_copper"
   ]
 }

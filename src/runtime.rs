@@ -1682,6 +1682,9 @@ pub enum IdleReason {
     NoFluid,
     /// The output slot has no room for the recipe's result (held).
     NoOutputSpace,
+    /// The crystallizer's tank holds none of the clean slurry a row takes (the
+    /// progress **resets**: upstream's `mismatchedRecipe` for an empty tank).
+    NoChemicalInput,
 }
 
 /// What one tick of a machine did.
@@ -3367,6 +3370,202 @@ pub fn washer_pull(recipe: &WashRecipe, tank: &Tank) -> Option<(&'static str, u3
         }
         Some(_) => None,
         None => Some((recipe.chemical, recipe.chemical_amount)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Slice 9: the Chemical Crystallizer — a clean slurry into a crystal
+// ---------------------------------------------------------------------------
+
+/// The crystallizer's usage in FE per tick (`UsageConfig.chemicalCrystallizer`,
+/// `400L`). Not the washer's 200: the two machines are different rows of the
+/// jar's config, and the crystallizer is the dearer one.
+pub const CRYSTALLIZER_USAGE: i32 = 400;
+
+/// The crystallizer's buffer in FE (`StorageConfig.chemicalCrystallizer`,
+/// `160_000L, 1`).
+pub const CRYSTALLIZER_CAPACITY: i32 = 160_000;
+
+/// Ticks one crystallizing operation takes
+/// (`TileEntityChemicalCrystallizer.BASE_TICKS_REQUIRED` =
+/// `10 * SharedConstants.TICKS_PER_SECOND`), so one operation costs
+/// 200 x 400 = 80,000 FE and the 160,000 buffer holds exactly two.
+pub const CRYSTALLIZER_TICKS: i32 = 200;
+
+/// The crystallizer's one operation: 200 ticks at 400 FE/t.
+pub const CRYSTALLIZER_OPERATION: Operation = Operation {
+    ticks: CRYSTALLIZER_TICKS,
+    usage: CRYSTALLIZER_USAGE,
+};
+
+/// The crystallizer's own tank, in units (`MAX_CHEMICAL = 10L *
+/// FluidType.BUCKET_VOLUME`). It takes a clean slurry and gives none back
+/// (upstream's `BasicChemicalTank.inputModern`).
+pub const CRYSTALLIZER_TANK: u32 = 10_000;
+
+/// One `mekanism:crystallizing` recipe as the crystallizer runs it: the clean
+/// slurry and its amount one operation consumes, and the crystal it makes.
+/// `ChemicalCrystallizerRecipe` over `BasicChemicalCrystallizerRecipe`.
+///
+/// The input is consumed **when the operation finishes**
+/// (`OneInputCachedRecipe.finishProcessing` calls `inputHandler.use`), so one
+/// operation takes exactly one row's worth — not a per-tick draw like the gas
+/// machines' gas.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CrystallizeRecipe {
+    /// The clean slurry the recipe takes.
+    pub chemical: &'static str,
+    /// Units of it one operation consumes.
+    pub amount: u32,
+    /// The crystal item it makes.
+    pub output: &'static str,
+    /// How many of it one operation makes.
+    pub output_count: u32,
+}
+
+/// The jar's `mekanism:crystallizing` recipes this port can run, generated into
+/// `src/runtime.rs` by `tools/gen_crystallizing.py`.
+pub mod crystallizing {
+    use super::{CrystallizeRecipe, ItemAmount, room_for};
+
+    /// How many rows the table holds.
+    pub const ROW_COUNT: usize = TABLE.len();
+
+    /// The recipe whose clean slurry is `chemical`, `None` when no row takes it.
+    #[must_use]
+    pub fn recipe_for(chemical: &str) -> Option<CrystallizeRecipe> {
+        TABLE
+            .iter()
+            .find(|row| row.0 == chemical)
+            .map(|row| CrystallizeRecipe {
+                chemical: row.0,
+                amount: row.1,
+                output: row.2,
+                output_count: row.3,
+            })
+    }
+
+    /// Whether the machine's tank takes `chemical`: upstream's tank predicate is
+    /// `containsRecipe`, so a chemical with no row (a dirty slurry, a gas, water)
+    /// is refused by name rather than stored and found useless later.
+    #[must_use]
+    pub fn accepts(chemical: &str) -> bool {
+        recipe_for(chemical).is_some()
+    }
+
+    /// The clean slurries the table takes, in table order — the order an empty
+    /// tank asks a neighbour for them.
+    pub fn slurries() -> impl Iterator<Item = &'static str> {
+        TABLE.iter().map(|row| row.0)
+    }
+
+    /// The slurries an **empty** tank asks a neighbour for: only those whose
+    /// crystal the output slot could take, in table order.
+    ///
+    /// The room check belongs to a candidate, not to the loop. A slot holding
+    /// one material's crystals (`crystal_iron`) takes `clean_iron` and reports
+    /// no other row, so the tank does not stop at the table's first entry
+    /// (`clean_copper`) and starve; a full stack, or a slot of another item,
+    /// takes nothing, so a machine that could not finish an operation never
+    /// siphons its neighbour.
+    pub fn slurries_that_fit(
+        output: &ItemAmount,
+        max_stack: u32,
+    ) -> impl Iterator<Item = &'static str> {
+        TABLE.iter().filter_map(move |row| {
+            (room_for(output, &ItemAmount::new(row.2, row.3), max_stack) >= row.3).then_some(row.0)
+        })
+    }
+
+    /// `(clean slurry, its units, crystal item, count)`.
+    type Row = (&'static str, u32, &'static str, u32);
+
+    // BEGIN GENERATED CRYSTALLIZING TABLE (tools/gen_crystallizing.py)
+    // Generated from the jar's `mekanism:crystallizing` recipes by
+    // `tools/gen_crystallizing.py`; do not edit by hand. Each row is
+    // `(clean slurry, its units, crystal item, count)`, the amount one
+    // **operation** takes (it is consumed when the operation finishes, not
+    // per tick), and a recipe whose crystal item this port does not
+    // register is left out.
+    // Source recipes: 10. Rows: 3. Skipped: 7.
+    static TABLE: &[Row] = &[
+        ("mekanism:clean_copper", 200, "mekanism:crystal_copper", 1),
+        ("mekanism:clean_gold", 200, "mekanism:crystal_gold", 1),
+        ("mekanism:clean_iron", 200, "mekanism:crystal_iron", 1),
+    ];
+    // END GENERATED CRYSTALLIZING TABLE
+}
+
+/// One tick of the Chemical Crystallizer (`TileEntityChemicalCrystallizer`
+/// through `OneInputCachedRecipe.crystallizing`).
+///
+/// `lookup` answers the recipe for the tank's clean slurry. Each operating tick
+/// costs `operation.usage` energy and adds one progress tick; on
+/// `operation.ticks` the recipe's slurry is consumed and its crystal goes into
+/// the output slot. An empty tank, a chemical with no row and too little slurry
+/// are upstream's `mismatchedRecipe`/`NOT_ENOUGH_INPUT`: they **reset** the
+/// progress, as the item machines' bad input does. No energy and no output room
+/// **hold** it.
+pub fn process_crystal_tick(
+    machine: &mut Machine,
+    operation: Operation,
+    tank: &mut Tank,
+    output: &mut ItemAmount,
+    max_stack: u32,
+    lookup: &dyn Fn(&str) -> Option<CrystallizeRecipe>,
+) -> Outcome {
+    let Some((chemical, amount)) = tank.held() else {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoChemicalInput);
+    };
+    let Some(recipe) = lookup(chemical).filter(|recipe| recipe.output_count > 0) else {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoRecipe);
+    };
+    if amount < recipe.amount {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NotEnoughInput);
+    }
+    let result = ItemAmount::new(recipe.output, recipe.output_count);
+    if room_for(output, &result, max_stack) < recipe.output_count {
+        return Outcome::Idle(IdleReason::NoOutputSpace);
+    }
+    if machine.energy < operation.usage {
+        return Outcome::Idle(IdleReason::NoEnergy);
+    }
+    machine.energy -= operation.usage;
+    machine.progress += 1;
+    if machine.progress < operation.ticks {
+        return Outcome::Working;
+    }
+    machine.progress = 0;
+    tank.spend(recipe.amount);
+    if output.is_empty() {
+        *output = result;
+    } else {
+        output.count += recipe.output_count;
+    }
+    Outcome::Produced
+}
+
+/// The clean slurry the crystallizer pulls from a neighbour for the operation it
+/// is about to run: which slurry and how much, or `None` when its own tank
+/// already holds the operation's worth (or holds a chemical with a row that is
+/// not this recipe's — the tank never mixes).
+///
+/// One **operation's** amount is asked for, not one tick's: this machine consumes
+/// its slurry when the operation finishes. The port's recorded deviation for the
+/// gas machines applies here: with no pipes, a machine takes from the handler
+/// beside it what it is about to spend.
+#[must_use]
+pub fn crystallizer_pull(recipe: &CrystallizeRecipe, tank: &Tank) -> Option<(&'static str, u32)> {
+    match tank.held() {
+        Some((held, stored)) if held == recipe.chemical => {
+            let want = recipe.amount.saturating_sub(stored);
+            (want > 0).then_some((recipe.chemical, want))
+        }
+        Some(_) => None,
+        None => Some((recipe.chemical, recipe.amount)),
     }
 }
 
@@ -5674,5 +5873,368 @@ mod washer_tests {
         assert_eq!(water.held(), Some((WATER, 500)));
         assert_eq!(dirty.held(), Some(("mekanism:dirty_iron", 10)));
         assert_eq!(clean.held(), Some(("mekanism:clean_gold", 20)));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Slice 9: the Chemical Crystallizer — the slurries' third machine
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod crystallizer_tests {
+    use super::*;
+
+    /// The crystallizer's numbers are the jar's own (`UsageConfig.chemicalCrystallizer`
+    /// 400 FE/t, `StorageConfig.chemicalCrystallizer` 160,000 FE,
+    /// `TileEntityChemicalCrystallizer.BASE_TICKS_REQUIRED` 200 ticks,
+    /// `MAX_CHEMICAL` 10,000 units), not another machine's.
+    #[test]
+    fn the_crystallizer_is_the_jar_s_400_fe_a_tick_and_its_160_000_buffer() {
+        assert_eq!(CRYSTALLIZER_USAGE, 400, "UsageConfig.chemicalCrystallizer");
+        assert_eq!(CRYSTALLIZER_CAPACITY, 160_000, "StorageConfig");
+        assert_eq!(CRYSTALLIZER_TICKS, 200, "BASE_TICKS_REQUIRED");
+        assert_eq!(CRYSTALLIZER_OPERATION.usage, 400);
+        assert_eq!(CRYSTALLIZER_OPERATION.ticks, 200);
+        assert_eq!(
+            CRYSTALLIZER_OPERATION.usage * CRYSTALLIZER_OPERATION.ticks,
+            80_000,
+            "one operation is 80,000 FE, so the 160,000 buffer holds exactly two"
+        );
+        assert_eq!(CRYSTALLIZER_TANK, 10_000, "MAX_CHEMICAL = 10 x BUCKET");
+    }
+
+    /// The jar's three carried crystallizing rows: 200 units of a material's
+    /// clean slurry make one of its crystals, one operation each.
+    #[test]
+    fn every_crystallizing_row_is_the_jar_s() {
+        assert_eq!(
+            crystallizing::ROW_COUNT,
+            3,
+            "iron, gold and copper: the crystals this port registers"
+        );
+        for material in ["copper", "gold", "iron"] {
+            let slurry = format!("mekanism:clean_{material}");
+            let crystal = format!("mekanism:crystal_{material}");
+            let recipe =
+                crystallizing::recipe_for(&slurry).unwrap_or_else(|| panic!("no row for {slurry}"));
+            assert_eq!(recipe.chemical, slurry);
+            assert_eq!(recipe.amount, 200, "the jar's input amount");
+            assert_eq!(recipe.output, crystal);
+            assert_eq!(recipe.output_count, 1);
+        }
+        assert_eq!(
+            crystallizing::recipe_for("mekanism:dirty_iron"),
+            None,
+            "a dirty slurry is the washer's input, not the crystallizer's"
+        );
+        assert_eq!(crystallizing::recipe_for("mekanism:hydrogen"), None);
+        assert_eq!(
+            crystallizing::slurries().collect::<Vec<_>>(),
+            [
+                "mekanism:clean_copper",
+                "mekanism:clean_gold",
+                "mekanism:clean_iron"
+            ],
+            "the draw asks for the table's own slurries, in its order"
+        );
+    }
+
+    /// The crystallizer's tank takes a chemical with a row and refuses the rest
+    /// (upstream's `containsRecipe` predicate), so a dirty slurry never enters.
+    #[test]
+    fn only_a_slurry_with_a_row_enters_the_crystallizer_s_tank() {
+        assert!(crystallizing::recipe_for("mekanism:clean_iron").is_some());
+        assert!(known_slurry("mekanism:clean_iron").is_some());
+        for refused in [
+            "mekanism:dirty_iron",
+            "mekanism:hydrogen",
+            "minecraft:water",
+        ] {
+            assert_eq!(
+                crystallizing::recipe_for(refused),
+                None,
+                "{refused} has no crystallizing row, so the tank refuses it"
+            );
+        }
+    }
+
+    /// One operation at the jar's price: 200 ticks x 400 FE, 200 units of clean
+    /// slurry in, one crystal out — and the tank and the output each move by
+    /// exactly that.
+    #[test]
+    fn one_crystallizing_operation_costs_80_000_fe_and_200_units() {
+        let mut machine = Machine {
+            energy: CRYSTALLIZER_CAPACITY,
+            progress: 0,
+        };
+        let mut tank = Tank::new("mekanism:clean_iron", 1_000);
+        let mut output = ItemAmount::default();
+        let mut outcomes = Vec::new();
+        for _ in 0..CRYSTALLIZER_TICKS {
+            outcomes.push(process_crystal_tick(
+                &mut machine,
+                CRYSTALLIZER_OPERATION,
+                &mut tank,
+                &mut output,
+                64,
+                &crystallizing::recipe_for,
+            ));
+        }
+        assert!(
+            outcomes[..199]
+                .iter()
+                .all(|outcome| *outcome == Outcome::Working),
+            "every tick but the last only works"
+        );
+        assert_eq!(*outcomes.last().unwrap(), Outcome::Produced);
+        assert_eq!(
+            machine.energy,
+            CRYSTALLIZER_CAPACITY - 80_000,
+            "200 ticks x 400 FE"
+        );
+        assert_eq!(machine.progress, 0, "the operation finished");
+        assert_eq!(
+            tank.held(),
+            Some(("mekanism:clean_iron", 800)),
+            "200 units an operation, spent at its finish, not 200 a tick"
+        );
+        assert_eq!(output, ItemAmount::new("mekanism:crystal_iron", 1));
+    }
+
+    /// The slurry is spent when the operation finishes, as upstream's
+    /// `OneInputCachedRecipe.finishProcessing` does: a mid-operation machine
+    /// still holds all 200 units it drew.
+    #[test]
+    fn the_slurry_is_spent_at_the_finish_not_per_tick() {
+        let mut machine = Machine {
+            energy: CRYSTALLIZER_CAPACITY,
+            progress: 0,
+        };
+        let mut tank = Tank::new("mekanism:clean_iron", 200);
+        let mut output = ItemAmount::default();
+        for _ in 0..199 {
+            process_crystal_tick(
+                &mut machine,
+                CRYSTALLIZER_OPERATION,
+                &mut tank,
+                &mut output,
+                64,
+                &crystallizing::recipe_for,
+            );
+        }
+        assert_eq!(machine.progress, 199);
+        assert_eq!(
+            tank.held(),
+            Some(("mekanism:clean_iron", 200)),
+            "the operation has not finished, so nothing is taken"
+        );
+        assert!(output.is_empty());
+    }
+
+    /// A dirty slurry is a chemical this machine has no row for: the progress
+    /// resets and neither the slurry nor the energy moves. This is the
+    /// counterfactual the in-game leg repeats.
+    #[test]
+    fn a_crystallizer_with_a_dirty_slurry_resets_and_spends_nothing() {
+        let mut machine = Machine {
+            energy: CRYSTALLIZER_CAPACITY,
+            progress: 60,
+        };
+        let mut tank = Tank::new("mekanism:dirty_iron", 1_000);
+        let mut output = ItemAmount::default();
+        assert_eq!(
+            process_crystal_tick(
+                &mut machine,
+                CRYSTALLIZER_OPERATION,
+                &mut tank,
+                &mut output,
+                64,
+                &crystallizing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoRecipe)
+        );
+        assert_eq!(machine.progress, 0, "no recipe resets the progress");
+        assert_eq!(machine.energy, CRYSTALLIZER_CAPACITY, "and spends nothing");
+        assert_eq!(tank, Tank::new("mekanism:dirty_iron", 1_000));
+        assert!(output.is_empty());
+    }
+
+    /// An empty tank is upstream's `mismatchedRecipe`: the progress resets
+    /// rather than holding, as the item machines' empty input does.
+    #[test]
+    fn an_empty_crystallizer_tank_resets_the_progress() {
+        let mut machine = Machine {
+            energy: CRYSTALLIZER_CAPACITY,
+            progress: 60,
+        };
+        let mut tank = Tank::default();
+        let mut output = ItemAmount::default();
+        assert_eq!(
+            process_crystal_tick(
+                &mut machine,
+                CRYSTALLIZER_OPERATION,
+                &mut tank,
+                &mut output,
+                64,
+                &crystallizing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoChemicalInput)
+        );
+        assert_eq!(machine.progress, 0);
+        assert_eq!(machine.energy, CRYSTALLIZER_CAPACITY);
+    }
+
+    /// Short of one operation's slurry is `NOT_ENOUGH_INPUT`: it resets too,
+    /// and not a unit is taken.
+    #[test]
+    fn a_crystallizer_short_of_slurry_resets_too() {
+        let mut machine = Machine {
+            energy: CRYSTALLIZER_CAPACITY,
+            progress: 60,
+        };
+        let mut tank = Tank::new("mekanism:clean_iron", 199);
+        let mut output = ItemAmount::default();
+        assert_eq!(
+            process_crystal_tick(
+                &mut machine,
+                CRYSTALLIZER_OPERATION,
+                &mut tank,
+                &mut output,
+                64,
+                &crystallizing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NotEnoughInput)
+        );
+        assert_eq!(machine.progress, 0);
+        assert_eq!(machine.energy, CRYSTALLIZER_CAPACITY);
+        assert_eq!(tank.held(), Some(("mekanism:clean_iron", 199)));
+    }
+
+    /// No energy holds the progress (it does not reset it), and no output room
+    /// holds it too: the machine has started an operation it cannot finish.
+    #[test]
+    fn no_energy_and_no_output_room_hold_the_crystallizer() {
+        let mut machine = Machine {
+            energy: 399,
+            progress: 60,
+        };
+        let mut tank = Tank::new("mekanism:clean_iron", 1_000);
+        let mut output = ItemAmount::default();
+        assert_eq!(
+            process_crystal_tick(
+                &mut machine,
+                CRYSTALLIZER_OPERATION,
+                &mut tank,
+                &mut output,
+                64,
+                &crystallizing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoEnergy)
+        );
+        assert_eq!(machine.progress, 60, "a short buffer holds the progress");
+        assert_eq!(tank.held(), Some(("mekanism:clean_iron", 1_000)));
+
+        let mut machine = Machine {
+            energy: CRYSTALLIZER_CAPACITY,
+            progress: 60,
+        };
+        let mut full = ItemAmount::new("mekanism:crystal_gold", 64);
+        assert_eq!(
+            process_crystal_tick(
+                &mut machine,
+                CRYSTALLIZER_OPERATION,
+                &mut tank,
+                &mut full,
+                64,
+                &crystallizing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoOutputSpace),
+            "a full stack of another crystal has no room for this one"
+        );
+        assert_eq!(machine.progress, 60);
+        assert_eq!(
+            machine.energy, CRYSTALLIZER_CAPACITY,
+            "and no energy is spent"
+        );
+        assert_eq!(full, ItemAmount::new("mekanism:crystal_gold", 64));
+    }
+
+    /// The neighbour draw asks for one operation's worth of the slurry it is
+    /// about to spend, and takes nothing when the tank already holds it.
+    #[test]
+    fn the_crystallizer_draws_one_operation_s_slurry() {
+        let recipe = crystallizing::recipe_for("mekanism:clean_iron").expect("a clean-iron row");
+        assert_eq!(
+            crystallizer_pull(&recipe, &Tank::default()),
+            Some(("mekanism:clean_iron", 200)),
+            "an empty tank asks for a whole operation"
+        );
+        assert_eq!(
+            crystallizer_pull(&recipe, &Tank::new("mekanism:clean_iron", 50)),
+            Some(("mekanism:clean_iron", 150)),
+            "a part-filled tank is topped up to one operation"
+        );
+        assert_eq!(
+            crystallizer_pull(&recipe, &Tank::new("mekanism:clean_iron", 200)),
+            None,
+            "a tank that already holds the operation draws nothing"
+        );
+        assert_eq!(
+            crystallizer_pull(&recipe, &Tank::new("mekanism:dirty_iron", 1_000)),
+            None,
+            "another slurry is not drawn from"
+        );
+    }
+
+    /// The tank decides what it takes (upstream's `containsRecipe` predicate):
+    /// a chemical with no row is refused by name, so a dirty slurry never fills
+    /// it, while any carried clean slurry does.
+    #[test]
+    fn the_crystallizer_s_tank_refuses_a_chemical_without_a_row() {
+        assert!(crystallizing::accepts("mekanism:clean_iron"));
+        assert!(crystallizing::accepts("mekanism:clean_gold"));
+        assert!(crystallizing::accepts("mekanism:clean_copper"));
+        assert!(!crystallizing::accepts("mekanism:dirty_iron"));
+        assert!(
+            !crystallizing::accepts("mekanism:clean_lead"),
+            "no crystal item"
+        );
+        assert!(!crystallizing::accepts("mekanism:hydrogen"));
+        assert!(!crystallizing::accepts("minecraft:water"));
+    }
+
+    /// The slurries the tank asks a neighbour for: only those whose crystal the
+    /// output slot could take.
+    ///
+    /// This is the 0.2.8 e2e's N1 stall as a rule. The empty-tank loop used the
+    /// room check as a **loop-wide** verdict, so a slot of `crystal_iron`
+    /// stopped it at the table's first row (`clean_copper`, a different item)
+    /// and the machine never reached `clean_iron`: one operation, then 1,300
+    /// ticks of nothing while the neighbour tank stayed at 800. A candidate the
+    /// slot cannot take is skipped, not treated as "nothing fits".
+    #[test]
+    fn a_slot_of_one_crystal_asks_for_that_materials_slurry_and_skips_the_rest() {
+        let one_iron = ItemAmount::new("mekanism:crystal_iron", 1);
+        assert_eq!(
+            crystallizing::slurries_that_fit(&one_iron, 64).collect::<Vec<_>>(),
+            vec!["mekanism:clean_iron"],
+            "a slot holding crystal_iron takes clean_iron, and reports no other row"
+        );
+        assert_eq!(
+            crystallizing::slurries_that_fit(&ItemAmount::default(), 64).count(),
+            crystallizing::ROW_COUNT,
+            "an empty slot takes any row's crystal"
+        );
+        assert_eq!(
+            crystallizing::slurries_that_fit(&ItemAmount::new("mekanism:crystal_iron", 64), 64)
+                .count(),
+            0,
+            "a full stack takes no more, so a stalled crystallizer siphons nothing"
+        );
+        assert_eq!(
+            crystallizing::slurries_that_fit(&ItemAmount::new("minecraft:diamond", 1), 64).count(),
+            0,
+            "a slot of another item takes no crystal at all"
+        );
     }
 }

@@ -1,0 +1,19 @@
+{
+  "category": "misc",
+  "key": {
+    "A": "minecraft:amethyst_shard",
+    "C": "minecraft:redstone",
+    "I": "minecraft:obsidian",
+    "X": "minecraft:iron_block"
+  },
+  "pattern": [
+    "IAI",
+    "CXC",
+    "IAI"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:chemical_crystallizer"
+  },
+  "type": "minecraft:crafting_shaped"
+}

@@ -172,31 +172,33 @@ entity's NBT and the cable still balances it on its own tick.
 
 ## Next slices (planned gap list)
 
-1. **Ore processing chain (the rest of the tier)**: the **Enrichment
-   Chamber** (slice 2), the **Crusher** (slice 3) and the **Chemical Injection
-   Chamber** (slice 5, `mekanism:injecting`, on the chemical capability slice 4
-   published) are done; next are the Purification Chamber (needs oxygen) and the
-   Ore Washer (needs water as a gas). Both are `ItemStackChemicalToItemStack`
-   machines of the same shape, so each is a slice like this one — with its own
-   recipe table and a second gas id the table already validates against.
-2. **Factories** (`basic_smelting_factory` etc.): the same recipe in parallel,
-   hearts of the `TileEntityFactory` family; needs multi-operation-per-tick
-   (`operationsPerTick`) and a larger energy buffer.
-3. **Tiers**: advanced/elite/ultimate energy cubes and cables (same code,
-   different constants — a tier table), the creative cube.
-4. **Config and upgrades**: `config/mekanism/…` usage/storage values,
-   speed/energy upgrades (`ticksRequired`, `energyPerTick` multipliers),
-   redstone control, side configuration, the Configurator, ejector.
-5. **GUI/screen**: Mekanism's own machine GUIs, energy gauges, the cube's
-   screen; the pin's vanilla furnace menu stands in for the smelter.
-6. **Machines that need new capabilities**: Metallurgic Infuser, Thermal
-   Distillation, Electrolytic Separator, Digital Miner (requires a gas
-   capability and a mod-defined resource type).
-7. **Deep tier**: jetpack/armour (`Mekanism Tools`), teleporters, the
-   Digital Miner's renderer, the fusion reactor (Mekanism Generators),
-   multiblocks; all out of scope here.
-8. **Item energy**: the energy tablet and the machine energy slot need
-   `native_item_energy_buffer` (API 307) plus a battery item.
+1. **The four missing crystals** (`crystal_{lead,osmium,tin,uranium}`): the washer already makes their
+   clean slurries and `gen_crystallizing.py` drops those four rows because the items do not exist. Four
+   items (jar textures) and the table's `--check` closes the washer → crystallizer → enricher chain for
+   every slurry this port can make. Smallest next slice with a user-visible gain.
+2. **Ore-processing chain, remaining**: the **Osmium Compressor** (needs osmium and a refined-ingot
+   chain), the **Chemical Dissolution Chamber** (needs sulfuric acid + an ore-shard family) and the
+   **Chemical Oxidizer** (item → gas). The dissolution chamber is the one the brief allowed as a
+   stretch and is the next real machine; it needs `mekanism:sulfuric_acid` (already a registered
+   chemical) plus a per-material ore → slurry table.
+3. **Factories, higher tiers and the rest of the family**: advanced/elite/ultimate factories, the
+   creative cube, the advanced cables' tiers.
+4. **Tiers**: advanced/elite/ultimate energy cubes and cables (same code, different constants — a tier
+   table).
+5. **Config and upgrades**: `config/mekanism/…` usage/storage values, speed/energy upgrades
+   (`ticksRequired`, `energyPerTick` multipliers), redstone control, side configuration, the
+   Configurator, ejector.
+6. **GUI/screen**: Mekanism's own machine GUIs, energy gauges; the pin's vanilla furnace menu stands in
+   for the item machines.
+7. **Machines that need new capabilities or resources**: Metallurgic Infuser, Thermal Distillation,
+   Electrolytic Separator, Digital Miner.
+8. **Deep tier**: jetpack/armour (`Mekanism Tools`), teleporters, the Digital Miner's renderer, the
+   fusion reactor (Mekanism Generators), multiblocks; all out of scope here.
+9. **Item energy**: the energy tablet and the machine energy slot need `native_item_energy_buffer`
+   (API 307) plus a battery item.
+
+Done since this list was written: the Purification Chamber (slice 6), the five basic factories
+(slice 7), the Chemical Washer (slice 8) and the Chemical Crystallizer (slice 9).
 
 ## Slice boundary (what this port ships, slices 1–2)
 
@@ -330,3 +332,45 @@ Where the rewrite differs (and why):
   holds its water and slurry);
 - the block's model and seven textures are the jar's **own** (28 elements, `cutout`); the jar's block
   has no `active` state at all, so the barrel template's unused `open` state is the only stand-in.
+
+## Slice 9 — the Chemical Crystallizer (upstream analysis)
+
+Read for this slice from the upstream **tag `v1.21.1-10.7.19.85`** (commit
+`a00109e4856fd38b9c5b3dd7f22ce4a59cd65a80`), analysis only — the Rust is a clean-room rewrite, and the
+jar's own data (`data/mekanism/recipe/processing/*/crystal/from_slurry.json` and
+`recipe/crystallizing/*.json`) is the recipe source:
+
+| Area | Files |
+|---|---|
+| the machine | `common/tile/machine/TileEntityChemicalCrystallizer.java`, `common/tile/prefab/TileEntityProgressMachine.java`, `TileEntityRecipeMachine.java` |
+| the recipe | `src/api/java/mekanism/api/recipes/ChemicalCrystallizerRecipe.java`, `recipes/BasicChemicalCrystallizerRecipe.java`, `recipes/cache/OneInputCachedRecipe.java` (`crystallizing`), `recipes/cache/CachedRecipe.java`, `recipes/inputs/InputHelper.java` |
+| the numbers | `common/config/UsageConfig.java:68` (`chemicalCrystallizer`, `400L`), `common/config/StorageConfig.java:86` (`160_000L, 1`), `TileEntityChemicalCrystallizer.java:61-62` (`MAX_CHEMICAL`, `BASE_TICKS_REQUIRED`) |
+| the tank | `BasicChemicalTank.inputModern(MAX_CHEMICAL, this::containsRecipe, …)` (`:94`) — the predicate that refuses a chemical with no row |
+| the block | `common/registries/MekanismBlockTypes.java` (`createMachine`), `assets/mekanism/blockstates/chemical_crystallizer.json` (`facing` only), `assets/mekanism/models/block/chemical_crystallizer.json` (`neoforge:composite`) |
+
+Numbers carried: usage **400 FE/t**, storage **160,000 FE**, the shared **200**-tick operation
+(**80,000 FE**, so the buffer holds exactly two), the tank **10,000** units
+(`MAX_CHEMICAL = 10 * BUCKET_VOLUME`, insert-only, predicate `containsRecipe`), and the three
+`processing/<material>/crystal/from_slurry.json` rows this port can finish —
+**200 units of `clean_<m>` → 1 `crystal_<m>`** for copper, gold and iron, the slurry taken at the
+operation's finish (`OneInputCachedRecipe.finishProcessing` → `inputHandler.use`).
+
+The jar's ten `mekanism:crystallizing` recipes are: the three ore slurries above, `clean_{lead,osmium,
+tin,uranium}` (dropped: those crystal items are not registered), `brine` → `salt` and `lithium` →
+`dust_lithium` (dropped: not registered), and `antimatter` → `pellet_antimatter` (dropped). That is
+the gap the next slice can close for four of them.
+
+Where the rewrite differs (and why):
+
+- upstream fills the tank through automation and has a **chemical-container input slot**; the port
+  ships no pipes and no container slot, so the machine **pulls one operation's slurry** from an
+  adjacent `mekanism:chemical` handler — and only when it could finish that operation (the crystal
+  fits the output slot), the slice-7 gas-sip guard;
+- the energy is the port's `block_energy` (insert-only faces) rather than
+  `MachineEnergyContainer.input`, and the item/chemical/energy slot trio is not carried;
+- the jar's model is a `neoforge:composite` (cutout + translucent children) and is flattened to one
+  `cutout` model by `tools/carry_crystallizer.py`; the glass therefore draws cutout;
+- the jar's block has `facing` only (no `active`), so the barrel template's unused `open` state stands
+  in and nothing is lost visually beyond the template's shape;
+- the shaped recipe uses vanilla stand-ins (obsidian, amethyst, redstone, iron block), the precedent
+  of the fifteen earlier ones, because the real ingredients are not registered.

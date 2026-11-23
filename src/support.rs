@@ -16,17 +16,19 @@ use mod_api::{
 use crate::chemical::{CHEMICAL, Chemical, ITEM_CHEMICAL, ITEM_COMPONENT};
 use crate::runtime::{
     CABLE_CAPACITY, CHAMBER_CAPACITY, CHAMBER_OPERATION, CHAMBER_TICKS, CHEMICALS,
-    CRUSHER_CAPACITY, CRUSHER_OPERATION, CRUSHER_TICKS, CRUSHING_FACTORY_CAPACITY, CUBE_CAPACITY,
-    CUBE_RATE, DROPPER_CAPACITY, EMPTY_CHEMICAL, ENRICHING_FACTORY_CAPACITY, FACTORY_PROCESSES,
-    FACTORY_TICKS, FactoryProcess, FluidTank, GasRecipe, INJECTING_FACTORY_CAPACITY,
-    INJECTING_FACTORY_TANK, INJECTION_CAPACITY, INJECTION_OPERATION, INJECTION_TANK,
-    INJECTION_TICKS, IdleReason, ItemAmount, Machine, MachineRecipe, Operation, Outcome,
-    PURIFY_CAPACITY, PURIFY_OPERATION, PURIFY_TANK, PURIFY_TICKS, PURIFYING_FACTORY_CAPACITY,
-    PURIFYING_FACTORY_TANK, SLURRIES, SMELTER_CAPACITY, SMELTER_OPERATION, SMELTER_TICKS,
-    SMELTING_FACTORY_CAPACITY, TANK_CAPACITY, Tank, WASHER_CAPACITY, WASHER_OPERATION,
-    WASHER_SLURRY, WASHER_TICKS, WASHER_WATER, WATER, clamp_energy, crushing, dropper_move,
-    energy_after_extract, energy_after_insert, enriching, extract_chemical, factory_gas_want,
-    gas_pull, injecting, insert_chemical, operations_per_tick, process_factory_tick,
+    CRUSHER_CAPACITY, CRUSHER_OPERATION, CRUSHER_TICKS, CRUSHING_FACTORY_CAPACITY,
+    CRYSTALLIZER_CAPACITY, CRYSTALLIZER_OPERATION, CRYSTALLIZER_TANK, CRYSTALLIZER_TICKS,
+    CUBE_CAPACITY, CUBE_RATE, CrystallizeRecipe, DROPPER_CAPACITY, EMPTY_CHEMICAL,
+    ENRICHING_FACTORY_CAPACITY, FACTORY_PROCESSES, FACTORY_TICKS, FactoryProcess, FluidTank,
+    GasRecipe, INJECTING_FACTORY_CAPACITY, INJECTING_FACTORY_TANK, INJECTION_CAPACITY,
+    INJECTION_OPERATION, INJECTION_TANK, INJECTION_TICKS, IdleReason, ItemAmount, Machine,
+    MachineRecipe, Operation, Outcome, PURIFY_CAPACITY, PURIFY_OPERATION, PURIFY_TANK,
+    PURIFY_TICKS, PURIFYING_FACTORY_CAPACITY, PURIFYING_FACTORY_TANK, SLURRIES, SMELTER_CAPACITY,
+    SMELTER_OPERATION, SMELTER_TICKS, SMELTING_FACTORY_CAPACITY, TANK_CAPACITY, Tank,
+    WASHER_CAPACITY, WASHER_OPERATION, WASHER_SLURRY, WASHER_TICKS, WASHER_WATER, WATER,
+    clamp_energy, crushing, crystallizer_pull, crystallizing, dropper_move, energy_after_extract,
+    energy_after_insert, enriching, extract_chemical, factory_gas_want, gas_pull, injecting,
+    insert_chemical, operations_per_tick, process_crystal_tick, process_factory_tick,
     process_gas_factory_tick, process_gas_tick, process_tick, process_wash_tick, purifying,
     room_for, room_in_tank, smelting, washer_pull, washing,
 };
@@ -62,6 +64,10 @@ pub(crate) const PURIFYING_FACTORY: &str = "mekanism:basic_purifying_factory";
 /// is a **fluid** (water) beside a chemical (dirty slurry).
 pub(crate) const WASHER: &str = "mekanism:chemical_washer";
 
+/// Slice 9's machine: the Chemical Crystallizer, the washer's consumer — a clean
+/// slurry in, a crystal item out.
+pub(crate) const CRYSTALLIZER: &str = "mekanism:chemical_crystallizer";
+
 /// The block entity types, in this mod's namespace (`/mekanism` has no
 /// bearing on them). One type per block, as the retired bundle's
 /// `block_entity` hook named the block it was asked about.
@@ -79,6 +85,7 @@ const CRUSHING_FACTORY_TYPE: &str = "basic_crushing_factory";
 const INJECTING_FACTORY_TYPE: &str = "basic_injecting_factory";
 const PURIFYING_FACTORY_TYPE: &str = "basic_purifying_factory";
 const WASHER_TYPE: &str = "chemical_washer";
+const CRYSTALLIZER_TYPE: &str = "chemical_crystallizer";
 
 /// A machine's menu slots: input, unused (the furnace menu's fuel slot) and
 /// output.
@@ -94,6 +101,9 @@ const MENU_SLOTS: usize = 3;
 const FACTORY_SLOTS: usize = FACTORY_PROCESSES * 2;
 const FACTORY_INPUT_SLOTS: [usize; FACTORY_PROCESSES] = [0, 1, 2];
 const FACTORY_OUTPUT_SLOTS: [usize; FACTORY_PROCESSES] = [3, 4, 5];
+
+/// The crystallizer's one slot: its output.
+const CRYSTAL_SLOT: usize = 0;
 
 /// The vanilla furnace menu's four data slots: flame (stored / capacity) then
 /// arrow (progress / required ticks).
@@ -400,6 +410,29 @@ pub(crate) fn declare(registrar: &mut dyn Registrar, context: &RegistrationConte
     if WATER_KEY.set(registrar.fluid_key(WATER)).is_err() {
         context.refuse("mekanism: the water fluid key was resolved twice");
     }
+    // Slice 9: the Chemical Crystallizer — the washer's consumer. One
+    // 10,000-unit tank answered through `mekanism:chemical` that takes a clean
+    // slurry with a row and nothing else (upstream's `containsRecipe`), a
+    // 160,000 FE insert-only buffer, and one output slot for the crystal. It has
+    // no input slot: its input is the tank, as upstream's is; the chemical-fill
+    // and energy slots upstream also declares are container conveniences this
+    // port does not draw (recorded as a deviation).
+    let key = registrar.block_key(CRYSTALLIZER);
+    registrar.block_container(&key, crystallizer_container());
+    registrar.block_energy(&key, machine_battery(CRYSTALLIZER_CAPACITY));
+    let kind = registrar
+        .block_entity_type(CRYSTALLIZER_TYPE)
+        .blocks(&[CRYSTALLIZER_TYPE])
+        .build();
+    registrar.block_entity_capability(&CHEMICAL, &kind, |_, at| {
+        Some(Box::new(CrystallizerTank {
+            side: at,
+            capacity: CRYSTALLIZER_TANK,
+        }) as Box<dyn ResourceHandler<Chemical>>)
+    });
+    if let Err(error) = registrar.block_entity_part(&kind, CrystallizerPart) {
+        context.refuse(&error.to_string());
+    }
 }
 
 /// The one fluid the washer's tank takes, kept as the registration-time key the
@@ -443,6 +476,21 @@ pub(crate) fn factory_container() -> ModContainer {
         faces: std::array::from_fn(|_| all.clone()),
         inputs: FACTORY_INPUT_SLOTS.to_vec(),
         outputs: FACTORY_OUTPUT_SLOTS.to_vec(),
+        menu: None,
+    }
+}
+
+/// The crystallizer's container: one slot, the output the crystal lands in.
+///
+/// Its input is a chemical (the tank), so there is no input slot at all, and the
+/// chemical-fill and energy slots upstream declares are container conveniences
+/// this port does not draw (the same deviation the washer records for its four).
+pub(crate) fn crystallizer_container() -> ModContainer {
+    ModContainer {
+        slots: 1,
+        faces: std::array::from_fn(|_| vec![CRYSTAL_SLOT]),
+        inputs: Vec::new(),
+        outputs: vec![CRYSTAL_SLOT],
         menu: None,
     }
 }
@@ -495,6 +543,7 @@ pub(crate) fn machine_capacity(id: &str) -> Option<i32> {
         INJECTING_FACTORY => Some(INJECTING_FACTORY_CAPACITY),
         PURIFYING_FACTORY => Some(PURIFYING_FACTORY_CAPACITY),
         WASHER => Some(WASHER_CAPACITY),
+        CRYSTALLIZER => Some(CRYSTALLIZER_CAPACITY),
         CUBE => Some(CUBE_CAPACITY),
         CABLE => Some(CABLE_CAPACITY),
         _ => None,
@@ -512,6 +561,7 @@ pub(crate) fn machine_ticks(id: &str) -> Option<i32> {
         SMELTING_FACTORY | ENRICHING_FACTORY | CRUSHING_FACTORY | INJECTING_FACTORY
         | PURIFYING_FACTORY => Some(FACTORY_TICKS),
         WASHER => Some(WASHER_TICKS),
+        CRYSTALLIZER => Some(CRYSTALLIZER_TICKS),
         _ => None,
     }
 }
@@ -520,6 +570,12 @@ pub(crate) fn machine_ticks(id: &str) -> Option<i32> {
 /// three tanks', not a slot machine's.
 pub(crate) fn is_washer(id: &str) -> bool {
     id == WASHER
+}
+
+/// Whether the Chemical Crystallizer stands at `id`: its `/mekanism info` line is
+/// its tank's and its output slot's.
+pub(crate) fn is_crystallizer(id: &str) -> bool {
+    id == CRYSTALLIZER
 }
 
 /// Whether one of the five basic factories stands at `id`.
@@ -732,6 +788,29 @@ pub(crate) fn washer_info_text(
         input.amount,
         tank_name(output),
         output.amount
+    )
+}
+
+/// The `/mekanism info` report line for the Chemical Crystallizer: its buffer,
+/// its progress, the clean slurry in its own tank and the crystal in its output
+/// slot.
+pub(crate) fn crystallizer_info_text(
+    id: &str,
+    capacity: i32,
+    machine: Machine,
+    tank: &Tank,
+    output: &ItemAmount,
+) -> String {
+    format!(
+        "{id}: {}/{} FE, progress {}/{}, input {} x{}, output {} x{}",
+        machine.energy,
+        capacity,
+        machine.progress,
+        CRYSTALLIZER_TICKS,
+        tank_name(tank),
+        tank.amount,
+        stack_name(output),
+        output.count
     )
 }
 
@@ -1359,6 +1438,123 @@ fn washer_draw(
     0
 }
 
+/// The Chemical Crystallizer's behaviour: one operation at a time over one
+/// 10,000-unit tank of a clean slurry, its own 160,000 FE buffer and one output
+/// slot. The washer's consumer — the slurry is spent when the operation
+/// finishes, and the crystal is an item, not a chemical.
+///
+/// It has no input slot: the tank is its input, as upstream's is. The crystal
+/// leaves through the container's one slot, which is what a hopper pulls from.
+pub(crate) struct CrystallizerPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for CrystallizerPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for CrystallizerPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    /// One server tick: draw the operation's clean slurry from a neighbour when
+    /// the machine could work (through `mekanism:chemical`; the gas machines'
+    /// recorded deviation — no pipes, so a machine takes what it is about to
+    /// spend), then run one operation's tick over the tank, the buffer and the
+    /// output slot. An idle tick that only held its progress (no energy or no
+    /// output room) changes nothing and answers `Unchanged`; a reset (an empty
+    /// tank, a chemical with no row, too little slurry) is a change and is
+    /// written back.
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        let resized = event.entity.items.len() != 1;
+        if resized {
+            event.entity.items.resize(1, None);
+        }
+        let mut saved = Tag::Compound(event.entity.nbt.clone());
+        let mut machine = read_machine(&saved, CRYSTALLIZER_CAPACITY);
+        machine.progress = machine.progress.clamp(0, (CRYSTALLIZER_TICKS - 1).max(0));
+        let mut tank = read_tank(&saved);
+        let mut output = slot_stack(&*host, event.entity.items[CRYSTAL_SLOT].as_ref());
+        let limit = stack_limit(&*host, &output);
+        let pulled = crystallizer_draw(&machine, &mut tank, &output, limit, host, event.pos);
+        let outcome = process_crystal_tick(
+            &mut machine,
+            CRYSTALLIZER_OPERATION,
+            &mut tank,
+            &mut output,
+            limit,
+            &crystallizing::recipe_for,
+        );
+        write_state(&mut saved, machine.energy, machine.progress);
+        write_tank(&mut saved, &tank);
+        if let Tag::Compound(nbt) = saved {
+            event.entity.nbt = nbt;
+        }
+        set_slot(&*host, &mut event.entity.items, CRYSTAL_SLOT, &output);
+        let idle = matches!(
+            outcome,
+            Outcome::Idle(IdleReason::NoEnergy | IdleReason::NoOutputSpace)
+        );
+        if idle && pulled == 0 && !resized {
+            *event.reply = BlockEntityTickReply::Unchanged;
+        }
+    }
+}
+
+/// Draw the operation's clean slurry from an adjacent chemical handler through
+/// [`CHEMICAL`], and answer how much the neighbour gave.
+///
+/// It draws only when the machine could actually complete an operation — energy
+/// for a tick and room for the crystal — so a stalled crystallizer never siphons
+/// a neighbour it cannot use. Two shapes, as the washer's draw has: a tank
+/// already holding a slurry with a row asks for that slurry, and an empty tank
+/// asks for each of the slurries **whose crystal its slot could take**
+/// ([`crystallizing::slurries_that_fit`]) in table order — a slot holding one
+/// material's crystals must not hide another row, and the rule is the pure
+/// core's, not this loop's (the port ships no pipes, so a machine takes what it
+/// is about to spend — the gas machines' recorded deviation).
+fn crystallizer_draw(
+    machine: &Machine,
+    tank: &mut Tank,
+    output: &ItemAmount,
+    limit: u32,
+    host: &mut dyn ServerHost,
+    pos: [i32; 3],
+) -> u32 {
+    if machine.energy < CRYSTALLIZER_OPERATION.usage {
+        return 0;
+    }
+    if let Some((held, _)) = tank.held() {
+        let Some(recipe) = crystallizing::recipe_for(held) else {
+            return 0;
+        };
+        if room_for(output, &crystal_of(&recipe), limit) < recipe.output_count {
+            return 0;
+        }
+        let Some((chemical, want)) = crystallizer_pull(&recipe, tank) else {
+            return 0;
+        };
+        let pulled = pull_chemical(host, pos, chemical, want);
+        let _ = insert_chemical(tank, chemical, pulled, CRYSTALLIZER_TANK);
+        return pulled;
+    }
+    for slurry in crystallizing::slurries_that_fit(output, limit) {
+        let Some(recipe) = crystallizing::recipe_for(slurry) else {
+            continue;
+        };
+        let pulled = pull_chemical(host, pos, slurry, recipe.amount);
+        if pulled > 0 {
+            let _ = insert_chemical(tank, slurry, pulled, CRYSTALLIZER_TANK);
+            return pulled;
+        }
+    }
+    0
+}
+
+/// A crystallizing row's result as the pure core's stack.
+fn crystal_of(recipe: &CrystallizeRecipe) -> ItemAmount {
+    ItemAmount::new(recipe.output, recipe.output_count)
+}
+
 /// The state one gas-machine tick works on, bundled so the top-up and the
 /// operation read the same view of it.
 struct GasTick<'a> {
@@ -1816,6 +2012,100 @@ impl ResourceHandler<Chemical> for ChemicalTank {
     }
 }
 
+/// The chemical capability for the Chemical Crystallizer's one tank: a clean
+/// slurry with a row and nothing else (upstream's `containsRecipe` predicate),
+/// insert-only, kept in the entity's saved compound (`chemical` + `amount`).
+///
+/// A chemical with no row — a dirty slurry, a gas, water — is refused by name:
+/// the insert answers 0 and the tank is unchanged, so `/mekanism chemical insert`
+/// reads back what really happened.
+pub(crate) struct CrystallizerTank {
+    side: BlockSide,
+    capacity: u32,
+}
+
+impl CrystallizerTank {
+    /// What the block entity here holds; empty for a stale or missing one.
+    fn held(&self, host: &mut dyn ServerHost) -> Tank {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return Tank::default();
+        };
+        let Some(saved) = entity.data(&*host) else {
+            return Tank::default();
+        };
+        read_tank(&Tag::Compound(saved))
+    }
+
+    /// Write `tank` into the block entity here: whether it loaded.
+    fn store(&self, host: &mut dyn ServerHost, tank: &Tank) -> bool {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return false;
+        };
+        entity
+            .merge_data(host, tank_patch(tank))
+            .ok()
+            .is_some_and(|loaded| loaded)
+    }
+}
+
+impl ResourceHandler<Chemical> for CrystallizerTank {
+    fn size(&self, _: &mut dyn ServerHost) -> usize {
+        1
+    }
+
+    fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<Chemical> {
+        let held = self.held(host).held().filter(|_| index == 0)?.0.to_owned();
+        Chemical::new(&held)
+    }
+
+    fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32 {
+        if index == 0 {
+            self.held(host).amount
+        } else {
+            0
+        }
+    }
+
+    fn capacity(&self, _: &mut dyn ServerHost, index: usize, _: &Chemical) -> u32 {
+        if index == 0 { self.capacity } else { 0 }
+    }
+
+    /// A fill goes in only when the tank's own predicate accepts the chemical: a
+    /// clean slurry the jar has a crystallizing row for.
+    fn insert(
+        &self,
+        host: &mut dyn ServerHost,
+        _: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index != 0 || !crystallizing::accepts(chemical.as_str()) {
+            return 0;
+        }
+        let mut tank = self.held(host);
+        match insert_chemical(&mut tank, chemical.as_str(), amount, self.capacity) {
+            Ok(0) => 0,
+            Ok(went) if self.store(host, &tank) => went,
+            Ok(_) => 0,
+            Err(_) => 0,
+        }
+    }
+
+    /// The machine's tank is insert-only (upstream's `BasicChemicalTank.inputModern`):
+    /// a foreign drain takes nothing.
+    fn extract(
+        &self,
+        _: &mut dyn ServerHost,
+        _: &Transaction,
+        _: usize,
+        _: &Chemical,
+        _: u32,
+    ) -> u32 {
+        0
+    }
+}
+
 /// The chemical capability for the item at one place: the Gauge Dropper's one
 /// tank, kept in the stack's `mekanism:chemical` component (`{id, amount}`,
 /// `ChemicalStack`'s own shape) and rewritten through an exchange of one, so a
@@ -2243,6 +2533,23 @@ pub(crate) fn info_line(host: &mut dyn ServerHost, pos: [i32; 3]) -> Option<Stri
             read_machine(&saved, capacity),
             &read_washer_fluid(&saved),
             &input,
+            &output,
+        ));
+    }
+    if is_crystallizer(&id) {
+        let output = slot_stack(
+            &*host,
+            entity
+                .item_slot(&*host, CRYSTAL_SLOT as u32)
+                .ok()
+                .flatten()
+                .as_ref(),
+        );
+        return Some(crystallizer_info_text(
+            &id,
+            capacity,
+            read_machine(&saved, capacity),
+            &read_tank(&saved),
             &output,
         ));
     }
@@ -2872,6 +3179,104 @@ mod factory_support_tests {
             ),
             "mekanism:chemical_washer: 0/80000 FE, progress 0/200, \
              water 0/10000 mB, input empty x0, output empty x0"
+        );
+    }
+}
+
+#[cfg(test)]
+mod crystallizer_support_tests {
+    use super::*;
+
+    /// The crystallizer is the shared machine shape with the jar's own numbers:
+    /// a 400 FE/t usage, a 160,000 FE insert-only buffer, a 200-tick operation
+    /// and one 10,000-unit tank.
+    #[test]
+    fn the_crystallizer_is_the_jar_s_400_fe_a_tick_and_its_160_000_buffer() {
+        assert_eq!(CRYSTALLIZER, "mekanism:chemical_crystallizer");
+        assert_eq!(CRYSTALLIZER_TYPE, "chemical_crystallizer");
+        assert_eq!(machine_capacity(CRYSTALLIZER), Some(160_000));
+        assert_eq!(machine_ticks(CRYSTALLIZER), Some(200));
+        assert_eq!(CRYSTALLIZER_OPERATION.usage, 400, "UsageConfig");
+        assert_eq!(CRYSTALLIZER_TANK, 10_000, "MAX_CHEMICAL");
+        let buffer = machine_battery(CRYSTALLIZER_CAPACITY);
+        assert_eq!(
+            (buffer.max_insert, buffer.max_extract),
+            (CRYSTALLIZER_CAPACITY, 0),
+            "a machine takes energy and gives none"
+        );
+        assert_eq!(
+            machine_capacity(WASHER),
+            Some(80_000),
+            "and the washer's own buffer is untouched by this slice"
+        );
+    }
+
+    /// Its container is one output slot and no input: its input is the tank, so
+    /// automation may pull the crystal and cannot push an item into nothing.
+    #[test]
+    fn the_crystallizer_declares_one_output_slot_and_no_input() {
+        let container = crystallizer_container();
+        assert_eq!(container.slots, 1);
+        assert_eq!(container.outputs, vec![CRYSTAL_SLOT]);
+        assert!(
+            container.inputs.is_empty(),
+            "the machine's input is a chemical, so there is no input slot"
+        );
+        assert_eq!(
+            container.faces,
+            std::array::from_fn(|_| vec![CRYSTAL_SLOT]),
+            "every face reaches the output: a hopper under it takes the crystal"
+        );
+        assert_eq!(container.menu, None, "one slot is not a menu");
+    }
+
+    /// The `/mekanism info` line the in-game leg asserts, with the jar's own
+    /// capacity and tick count.
+    #[test]
+    fn the_crystallizer_info_line_is_the_one_the_e2e_asserts() {
+        assert_eq!(
+            crystallizer_info_text(
+                CRYSTALLIZER,
+                CRYSTALLIZER_CAPACITY,
+                Machine {
+                    energy: 80_000,
+                    progress: 0
+                },
+                &Tank::new("mekanism:clean_iron", 200),
+                &ItemAmount::new("mekanism:crystal_iron", 5),
+            ),
+            "mekanism:chemical_crystallizer: 80000/160000 FE, progress 0/200, \
+             input mekanism:clean_iron x200, output mekanism:crystal_iron x5"
+        );
+        assert_eq!(
+            crystallizer_info_text(
+                CRYSTALLIZER,
+                CRYSTALLIZER_CAPACITY,
+                Machine::default(),
+                &Tank::default(),
+                &ItemAmount::default(),
+            ),
+            "mekanism:chemical_crystallizer: 0/160000 FE, progress 0/200, \
+             input empty x0, output empty x0"
+        );
+    }
+
+    /// The tank keeps its contents in the entity's saved compound and the
+    /// handler's predicate is the table's: a dirty slurry is refused, a clean one
+    /// is taken, and only tank 0 exists.
+    #[test]
+    fn the_crystallizer_tank_takes_a_clean_slurry_and_refuses_the_rest() {
+        assert!(is_crystallizer(CRYSTALLIZER));
+        assert!(!is_crystallizer(WASHER));
+        assert!(crystallizing::accepts("mekanism:clean_iron"));
+        assert!(!crystallizing::accepts("mekanism:dirty_iron"));
+        let mut saved = Tag::Compound(Compound::new());
+        write_tank(&mut saved, &Tank::new("mekanism:clean_iron", 200));
+        assert_eq!(read_tank(&saved), Tank::new("mekanism:clean_iron", 200));
+        assert_eq!(
+            saved.get("chemical"),
+            Some(&Tag::String("mekanism:clean_iron".into())),
+            "the saved chemical is the id `/data get block` reads"
         );
     }
 }

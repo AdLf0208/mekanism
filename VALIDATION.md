@@ -1,5 +1,51 @@
 # Validation
 
+## 0.2.8 — the Chemical Crystallizer, slice 9 (2026-11-23)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`).
+
+| Check | Command | Result |
+|---|---|---|
+| runtime + glue rules, RED first | `cargo test --offline` on the untouched tree | **67 errors**, the new API missing (`slice9-unit-red.log`) |
+| the stall fix, RED first | the same with the test and the call, not the rule | **`error[E0425]: cannot find function `slurries_that_fit`` ** (`slice9-fix-red.log`) |
+| tests | `cargo test --offline` | **124 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`sdk-clippy.log`) |
+| recipe tables | the seven `gen_*.py --check` + `carry_crystallizer.py --check` (`HORIZON_RES` set) | 163 / 132 / 148 / 72 / 15 / 7 / **3** rows; 10 carried files match the jar (`slice9-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **193,757 B**, `cmp` identical, sha256 `ff719b859f3cc0ca810a86b4d01fa60f23cc00c66a9d37a0eeec24da3ade8945` (`slice9-build.log`, `slice9-build-second.log`, `slice9-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.8 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 250 entries (`slice9-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`slice9-fits.log`, sha printed beside it) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`slice9-fits.log`) |
+| archive | `unzip -l mekanism.hmod` | 250 entries, no `Cargo.lock` (`slice9-entries.txt`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (250 entries, no packed `Cargo.lock`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 1,72,10 to say 'output empty x0', got '… output mekanism:crystal_iron x2'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+| launcher build | `launcher-game.sh build mekanism` (in a lease, the stale `native-*` removed first) | `Compiling mekanism (1 of 1)`, `native-0a875da-8581709df4b9` (`slice9-launcher-build.log`) |
+
+The in-game leg proves, per the parity rule: the fifteen blocks and sixteen items are give-able and
+placeable, an unknown id is refused, the **sixteen** carried shaped recipes craft (id, count,
+ingredients consumed, wrong-ingredient controls empty), the fifteen blocks' loot tables drop the
+block, every carried crushing (148), injecting (72), purifying (15) and washing (7) recipe still runs,
+and the new family: a Basic Chemical Tank of 1,000 `mekanism:clean_iron` beside a crystallizer charged
+to its whole **160,000 FE** buffer yields exactly **two** `mekanism:crystal_iron` — one operation per
+**80,000 FE** (400 FE/t × 200 ticks) and **200 units**, the neighbour at 600 and the buffer at 0; two
+more charges (160,000 + 80,000 = 400,000 FE) finish **five** crystals from 1,000 units with the
+neighbour at 0; one 80,000 charge alone makes exactly one crystal from 800 units; a **dirty** slurry
+beside it makes no progress, spends no FE **and is refused by the machine's own tank by name**
+(`inserted 0 … 0/10000`); all **3** carried crystallizing rows run in a real crystallizer; a hopper
+under the output slot pulls the five crystals into a chest; and the crystallizer's progress and its
+400 units of clean slurry survive a save and relaunch. See [notes.md](notes.md) §"Slice 9 — the
+Chemical Crystallizer" for the transcript, and for the two defects the first run of this version
+found (a real stall in the draw loop, fixed; a harness coordinate collision, fixed).
+
 ## 0.2.7 — the Chemical Washer, slice 8 (2026-11-22)
 
 Validated on Linux against the campaign pin **Horizon

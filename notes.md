@@ -1,4 +1,4 @@
-# Mekanism → Horizon, slices 1–7 (the ore-processing machines, the cable, the chemical chain and the basic factories)
+# Mekanism → Horizon, slices 1–9 (the ore-processing machines, the cable, the chemical chain, the factories, the washer and the crystallizer)
 
 > **0.2.0 (2026-11-18): migrated to the flat SDK package** (`api = "0.2"`, one
 > `impl mod_api::Hooks`, `src/runtime.rs` byte-identical, content at the package
@@ -33,8 +33,9 @@ port can finish), a Basic Energy Cube
 Chemical Injection Chamber and the Purification Chamber), and the **five basic
 factories** — smelting, enriching, crushing, injecting and purifying — each
 running three processes of the same recipe side by side over one buffer and, for
-the two gas factories, one tank. Everything else in Mekanism is a planned gap
-(below).
+the two gas factories, one tank. **Slice 8** added the Chemical Washer (the port's
+first fluid machine) and **slice 9** the Chemical Crystallizer; their sections
+are below. Everything else in Mekanism is a planned gap (below).
 
 ## Class + tier, approach, licence
 
@@ -2420,3 +2421,303 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > for` at the pin and `fits` at `0b14f8a`; 108 tests, clippy `-D warnings` clean; in game `PASS` +
 > `EXIT:0` with all 7 washing rows, the unmodded game `EXIT:1`, `SELFTEST=1` `EXIT:1` on the washer's
 > own assertion, `NOCABLE=1` `PASS` + `EXIT:0`.
+
+## Slice 9 — the Chemical Crystallizer (0.2.8, 2026-11-23)
+
+### The scope authority, quoted
+
+The gap line is the port's own, and it is the 0.2.7 report's `## Next slice`:
+
+> the crystallizer (`mekanism:crystallizing`) — 200 units of a clean slurry into a
+> `mekanism:crystal_<material>` — is the washer's consumer and needs **no new capability**: one
+> chemical in, one item out, on the chemical key slice 4 published. (`notes.md` "Gaps after slice 8")
+
+and `notes.md` "Gaps / deviations" 1 named the crystals among what was still missing
+("Still missing: … the crystals and slurries …").
+
+**Chosen: the Chemical Crystallizer** (`mekanism:crystallizing`) with the **three crystals this port
+can finish** (iron, gold, copper). It is the washer's consumer — the last step of the jar's slurry
+branch, clean slurry → crystal, which the enriching chamber then turns into a dust — and it needs no
+new capability at all: the chemical key takes a slurry, and the product is an ordinary item in the
+container's output slot. It fits the **`deep` tier** as a machines-shaped feature (one block entity,
+its saved tank and buffer, one container, its energy balance in its own tick), with no entity,
+renderer, dimension or custom vanilla hook.
+
+### What the jar says (upstream truth, re-read from `v1.21.1-10.7.19.85`, `a00109e4`)
+
+| value | source | port |
+|---|---|---|
+| usage **400 FE/t** | `UsageConfig.java:68` (`chemicalCrystallizer`, `400L`) | `CRYSTALLIZER_USAGE` |
+| storage **160,000 FE** | `StorageConfig.java:86` (`chemicalCrystallizer`, `160_000L, 1`) | `CRYSTALLIZER_CAPACITY` |
+| 200 ticks per operation, so **80,000 FE** | `TileEntityChemicalCrystallizer.BASE_TICKS_REQUIRED = 10 * SharedConstants.TICKS_PER_SECOND` (`:62`) | `CRYSTALLIZER_OPERATION` |
+| one **10,000-unit** chemical tank, insert-only, and **its predicate is `containsRecipe`** | `MAX_CHEMICAL = 10 * BUCKET_VOLUME` (`:61`); `BasicChemicalTank.inputModern(MAX_CHEMICAL, this::containsRecipe, …)` (`:94`) | `CRYSTALLIZER_TANK`; `crystallizing::accepts` |
+| **200 units → 1 crystal**, the slurry taken when the operation finishes | `processing/<m>/crystal/from_slurry.json` (`{"amount": 200, …}`); `OneInputCachedRecipe.crystallizing` (`:148`), whose `finishProcessing` calls `inputHandler.use` | `CrystallizeRecipe`, `process_crystal_tick` |
+| a chemical with no row, an empty tank and too little slurry **reset**; no energy or no output room **hold** | `CachedRecipe`'s `NOT_ENOUGH_INPUT`/`mismatchedRecipe` vs `NOT_ENOUGH_ENERGY`/`NOT_ENOUGH_OUTPUT_SPACE` (`TRACKED_ERROR_TYPES`, `:49-54`) | `IdleReason::{NoChemicalInput, NoRecipe, NotEnoughInput}` reset; `{NoEnergy, NoOutputSpace}` hold |
+| insert-only energy, one energy slot, one output slot, one chemical-container input slot | `MachineEnergyContainer.input` (`:109`); `configComponent.setupItemIOConfig(inputSlot, outputSlot, energySlot)` (`:99`) | energy through `block_energy` (insert-only faces); one output slot; **no** chemical-container or energy slot (recorded deviation) |
+| block: `facing` only, **no `active` state**, hardness 3.5 / resistance 16, a tool | `blockstates/chemical_crystallizer.json` (4 variants); `MekanismBlockTypes.createMachine` | barrel template (3.5/16, `facing` × the template's unused `open`), the washer's recorded deviation |
+| the jar's **composite** model (a cutout child and a translucent one) over seven textures | `models/block/chemical_crystallizer.json` (`neoforge:composite`) | flattened into one model by `tools/carry_crystallizer.py`, `render_type: cutout` (recorded deviation) |
+| ten `mekanism:crystallizing` recipes | two in `recipe/crystallizing/` (lithium, brine→salt), eight in `processing/*/crystal/` (copper, gold, iron, lead, osmium, tin, uranium, plus antimatter) | `tools/gen_crystallizing.py`: **3 rows**, 7 skipped because their output item is not registered |
+
+### The three carried crystals
+
+Because the port registers no crystal items yet, a crystallizer row is only runnable if its **output
+exists**: `tools/gen_crystallizing.py` keeps the three ore slurry rows and prints the seven it drops
+(lithium dust, salt, the antimatter pellet, and `crystal_{lead,osmium,tin,uranium}` — the four
+slurries the washer *can* make but whose crystals this port does not ship: gap 1 below). The three
+crystals are plain items on the `minecraft:gunpowder` template (stack 64), `item/generated` models
+and the jar's own textures; the crystallizer's seven textures and its model are the jar's bytes
+(`tools/carry_crystallizer.py --check` re-derives all ten carried files).
+
+### The slice in the port's three layers
+
+- **`src/runtime.rs`** — `CrystallizeRecipe` (`chemical`, `amount`, `output`, `output_count`),
+  `crystallizing::{recipe_for, accepts, slurries, slurries_that_fit, ROW_COUNT}` (the table generated
+  from the jar), `process_crystal_tick` (the operation, its `Outcome`s and its energy), the
+  `crystallizer_pull` rule, and the three constants. `CRYSTALLIZER_OPERATION.usage * ticks = 80,000`,
+  so the buffer holds exactly two operations — a property the unit test pins and the e2e charges.
+- **`src/support.rs`** — the block's declaration (hardness/resistance/tool, no container faces of its
+  own beyond the one output slot), its 160,000 FE buffer, its **one-slot container** (`inputs []`,
+  `outputs [0]`, so a hopper pulls the crystals), `CrystalTank(BlockSide)` answering
+  `mekanism:chemical` for `mekanism:chemical_crystallizer` with upstream's *tank predicate*
+  (`crystallizing::accepts`), `CrystallizerPart` (the tick: draw one operation's slurry from a
+  neighbour through the key, then one operation's tick), and its `/mekanism info` line.
+- **Content** — `mekanism:chemical_crystallizer` (the flattened jar model, seven textures, blockstate,
+  3.5/16 + tool), the three `mekanism:crystal_{iron,gold,copper}` items with the jar's textures,
+  their lang keys, the shaped recipe (vanilla stand-ins: 4 obsidian, 4 amethyst, 2 redstone, an iron
+  block — the precedent of the fifteen earlier recipes), the loot table, the pickaxe tag and the
+  creative tab.
+
+### Red → green
+
+The slice's tests were written first and ran red on the untouched tree
+(`../_shared/evidence/mekanism/slice9-unit-red.log`), **67 errors**, e.g.:
+
+```
+error[E0433]: cannot find module or crate `crystallizing` in this scope
+     --> src/runtime.rs:5993:20
+      |
+ 5993 |         assert!(!crystallizing::accepts("mekanism:clean_lead"), "no crystal item");
+error: could not compile `mekanism` (lib test) due to 67 previous errors
+```
+
+The **fix** this slice's first e2e forced has its own red (`slice9-fix-red.log`), on the tree with the
+test and the glue call but not the rule:
+
+```
+error[E0425]: cannot find function `slurries_that_fit` in module `crystallizing`
+     --> src/support.rs:1540:34
+      |
+ 1540 |     for slurry in crystallizing::slurries_that_fit(output, limit) {
+```
+
+Then green: **124 tests** (was 108 at 0.2.7; +16 for the crystallizer's rules and this fix).
+
+### The two defects the first 0.2.8 run found
+
+**1. The crystallizer stopped after one operation (the port's own glue; fixed).** The first full e2e
+left it at `80000/160000 FE, output crystal_iron x1` with the neighbour tank frozen at 800 and its own
+tank empty — one operation, then 1,300 ticks of nothing, which is why the run's N1 failed on `x5`.
+`tools/probe-crystal.sh` reproduced it in eight 100-tick reads (a tank of 1,000 beside a charged
+machine), and the code showed the cause: `crystallizer_draw`'s empty-tank loop asked each slurry in
+turn but used the room check as a **loop-wide** verdict — `return 0` on the first candidate whose
+crystal did not match the slot. The slot held `crystal_iron`; the table's first row is
+`clean_copper`, a different item, so the loop gave up before reaching `clean_iron`. A slot of one
+material's crystals hid every other row.
+
+**Fixed** by moving the rule into the pure core:
+`crystallizing::slurries_that_fit(output, max_stack)` yields only the slurries whose crystal the slot
+could take, and the glue iterates it. A full stack, or a slot of another item, yields nothing (so a
+stalled crystallizer still siphons nothing — the slice-7 guard); a slot of `crystal_iron` yields
+`clean_iron`. Pinned by
+`a_slot_of_one_crystal_asks_for_that_materials_slurry_and_skips_the_rest`; proven in game by N1's
+**second** operation (two crystals from one charge), which the buggy build could not produce.
+
+**2. A harness coordinate collision (not a port defect; fixed in `tools/e2e.sh`).** N4's hopper/chest
+under the crystallizer sat at `1,71,8`/`1,70,8` — directly on the purifying factory that phase K
+leaves at `1,70,8` for the persistence check. The chest **replaced** that factory, so the relaunch
+phase read a chest ("No block entity there.") and failed. N's column moved to `z=10`; the persistence
+factory reads back unchanged.
+
+### Coverage — every family this slice ships
+
+Per the parity rule (AGENTS.md, 2026-11-20):
+
+| family | status | proof |
+|---|---|---|
+| the crystallizer block, its block entity, its 160,000 FE buffer, its one output slot, its `/mekanism info` line | **tested** | N1 `info(1,72,10): mekanism:chemical_crystallizer: 0/160000 FE, progress 0/200, …`; `support::crystallizer_support_tests` |
+| one crystallizing operation: 80,000 FE, 200 ticks, 200 units consumed at the finish, one crystal in the slot | **tested** | N2: 80,000 FE → `0/160000 FE, progress 0/200, output crystal_iron x1`, neighbour 800, machine tank 0 |
+| the buffer holds exactly two operations; 1,000 units = five operations = 400,000 FE | **tested** | N1 (one charge → x2, 0 FE, neighbour 600) and N1b (two more charges → x5, neighbour 0) |
+| a **dirty** slurry: no progress, no FE spent, and the machine's tank refuses it by name | **tested** | N3: `inserted 0 mekanism:dirty_iron … (0/10000)`, `160000/160000 FE, progress 0/200`, neighbour still 1000 |
+| **all 3 carried crystallizing rows** (input amount, output id and count, slurry consumed) | **tested** | O: `rows crystallized: 3 of 3` (`tools/crystal_sweep.py`) |
+| the three crystal items and the block: give-able, placeable, read back | **tested** | A1/A2 (the block and the three crystals are in the port's own lists) |
+| the crystallizer's shaped recipe | **tested** | B1: 4 obsidian + 4 amethyst + 2 redstone + iron block → `mekanism:chemical_crystallizer`, plus the wrong-ingredient control |
+| the crystallizer's loot table | **tested** | B2: each of the 15 blocks drops its own item |
+| the crystals leave the output slot through a hopper | **tested** | N4: `ctl container` at the chest shows `crystal_iron` ×5, slot empty afterwards |
+| progress and the tank survive a save and relaunch | **tested** | persistence: `0/160000 FE, progress 67/200, input mekanism:clean_iron x400` before and after |
+| `crystal_{lead,osmium,tin,uranium}` | **not ported** | those crystal items are not registered, so `gen_crystallizing.py` drops their four rows (the washer can make the slurries — gap 1) |
+| `mekanism:dust_lithium`, `mekanism:salt`, `mekanism:pellet_antimatter` | **not ported** | their output items are not registered; the three rows are dropped and printed |
+| the `active` front texture, the composite (translucent) model, the chemical-container and energy slots, the GUI | **not ported** | recorded deviations below |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| runtime + glue rules, RED first | `cargo test --offline` on the untouched tree | **67 errors** (`slice9-unit-red.log`) |
+| the fix, RED first | the same with the test and the call, not the rule | **`E0425: … slurries_that_fit`** (`slice9-fix-red.log`) |
+| tests | `cargo test --offline` | **124 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`sdk-clippy.log`) |
+| recipe tables | the seven `gen_*.py --check`, `carry_crystallizer.py --check` (`HORIZON_RES` set) | 163 / 132 / 148 / 72 / 15 / 7 / **3** rows; 10 carried files match the jar (`slice9-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **193,757 B**, `cmp` identical, sha256 `ff719b85…e8945` (`slice9-build.log`, `slice9-build-second.log`, `slice9-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.8 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 250 entries (`slice9-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`slice9-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`slice9-fits.log`) |
+| archive | `unzip -l mekanism.hmod` | 250 entries, no `Cargo.lock` (`slice9-entries.txt`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (250 entries, no packed `Cargo.lock`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 1,72,10 to say 'output empty x0', got '… output mekanism:crystal_iron x2'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`e2e-package.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+| launcher build | `launcher-game.sh build mekanism` (in a lease, the stale `native-*` removed first) | `Compiling mekanism (1 of 1)`, `native-0a875da-8581709df4b9` (`slice9-launcher-build.log`) |
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`../_shared/evidence/mekanism-e2e/e2e-package.log`, quoted from this slice's phases:
+
+```
+== N1: two operations, the buffer's whole 160,000 FE, from 1,000 units ==
+  chemical insert 1000 mekanism:clean_iron 0 72 10: chemical: inserted 1000 mekanism:clean_iron into mekanism:basic_chemical_tank (1000/64000)
+  info(1,72,10): mekanism:chemical_crystallizer: 0/160000 FE, progress 0/200, input empty x0, output mekanism:crystal_iron x2
+  energy(1,72,10): 0
+  chemical read 0 72 10: chemical: mekanism:basic_chemical_tank holds mekanism:clean_iron 600/64000 (answered by mekanism)
+  chemical read 1 72 10: chemical: mekanism:chemical_crystallizer holds nothing 0/10000 (answered by mekanism)
+== N1b: three more operations, three more charges, five crystals from 1,000 units ==
+  info(1,72,10): mekanism:chemical_crystallizer: 0/160000 FE, progress 0/200, input empty x0, output mekanism:crystal_iron x5
+  energy(1,72,10): 0
+  data get block 1 72 10 energy: 1, 72, 10 has the following block data: 0
+  chemical read 0 72 10: chemical: mekanism:basic_chemical_tank holds nothing 0/64000 (answered by mekanism)
+  chemical read 1 72 10: chemical: mekanism:chemical_crystallizer holds nothing 0/10000 (answered by mekanism)
+== N2: one operation costs 80,000 FE and 200 units, and makes one crystal ==
+  info(5,72,8): mekanism:chemical_crystallizer: 0/160000 FE, progress 0/200, input empty x0, output mekanism:crystal_iron x1
+  energy(5,72,8): 0
+  chemical read 4 72 8: chemical: mekanism:basic_chemical_tank holds mekanism:clean_iron 800/64000 (answered by mekanism)
+  chemical read 5 72 8: chemical: mekanism:chemical_crystallizer holds nothing 0/10000 (answered by mekanism)
+== N3: a dirty slurry makes no progress, spends no FE, and the tank refuses it by name ==
+  chemical insert 100 mekanism:dirty_iron 1 72 12: chemical: inserted 0 mekanism:dirty_iron into mekanism:chemical_crystallizer (0/10000)
+  info(1,72,12): mekanism:chemical_crystallizer: 160000/160000 FE, progress 0/200, input empty x0, output empty x0
+  energy(1,72,12): 160000
+  chemical read 0 72 12: chemical: mekanism:basic_chemical_tank holds mekanism:dirty_iron 1000/64000 (answered by mekanism)
+== N4: a hopper under the output slot pulls the crystals into a chest ==
+  ctl container 1 70 10: {"slots":[{"count":5,"item":"mekanism:crystal_iron"},null,…]}
+  info(1,72,10): mekanism:chemical_crystallizer: 0/160000 FE, progress 0/200, input empty x0, output empty x0
+== O: every carried crystallizing recipe in a real Chemical Crystallizer ==
+  rows from the jar's mekanism:crystallizing data: 3
+  mekanism:clean_copper x200 -> mekanism:crystal_copper x1 (tank 0, energy 80000)
+  mekanism:clean_gold x200 -> mekanism:crystal_gold x1 (tank 0, energy 80000)
+  mekanism:clean_iron x200 -> mekanism:crystal_iron x1 (tank 0, energy 80000)
+rows crystallized: 3 of 3
+  before save, crystallizer: mekanism:chemical_crystallizer: 0/160000 FE, progress 67/200, input mekanism:clean_iron x400, output empty x0
+  after relaunch, crystallizer: mekanism:chemical_crystallizer: 0/160000 FE, progress 67/200, input mekanism:clean_iron x400, output empty x0
+PASS: … the crystallizer turns 200 units of a clean slurry into one crystal for 80,000 FE and five
+operations into five crystals, refusing a dirty slurry at its tank while a dirty slurry in a
+neighbour tank spends nothing …
+EXIT:0
+```
+
+What the numbers prove:
+
+- one charge of 160,000 FE bought **exactly two** crystals and left the buffer at **0**, so the
+  operation costs 80,000 FE (200 ticks × 400) and the buffer holds exactly two of them;
+- the neighbour tank went 1,000 → **600** for those two operations (200 units each) and to **0** after
+  five, so the machine spends exactly the row's amount per operation, and the machine's own tank reads
+  0 (the slurry is spent at the finish);
+- **two more charges** (160,000 + 80,000 = 400,000 FE in all) finished the five operations, which is
+  the second operation the stall bug lost and the rest of the chain;
+- one charge of 80,000 FE alone made **one** crystal and left the neighbour at 800, which pins the
+  per-operation cost in the other direction;
+- a dirty slurry beside it left `160000/160000 FE, progress 0/200` untouched and the neighbour at
+  1,000, and the machine's own tank answered `inserted 0 … (0/10000)`: upstream's `containsRecipe`
+  predicate refuses it **by name**, and nothing is siphoned;
+- all **3** carried rows crystallized their declared crystal from their declared slurry amount;
+- the hopper took the five crystals into the chest below and the output slot was empty afterwards;
+- the crystallizer's progress and its 400 units of clean slurry survived `save`, quit and relaunch.
+
+The rest of the leg is unchanged and still passes: the content/recipe/loot phases (now 15 blocks, 16
+shaped recipes), the crusher and crushing sweep (148), the cable→cube→chamber→smelter chain, the
+chemical capability, the injection/purifying/washing machines and sweeps (72/15/7), the factories
+(slice 7) and the save/relaunch of every machine type.
+
+### What the harness taught this slice
+
+- **`setblock <air>` in a chunk the player has left answers `Could not set the block`** and leaves the
+  block in place: the persistence phase's "cut the cable" silently did nothing on the first run. It
+  now teleports the player back, clears the row and **prints what is there** (`cleared for the stall:
+  1,64,0 minecraft:air, 2,64,0 minecraft:air`), so a failed clear is visible in the transcript rather
+  than assumed.
+- **A new phase's blocks must not land on an earlier phase's fixture.** The hopper chain that drains
+  the crystallizer overwrote the purifying factory the persistence check reads (defect 2 above); the
+  arena has rows at `y=70` (factories), `y=72` (the chemical machines), so the crystallizer's column
+  moved to `z=10`.
+- A `ctl wait N` is N **game ticks** (the replies count them), which is why a 200-tick operation is
+  waited out with `ctl wait 430` rather than a wall-clock sleep; the log's tick numbers make a run's
+  arithmetic checkable after the fact.
+
+### Gaps after slice 9
+
+1. **Four slurries have no crystal**: the washer makes `clean_{lead,osmium,tin,uranium}` and this port
+   registers no `crystal_*` for them, so `gen_crystallizing.py` drops their four rows. Adding the four
+   items + textures completes the washer→crystallizer→enricher chain for every row (a one-slice job).
+2. **No chemical-container or energy slot**: upstream's `inputSlot` (a tank item's chemical) and
+   `energySlot` are not carried; the tank is filled through `mekanism:chemical` and the buffer through
+   `block_energy`, as every other machine of this port.
+3. **The models**: the crystallizer's jar model is a `neoforge:composite` (a cutout child and a
+   translucent one) and is flattened into one `cutout` model, so its glass draws cutout.
+4. **No `active` state**: the jar's crystallizer has `facing` only, so the barrel template's unused
+   `open` state is the only stand-in (the washer's recorded deviation, not a loss here).
+5. **No GUI, upgrades, side configuration, ejector or security**, as on every other machine.
+6. **Recipes use vanilla stand-ins** (obsidian/amethyst/redstone/iron block), the precedent of the
+   fifteen earlier ones: the real ingredients (steel casing, ultimate circuit, enriched alloy) are not
+   registered.
+7. Everything else in *Gaps / deviations* and *Gaps after slice 8* still stands.
+
+### `## Upstream defects fixed`
+
+None found in this slice. The stall was this port's own glue (defect 1 above), and the jar's rows,
+numbers and tank predicate are consistent with what it ships.
+
+### Deviations this slice records
+
+- **No input slot**: upstream's `ChemicalInventorySlot` takes a chemical container item; the port has
+  the tank and the key instead (gap 2).
+- **The draw-from-a-neighbour rule** is the gas machines' recorded deviation: the port ships no pipes,
+  so the machine takes the operation's slurry from an adjacent handler — only when it could finish
+  that operation (its crystal fits), which is the guard the stall fix tightened.
+- **The crystals are plain items** on the gunpowder template with the jar's textures (no custom item
+  behaviour, no `mekanism:crystal` component).
+- **The four missing crystals and the seven dropped rows** are gap 1 above.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices,rust-port
+
+### Changelog (0.2.8) — supersedes 0.2.7
+
+> **0.2.8 — the Chemical Crystallizer, the washer's consumer.** It runs the jar's
+> `mekanism:crystallizing` table over the three crystals this port registers: **400 FE/t × 200 ticks
+> (80,000 FE an operation)**, a **160,000 FE** insert-only buffer (exactly two operations), one
+> **10,000-unit** slurry tank whose predicate is upstream's `containsRecipe` (a clean slurry with a row
+> and nothing else — a dirty slurry is refused by name), and one output slot a hopper can pull from,
+> turning **200 units of a clean slurry into one `mekanism:crystal_<material>`** at the operation's
+> finish. The three crystals (iron, gold, copper) are carried with the jar's textures, and the block
+> ships the jar's model (flattened from its composite) and seven textures. Worked in game: one charge
+> of 160,000 FE makes exactly **two** crystals and drains the neighbour by 400 units; 400,000 FE in
+> three charges makes **five** from 1,000 units with the tank at 0; one 80,000 charge makes **one**
+> for 200 units; a dirty slurry makes no progress, spends no FE and is refused by the machine's tank;
+> all 3 rows run in a real crystallizer; a hopper empties the output slot; and the progress and the
+> tank survive `save`+relaunch. The first run of this version caught and fixed a real stall: the
+> empty-tank draw loop gave up on the whole table when the output slot held a *different* crystal, so
+> the machine ran one operation and then nothing — the rule is now
+> `crystallizing::slurries_that_fit`. Package: **250 entries, 193,757 B**, sha256
+> `ff719b859f3cc0ca810a86b4d01fa60f23cc00c66a9d37a0eeec24da3ade8945`; `check` exit 0; `fits` `made
+> for` at the pin and `fits` at `0b14f8a`; 124 tests, clippy `-D warnings` clean; in game `PASS` +
+> `EXIT:0`; the unmodded game `EXIT:1`, `SELFTEST=1` `EXIT:1` on the crystallizer's own assertion,
+> `NOCABLE=1` `PASS` + `EXIT:0`.

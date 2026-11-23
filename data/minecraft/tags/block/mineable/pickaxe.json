@@ -13,6 +13,7 @@
     "mekanism:basic_crushing_factory",
     "mekanism:basic_injecting_factory",
     "mekanism:basic_purifying_factory",
-    "mekanism:chemical_washer"
+    "mekanism:chemical_washer",
+    "mekanism:chemical_crystallizer"
   ]
 }
