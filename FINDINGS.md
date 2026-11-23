@@ -290,6 +290,11 @@ steam). The **22** skipped are printed by `tools/gen_injecting.py`: `c:bricks/no
 lead/osmium/tin/uranium ore and raw tags, the plutonium pellet, and the `from_crystal` rows — every
 one an item or an output this port does not register.
 
+*(Slice 11 later carried the seven `from_crystal` rows: once the port registered the crystals, the
+`c:crystals/<material>` tag has this port's `mekanism:crystal_<material>` as its 26.3 member, and the
+four missing shards joined iron/gold/copper. The table is **79 rows of 91** now; the 15 skipped are
+the two no-member tags, the twelve lead/osmium/tin/uranium ore/raw rows and the plutonium pellet.)*
+
 The slice closes the "injection chamber" half of *Next slices* 1; the purification chamber and ore
 washer remain, and the shards → clumps → dirty dust → dust path from here needs exactly those two.
 
@@ -404,3 +409,39 @@ Where the rewrite differs (and why):
 - the enricher leg (`crystal_<m>` → `shard_<m>`, and later `dust_<m>`) is **not** opened, because
   `mekanism:shard_{lead,osmium,tin,uranium}` and `mekanism:dust_{lead,osmium,tin,uranium}` are not
   registered; `gen_enriching.py` keeps dropping those rows (gap 1 after slice 10).
+
+## Slice 11 — the crystal → shard leg (upstream analysis)
+
+Read for this slice from the upstream **tag `v1.21.1-10.7.19.85`** (commit
+`a00109e4856fd38b9c5b3dd7f22ce4a59cd65a80`) and from the installed jar
+`Mekanism-1.21.1-10.7.19.85.jar` (SHA-1 `b78945c40cfe7640408f3fd1e44da385a8c8b805`) — analysis
+only; the Rust is a clean-room rewrite and the recipe source is the jar's data:
+
+- `data/mekanism/recipe/processing/{copper,gold,iron,lead,osmium,tin,uranium}/shard/from_crystal.json`
+  — `type: mekanism:injecting`, `item_input: {count: 1, tag: c:crystals/<material>}`,
+  `chemical_input: {amount: 1, chemical: mekanism:hydrogen_chloride}`, `per_tick_usage: true`,
+  `output: {count: 1, id: mekanism:shard_<material>}`. Seven files, one per washer material — the
+  leg upstream runs after the crystallizer (`shard → clump → dirty dust → dust → ingot`);
+- `data/c/tags/item/crystals/<material>.json` and `data/mekanism/tags/item/crystals.json` — the tag
+  the recipe names; the jar's members are its own crystals;
+- `assets/mekanism/{textures/item,models/item}/shard_<material>.*` — the seven shard items' art;
+- `item.mekanism.shard_<material>` in `assets/mekanism/lang/en_us.json`;
+- `data/mekanism/recipe/processing/<material>/ingot/from_dust_smelting.json` — where the chain would
+  end (`mekanism:ingot_lead`, `ingot_osmium`, `ingot_tin`, `ingot_uranium`), which is why the
+  optional dust items do not close the leg here.
+
+Behaviour extracted: the operation is the shared `ItemStackChemicalToItemStack` machine — 400 FE/t ×
+200 ticks = 80,000 FE, one unit of gas **per tick** through `ChemicalUsageMultiplier.constantUse`
+(200 units an operation), the item consumed when the operation finishes, one output stack of one.
+No new machine, state or predicate: the crystal is an ordinary input item with a row.
+
+Where the rewrite differs (and why):
+
+- `c:crystals/<material>` is expanded by `tools/gen_injecting.py` to this port's
+  `mekanism:crystal_<material>` — the only crystal item the game has here — and the port still does
+  not declare the jar's item tags (recorded as a gap in `notes.md`); the machine's table is Rust, so
+  gameplay does not depend on the tag;
+- the four new shards are plain items on the `minecraft:gunpowder` template (stack 64), the same
+  deviation every item in this port records, with `tools/carry_shards.py` carrying their art
+  reproducibly;
+- the 12 ore/raw injecting rows for lead, osmium, tin and uranium stay out: 26.3 has no such ore.

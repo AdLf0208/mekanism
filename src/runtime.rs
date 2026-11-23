@@ -2283,8 +2283,64 @@ pub mod injecting {
     // 26.3 has and a chemical tag to the chemicals this port knows (see the
     // tool's ITEM_TAGS/CHEMICAL_TAGS), and a recipe whose output the port
     // does not register is left out.
-    // Source recipes: 91. Rows: 72. Skipped: 22.
+    // Source recipes: 91. Rows: 79. Skipped: 15.
     static TABLE: &[Row] = &[
+        (
+            "mekanism:crystal_copper",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_copper",
+            1,
+        ),
+        (
+            "mekanism:crystal_gold",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_gold",
+            1,
+        ),
+        (
+            "mekanism:crystal_iron",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_iron",
+            1,
+        ),
+        (
+            "mekanism:crystal_lead",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_lead",
+            1,
+        ),
+        (
+            "mekanism:crystal_osmium",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_osmium",
+            1,
+        ),
+        (
+            "mekanism:crystal_tin",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_tin",
+            1,
+        ),
+        (
+            "mekanism:crystal_uranium",
+            1,
+            &["mekanism:hydrogen_chloride"],
+            1,
+            "mekanism:shard_uranium",
+            1,
+        ),
         (
             "minecraft:black_concrete_powder",
             1,
@@ -4787,9 +4843,41 @@ mod injection_tests {
         assert!(oxidised.accepts("mekanism:oxygen"));
         assert_eq!(
             injecting::ROW_COUNT,
-            72,
+            79,
             "the rows the generator keeps from the jar's 91 injecting recipes"
         );
+    }
+
+    /// The crystal → shard leg: every crystal this port's crystallizer makes —
+    /// the same seven materials the washer's slurries name — has the jar's
+    /// `data/mekanism/recipe/processing/<material>/shard/from_crystal.json` row:
+    /// one crystal and one unit of hydrogen chloride per operating tick become
+    /// one shard of that material. So no crystal the port ships dead-ends at the
+    /// injection chamber, exactly as no clean slurry dead-ends at the
+    /// crystallizer.
+    #[test]
+    fn every_crystal_the_crystallizer_makes_injects_into_its_material_s_shard() {
+        let materials = ["copper", "gold", "iron", "lead", "osmium", "tin", "uranium"];
+        assert_eq!(
+            materials.len(),
+            crystallizing::ROW_COUNT,
+            "the jar crystallizes exactly the seven materials this port carries"
+        );
+        for material in materials {
+            let crystal = format!("mekanism:crystal_{material}");
+            let recipe = injecting::recipe_for(&crystal)
+                .unwrap_or_else(|| panic!("no injecting row for {crystal}"));
+            assert_eq!(
+                recipe,
+                GasRecipe {
+                    input: 1,
+                    chemical: &["mekanism:hydrogen_chloride"],
+                    per_tick: 1,
+                    output: ItemAmount::new(&format!("mekanism:shard_{material}"), 1),
+                },
+                "{crystal} must inject into one shard for one HCl a tick"
+            );
+        }
     }
 
     /// One tick of the operation: the gas the recipe declares is taken per tick,

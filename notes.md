@@ -1,4 +1,4 @@
-# Mekanism → Horizon, slices 1–9 (the ore-processing machines, the cable, the chemical chain, the factories, the washer and the crystallizer)
+# Mekanism → Horizon, slices 1–11 (the ore-processing machines, the cable, the chemical chain, the factories, the washer, the crystallizer and the crystal → shard leg)
 
 > **0.2.0 (2026-11-18): migrated to the flat SDK package** (`api = "0.2"`, one
 > `impl mod_api::Hooks`, `src/runtime.rs` byte-identical, content at the package
@@ -26,8 +26,8 @@ core (ore → two dust, raw ore 3 → 4, raw block 1 → 12, plus the jar's othe
 recipes over items the port registers), a Crusher on the same core (the jar's
 145 `mekanism:crushing` rows this port can finish), a Chemical Injection Chamber
 (400 FE/t × 200 t, 160,000 FE buffer, a 210-unit gas tank it fills from a
-neighbour through `mekanism:chemical`, the jar's 72 `mekanism:injecting` rows this
-port can finish), a Basic Energy Cube
+neighbour through `mekanism:chemical`, the jar's 79 `mekanism:injecting` rows this
+port can finish, the seven crystal → shard rows included), a Basic Energy Cube
 (4,000,000 FE), a Basic Universal Cable (8,000 FE/t), the chemical capability
 (one 64,000-unit tank block and a chemical item) and its two consumers (the
 Chemical Injection Chamber and the Purification Chamber), and the **five basic
@@ -35,7 +35,9 @@ factories** — smelting, enriching, crushing, injecting and purifying — each
 running three processes of the same recipe side by side over one buffer and, for
 the two gas factories, one tank. **Slice 8** added the Chemical Washer (the port's
 first fluid machine) and **slice 9** the Chemical Crystallizer; their sections
-are below. Everything else in Mekanism is a planned gap (below).
+are below, and **slice 10** the four crystals that complete the crystallizer's seven slurries, and
+**slice 11** the crystal → shard leg that carries every one of those crystals on into the injecting
+chamber's shards. Everything else in Mekanism is a planned gap (below).
 
 ## Class + tier, approach, licence
 
@@ -2919,3 +2921,256 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > exit 0; `fits` `made for` at the pin and `fits` at `0b14f8a`; 125 tests, clippy `-D warnings`
 > clean; in game `PASS` + `EXIT:0`, control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` + `EXIT:0`,
 > log gate 6/6.
+
+## Slice 11 — the crystal → shard injection leg (0.2.10, 2026-11-23)
+
+### The scope authority, quoted
+
+The gap is this port's own, "Gaps after slice 10" item 1 (and the slice-10 coverage row for the
+four shards):
+
+> **The enricher leg** for the seven crystals: the jar's `crystal_<m>` → `shard_<m>` and
+> `dust_<m>` rows are still dropped because `mekanism:shard_{lead,osmium,tin,uranium}` and
+> `mekanism:dust_{lead,osmium,tin,uranium}` are not registered (for iron/gold/copper the shards
+> are, and the tool drops those three rows for the same reason). Registering the four shards and
+> four dusts would close the chain into the smelter.
+
+**Chosen: the seven `crystal_<material>` → `shard_<material>` rows** of the Chemical Injection
+Chamber. It is not a new family — it is the shipped gas machine on seven more rows — so it needs no
+new capability, hook, block, menu or state: `tools/gen_injecting.py` gains the `c:crystals/*`
+expansion, four shard items are declared with the jar's own art, and the generated table grows
+**72 → 79 rows**. It remains a machines-shaped feature on the ledger's `deep` row, as every slice
+since 1 has been.
+
+**The optional half was not taken.** The brief allowed the four `dirty_dust_*` + four `dust_*` items
+"if room remains … to close the crushing → enriching → smelting leg". Measuring the jar, it does not
+close that leg: the crushing step into a dirty dust needs `mekanism:clump_{lead,osmium,tin,uranium}`
+(not registered, so `gen_crushing.py` still drops those rows), and the smelting step needs
+`mekanism:ingot_{lead,osmium,tin,uranium}` (the jar's `processing/<m>/ingot/from_dust_smelting.json`
+outputs those four ids, which this port has no item for), so eight more items would add four
+enriching rows that dead-end in both directions. The port also has no enriching sweep to prove a row
+in game, and the parity rule forbids carrying a recipe that is never crafted. They stay a gap, and
+this slice says so rather than adding dead data.
+
+### What the jar says (re-read from `v1.21.1-10.7.19.85`, `a00109e4`)
+
+| value | source | port |
+|---|---|---|
+| seven rows, `1` crystal + `1` unit of hydrogen chloride **per tick**, `200` ticks an operation, output `1` shard | `data/mekanism/recipe/processing/{copper,gold,iron,lead,osmium,tin,uranium}/shard/from_crystal.json` (`type: mekanism:injecting`, `per_tick_usage: true`) | `injecting::TABLE`, rows 1–7 of the regenerated table |
+| the input is a **tag**, `c:crystals/<material>`, not an item id | the same files | `ITEM_TAGS["c:crystals/<m>"] = ["mekanism:crystal_<m>"]`: this port's crystal is the only member the game has, exactly as the previous tag expansions name the only 26.3 members |
+| the four new items' art | `assets/mekanism/{textures/item,models/item}/shard_{lead,osmium,tin,uranium}.*` | `tools/carry_shards.py` (14 files: the four new pairs, re-deriving iron/gold/copper to prove the earlier carry was faithful) |
+| the four names | `item.mekanism.shard_{lead,osmium,tin,uranium}` in the jar's `en_us.json` | `assets/mekanism/lang/en_us.json` |
+| the stack size | the same `minecraft:gunpowder` template as every other item | `data/mekanism/horizon/item/shard_<m>.json` |
+
+`gen_injecting.py` now reports **91 source recipes, 79 rows, 15 skipped** (was 72/22): the 15 are the
+two tags with no 26.3 member (`c:bricks/normal`, `c:gunpowders`), the twelve lead/osmium/tin/uranium
+ore, raw-ore and raw-block rows (26.3 has no such ore) and the plutonium pellet row. Every one of the
+22 rows the old tool dropped for a *crystal* is now carried.
+
+### The slice in the port's three layers
+
+- **`src/runtime.rs`** — no new rule: the gas machine is already generic over the table
+  (`process_gas_tick`, `gas_pull`, `recipe_for`). The generated `injecting::TABLE` grows 72 → 79, so
+  `ROW_COUNT` reads 79 and the machine serves the seven rows through the shipped glue. One new test
+  states the family rule: **every crystal the crystallizer makes injects into that material's shard**
+  — input 1, hydrogen chloride only, 1 unit a tick, output 1 — and the test asserts the crystal list
+  is exactly `crystallizing::ROW_COUNT` long, so a future crystal cannot be added without its leg.
+- **`src/support.rs`** — unchanged. The chamber's tick, tank, draw loop, info line and container are
+  generic over the table, which is why the seven rows work without a line of glue.
+- **Content** — four `data/mekanism/horizon/item/shard_<material>.json`, four carried item models
+  and textures (plus the three existing ones re-derived), four lang keys, four creative-tab entries.
+
+### Red → green
+
+The tests were written first and ran red on the untouched table
+(`../_shared/evidence/mekanism/slice11-unit-red.log`), **124 passed, 2 failed**:
+
+```
+---- runtime::injection_tests::every_crystal_the_crystallizer_makes_injects_into_its_material_s_shard stdout ----
+
+thread 'runtime::injection_tests::every_crystal_the_crystallizer_makes_injects_into_its_material_s_shard' (172027) panicked at src/runtime.rs:4813:36:
+no injecting row for mekanism:crystal_copper
+
+---- runtime::injection_tests::the_injection_table_is_the_jar_s_recipes_over_this_port_s_items stdout ----
+
+thread 'runtime::injection_tests::the_injection_table_is_the_jar_s_recipes_over_this_port_s_items' (172031) panicked at src/runtime.rs:4788:9:
+assertion `left == right` failed: the rows the generator keeps from the jar's 91 injecting recipes
+  left: 72
+ right: 79
+
+test result: FAILED. 124 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+Then green: **126 tests** (was 125; +1 family test and the table test's count raised to 79).
+
+### Coverage — every family this slice ships
+
+Per the parity rule (AGENTS.md, 2026-11-20):
+
+| family | status | proof |
+|---|---|---|
+| `mekanism:shard_{lead,osmium,tin,uranium}` as items: give-able, in the creative tab, named | **tested** | A1 now gives **24** items (`… twenty-four …` in the PASS line) |
+| the seven `crystal_<m>` → `shard_<m>` rows: input count, output id and count, 200 units of gas, one operation's 80,000 FE | **tested** | H: `rows injecting: 79 of 79`, each new row `crystal_<m> x1 + hydrogen_chloride x1/t -> shard_<m> (count 1)` with the tank at 4,800 of 5,000 |
+| the lead headline: one crystal + 4,000 HCl in a 160,000 FE buffer → exactly one shard_lead, 80,000 FE left, tank 3,800, machine tank empty | **tested** | P: `80000/160000 FE, progress 0/200, input empty x0, output mekanism:shard_lead x1`, `energy 80000`, `holds mekanism:hydrogen_chloride 3800/64000`, `holds nothing 0/210` |
+| the newest family's assertion is fail-capable | **tested** | `SELFTEST=1`: `FAIL: … to say 'output empty x0', got '… output mekanism:shard_lead x1'` + `EXIT:1` |
+| `mekanism:dirty_dust_{lead,osmium,tin,uranium}` + `mekanism:dust_{lead,osmium,tin,uranium}` | **not ported** | they do not close the leg: no clumps to crush into them and no `mekanism:ingot_*` to smelt them into (26.3 has neither), and no enriching sweep would prove the four rows — see "Gaps after slice 11" |
+| the lead/osmium/tin/uranium **ore, raw ore and raw block** injecting rows | **not ported** | 26.3 has no lead/osmium/tin/uranium ore; the tool prints the twelve drops |
+| everything slices 1–10 proved | **still green** | the same package leg: `PASS` + `EXIT:0`, 79/79 injecting rows, 148 crushing, 15 purifying, 7 washing, 7/7 crystallizing, all six e2e logs green |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| the seven rows + the family test, RED first | `cargo test --offline` on the untouched table | **124 passed, 2 failed** (`slice11-unit-red.log`) |
+| tests | `cargo test --offline` | **126 passed**, 0 failed (`slice11-test.log`, `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`slice11-clippy.log`, `sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (same step) |
+| recipe tables | the seven `gen_*.py --check` + `carry_crystallizer.py --check` + `carry_shards.py --check` (`HORIZON_RES` set) | 163 / 132 / 148 / **79** / 15 / 7 / 7 rows; **18** + **14** carried files match the jar (`slice11-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **202,188 B**, `cmp` identical, sha256 `216345bb…533368b` (`slice11-build.log`, `slice11-build-second.log`, `slice11-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.10 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 274 entries (`slice11-check.log`, `sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0, sha printed beside it (`slice11-fits.log`, `sdk-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (same log) |
+| archive | `unzip -l mekanism.hmod` | 274 entries, no `Cargo.lock` |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (274 entries, no packed `Cargo.lock`) |
+| launcher build | `launcher-game.sh build mekanism` (in a lease, after removing every `native-*` tag that carried this mod) | `Compiling mekanism (1 of 1)`, `native-0a875da-200d1e6142d3` (`slice11-launcher-build.log`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 1,72,16 to say 'output empty x0', got '… output mekanism:shard_lead x1'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+
+The package-building steps ran with **`BUILD_LOCAL=1`**: the slot runner forwards `build`/`check` to
+the second machine, whose cargo has no `cargo-horizon-mod` subcommand (`error: no such command:
+horizon-mod`), while `test` and `lint` forward fine. The lease, the per-step job count and the
+`CARGO_INCREMENTAL=0` rule are unchanged.
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`../_shared/evidence/mekanism-e2e/e2e-package.log`, this slice's phases:
+
+```
+== H: every carried injecting recipe in a real Chemical Injection Chamber ==
+  rows from the jar's mekanism:injecting data: 79
+  mekanism:crystal_copper x1 + mekanism:hydrogen_chloride x1/t -> {"count": 1, "item": "mekanism:shard_copper"} (chemical: mekanism:basic_chemical_tank holds mekanism:hydrogen_chloride 4800/64000 (answered by mekanism))
+  mekanism:crystal_gold x1 + mekanism:hydrogen_chloride x1/t -> {"count": 1, "item": "mekanism:shard_gold"} (… 4800/64000 …)
+  mekanism:crystal_iron x1 + mekanism:hydrogen_chloride x1/t -> {"count": 1, "item": "mekanism:shard_iron"} (… 4800/64000 …)
+  mekanism:crystal_lead x1 + mekanism:hydrogen_chloride x1/t -> {"count": 1, "item": "mekanism:shard_lead"} (… 4800/64000 …)
+  mekanism:crystal_osmium x1 + mekanism:hydrogen_chloride x1/t -> {"count": 1, "item": "mekanism:shard_osmium"} (… 4800/64000 …)
+  mekanism:crystal_tin x1 + mekanism:hydrogen_chloride x1/t -> {"count": 1, "item": "mekanism:shard_tin"} (… 4800/64000 …)
+  mekanism:crystal_uranium x1 + mekanism:hydrogen_chloride x1/t -> {"count": 1, "item": "mekanism:shard_uranium"} (… 4800/64000 …)
+rows injecting: 79 of 79
+sweep PASS: all 79 carried injecting recipes ran in a real machine …
+…
+== P: slice 11's crystal leg — one crystal_lead + 4,000 HCl -> one shard_lead ==
+  chemical insert 4000 mekanism:hydrogen_chloride 0 72 16: chemical: inserted 4000 mekanism:hydrogen_chloride into mekanism:basic_chemical_tank (4000/64000)
+  info(1,72,16): mekanism:chemical_injection_chamber: 80000/160000 FE, progress 0/200, input empty x0, output mekanism:shard_lead x1
+  energy(1,72,16): 80000
+  chemical read 0 72 16: chemical: mekanism:basic_chemical_tank holds mekanism:hydrogen_chloride 3800/64000 (answered by mekanism)
+  chemical read 1 72 16: chemical: mekanism:chemical_injection_chamber holds nothing 0/210 (answered by mekanism)
+…
+  mekanism:clean_lead x200 -> mekanism:crystal_lead x1 (tank 0, energy 80000)
+rows crystallized: 7 of 7
+… PASS: … EXIT:0
+```
+
+What the numbers prove:
+
+- all **seven** crystal rows ran in a real chamber from the item the crystallizer makes, each
+  spending exactly 200 units of the tank's 5,000 (a tick's one unit over the 200-tick operation) and
+  producing exactly one shard — no crystal the port ships dead-ends at the chamber any more;
+- the lead headline charged the chamber to its whole 160,000 FE buffer and the operation spent
+  exactly **80,000** (400 FE/t × 200 ticks), leaving `80000/160000` and the input slot empty with one
+  `shard_lead` in the output — one crystal, one shard, one operation;
+- the neighbour tank went 4,000 → **3,800** through `mekanism:chemical` and the machine's own 210-unit
+  tank reads **0**, so the gas is drawn a tick at a time and spent, not buffered;
+- the selftest flips **this** phase's assertion (`output empty x0` vs `shard_lead x1`), so the newest
+  family's check is the one proven able to fail;
+- the earlier legs are unchanged: 148 crushing, 15 purifying, 7 washing and 7/7 crystallizing rows,
+  the five factories, the menus, save + relaunch, the control game's refusal (`EXIT:1`) and the
+  no-cable differential (`PASS`).
+
+All **four** legs ran on the final launcher build `native-0a875da-200d1e6142d3`, whose exported
+`horizon-native-mods/mekanism/` is `cmp`-identical to this tree (`horizon-mod.toml`, `src/`, the lang
+file, the four new item files, the creative tab, a new shard texture), so the `PASS`/`EXIT` verdicts
+belong to the package recorded below.
+
+### What the harness taught this slice
+
+- **The brief's headline energy reading was arithmetically impossible, and the artefact wins.** It
+  asked for `0/160000 FE` after one operation charged to 160,000; the jar's chamber is 400 FE/t ×
+  200 ticks = **80,000** an operation, so a full buffer leaves **80,000**. The phase asserts
+  `80000/160000 FE` and the exact 80,000 spend — the stronger claim, since it pins the operation's
+  cost rather than the buffer running dry. (A crystallizer reads `0/160000` after two operations;
+  that is where the number came from.)
+- **Only one `native-*` tag carried this mod this time**, `native-0a875da-40fc7fa7ae4b` (slice 10's).
+  It was removed before the final build, so the build log's `Compiling mekanism (1 of 1)` and
+  `native-0a875da-200d1e6142d3` cannot be a stale binary another job produced. The other 24 tags in
+  the versions folder carry other ports and were left alone.
+- **A `c:` tag family whose member this port owns is carried, not dropped.** `c:crystals/<m>` was
+  skipped for three slices because "no 26.3 member" meant "no vanilla member"; once the port registers
+  the crystal itself, the tag's 26.3 expansion is that item, and the row is the jar's. The same
+  reasoning is what keeps `c:ores/lead` dropped: 26.3 has no lead ore and this port registers none.
+- **The sweep's row floor is a fail-capable assertion.** Phase H required `-ge 60`, which a
+  regression to 72 would still pass; it now requires `-ge 79`, so losing the crystal rows fails the
+  leg even if the unit test were deleted.
+- **A headlined `setblock` in a chunk the player has left answers "Could not set the block"** — phase
+  P's pair stands at y=72, z=16, and the player was in The End at y≈66..72 throughout; the helper's
+  read-back check is what makes that visible instead of a silent no-op.
+
+### Gaps after slice 11
+
+1. **The four `dirty_dust_*` + four `dust_*` items** (slice 10's gap 1, second half): registering them
+   adds four `mekanism:enriching` rows (`c:dirty_dusts/<m>` → `dust_<m>`), but the leg still does not
+   close — the crushing step needs `mekanism:clump_{lead,osmium,tin,uranium}`, and the smelting step
+   needs `mekanism:ingot_{lead,osmium,tin,uranium}`, which neither 26.3 nor this port has. A future
+   slice that takes it should carry the four clumps and four ingots in the same version and add an
+   enriching sweep, so the rows are provable rather than dead.
+2. The jar's **lead/osmium/tin/uranium ore, raw ore and raw block** injecting rows (12) stay dropped:
+   they need ores 26.3 does not have. Same for the tag's `c:storage_blocks/raw_*` members.
+3. The jar's `data/c/tags/item/{crystals,shards}/<material>.json` and its `mekanism:tags/item/{crystals,shards}`
+   parents are **still not declared** by the port (slice 10's note). The machine's table is Rust and
+   the generator's `ITEM_TAGS` expansion plays the tag's role there, so nothing in this port breaks —
+   but another mod asking the game for "any lead crystal" by tag would not see these items. Adding the
+   14 tag files needs an in-game way to assert membership (the port has no tag readout today), so they
+   stay a gap rather than an unprovable carry.
+4. `mekanism:dust_lithium`, `mekanism:salt`, `mekanism:pellet_antimatter`: their output items are not
+   registered, so the jar's three non-slurry crystallizing rows stay dropped (slice 10's gap 2).
+5. The chemical-container and energy slots, the composite model, the `active` state and the GUI are
+   slice 9's recorded deviations and still stand; everything else in *Gaps / deviations*, *Gaps after
+   slice 8*, *Gaps after slice 9* and *Gaps after slice 10* still stands.
+
+### `## Upstream defects fixed`
+
+None found in this slice: the jar's seven rows are consistent with its own tag, items, textures and
+lang keys, and the regenerated table reproduces them exactly (one crystal + 1 HCl/t → one shard).
+
+### Deviations this slice records
+
+- The four shards are **plain items** on the gunpowder template with the jar's own textures — no
+  custom item behaviour, exactly as iron/gold/copper.
+- `c:crystals/<material>` is expanded to this port's `mekanism:crystal_<material>`, the only crystal
+  item the game has. In a pack that also installed another mod's crystals the tag would hold those
+  too; here it holds one, and the rollout maps the jar's tag onto it rather than inventing an id.
+- The creative tab carries the four beside the existing three, in material order.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices,rust-port
+
+### Changelog (0.2.10) — supersedes 0.2.9
+
+> **0.2.10 — the crystal → shard leg.** The Chemical Injection Chamber now runs the jar's
+> `processing/<material>/shard/from_crystal.json` rows for **every** crystal the crystallizer makes:
+> one `crystal_<material>` plus one unit of hydrogen chloride a tick, 200 ticks an operation, become
+> one `shard_<material>` for 80,000 FE. `mekanism:shard_{lead,osmium,tin,uranium}` join iron, gold
+> and copper (the jar's own textures, models, names and tab entries), so the chain runs
+> washer → crystallizer → injection chamber → enriching chamber without a dead end on the crystal
+> side. The injecting table is **79 rows of the jar's 91** (72 before; 15 skipped, none for a
+> crystal). Worked in game: a 4,000-unit hydrogen chloride tank beside a chamber charged with
+> 160,000 FE turns one `crystal_lead` into exactly one `shard_lead`, leaving `80000/160000 FE`,
+> `progress 0/200`, the input empty and the neighbour at **3,800** with the machine's own tank at 0;
+> the sweep runs **79 of 79** injecting rows, the seven crystal rows among them; `SELFTEST=1` fails
+> on the lead injection's own assertion (`output empty x0`); the unmodded game still cannot give the
+> blocks and the no-cable differential still passes; every earlier leg is unchanged. Package: **274
+> entries, 202,188 B**, sha256 `216345bbec2e6136e03284bf2f9927ba8506c57f6269ee1f488626603533368b`;
+> `check` exit 0; `fits` `made for` at the pin and `fits` at `0b14f8a`; 126 tests, clippy `-D
+> warnings` clean; in game `PASS` + `EXIT:0`, control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` +
+> `EXIT:0`, log gate 6/6.

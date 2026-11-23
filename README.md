@@ -1,4 +1,4 @@
-# Mekanism for Horizon — slices 1–10
+# Mekanism for Horizon — slices 1–11
 
 One flat **SDK package** (`horizon-mod.toml`, `api = "0.2"`) for Mekanism
 10.7.19.85 (MIT), the exact ATM10 jar. The carried blocks, items, models,
@@ -20,9 +20,11 @@ here; the behaviour is `src/lib.rs` (one `impl mod_api::Hooks`) and
 - `mekanism:chemical_injection_chamber` — 400 FE/t, 200 ticks per operation
   (80,000 FE), a 160,000 FE buffer and a **210-unit gas tank of its own** that
   it tops up from a neighbouring tank **through `mekanism:chemical`**; the jar's
-  72 `mekanism:injecting` rows this port can finish (ore and raw ore → shards,
-  copper oxidising, concrete solidifying, coral reviving, dirt → mud,
-  terracotta → clay), with the `mekanism:shard_{iron,gold,copper}` items;
+  79 `mekanism:injecting` rows this port can finish (ore and raw ore → shards,
+  **every crystal the crystallizer makes → its material's shard**, copper
+  oxidising, concrete solidifying, coral reviving, dirt → mud, terracotta →
+  clay), with the seven `mekanism:shard_{iron,gold,copper,lead,osmium,tin,uranium}`
+  items;
 - `mekanism:chemical_washer` — **the port's first fluid machine**: 200 FE/t,
   200 ticks per operation (40,000 FE), an 80,000 FE buffer, a 10,000 mB **water
   tank** declared through the game's own `horizon:fluids` capability (its
@@ -71,8 +73,9 @@ The recipe tables are generated into `src/runtime.rs` by
 all seven have `--check`, and `--rows` feeds the in-game sweeps
 (`tools/crush_sweep.py`, `tools/inject_sweep.py`, `tools/gas_sweep.py`,
 `tools/wash_sweep.py`, `tools/crystal_sweep.py`) so the scenario and the table
-cannot drift apart. `tools/carry_crystallizer.py --check` re-derives the
-crystallizer's carried art from the jar.
+cannot drift apart. `tools/carry_crystallizer.py --check` and
+`tools/carry_shards.py --check` re-derive the crystallizer's and the seven
+shards' carried art from the jar.
 
 ```sh
 # the pure rules and the glue's declarations, on the host target

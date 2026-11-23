@@ -45,9 +45,22 @@ END = "    // END GENERATED INJECTING TABLE\n"
 # The item tags the jar's injecting recipes use, expanded to their 26.3 members:
 # the pack's tags also hold modded ores (`alltheores:iron_ore`, ...) and
 # Mekanism's own items, which this port does not register. A tag with no 26.3
-# member (`c:bricks/normal`, `c:gunpowders`, `c:crystals/*`, the lead/osmium/tin/
-# uranium ore and pellet tags) is not listed, so its rows are skipped.
+# member (`c:bricks/normal`, `c:gunpowders`, the lead/osmium/tin/uranium ore and
+# pellet tags) is not listed, so its rows are skipped.
+#
+# `c:crystals/<material>` is the one `c:` family whose member this port owns: the
+# crystallizer's own `mekanism:crystal_<material>` item, which slice 9/10 gave all
+# seven washer materials. Mapping the tag onto it carries the jar's
+# `processing/<material>/shard/from_crystal.json` rows — the leg the jar's chain
+# runs after the crystallizer — and nothing else in the pack is a crystal here.
 ITEM_TAGS: dict[str, list[str]] = {
+    "c:crystals/copper": ["mekanism:crystal_copper"],
+    "c:crystals/gold": ["mekanism:crystal_gold"],
+    "c:crystals/iron": ["mekanism:crystal_iron"],
+    "c:crystals/lead": ["mekanism:crystal_lead"],
+    "c:crystals/osmium": ["mekanism:crystal_osmium"],
+    "c:crystals/tin": ["mekanism:crystal_tin"],
+    "c:crystals/uranium": ["mekanism:crystal_uranium"],
     "c:ores/copper": ["minecraft:copper_ore", "minecraft:deepslate_copper_ore"],
     "c:ores/gold": ["minecraft:gold_ore", "minecraft:deepslate_gold_ore"],
     "c:ores/iron": ["minecraft:iron_ore", "minecraft:deepslate_iron_ore"],
@@ -66,8 +79,9 @@ CHEMICAL_TAGS: dict[str, list[str]] = {
     "mekanism:water_vapor": ["mekanism:water_vapor", "mekanism:steam"],
 }
 
-# The items this port registers: vanilla's own, plus the three dusts and the
-# three shards declared in `data/mekanism/horizon/item/`.
+# The items this port registers: vanilla's own, plus the three dusts, the three
+# shards of slice 5 and the four shards slice 11 adds — all declared in
+# `data/mekanism/horizon/item/`.
 REGISTERED = [
     "mekanism:dust_copper",
     "mekanism:dust_gold",
@@ -75,6 +89,10 @@ REGISTERED = [
     "mekanism:shard_copper",
     "mekanism:shard_gold",
     "mekanism:shard_iron",
+    "mekanism:shard_lead",
+    "mekanism:shard_osmium",
+    "mekanism:shard_tin",
+    "mekanism:shard_uranium",
 ]
 
 
