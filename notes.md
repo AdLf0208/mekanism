@@ -37,7 +37,9 @@ the two gas factories, one tank. **Slice 8** added the Chemical Washer (the port
 first fluid machine) and **slice 9** the Chemical Crystallizer; their sections
 are below, and **slice 10** the four crystals that complete the crystallizer's seven slurries, and
 **slice 11** the crystal → shard leg that carries every one of those crystals on into the injecting
-chamber's shards. Everything else in Mekanism is a planned gap (below).
+chamber's shards, and **slice 12** the rest of the ore chain for the four metals those crystals are
+made of (clump → dirty dust → dust → ingot), with the port's first **enriching sweep** proving all
+136 enriching rows in a real machine. Everything else in Mekanism is a planned gap (below).
 
 ## Class + tier, approach, licence
 
@@ -3174,3 +3176,245 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > `check` exit 0; `fits` `made for` at the pin and `fits` at `0b14f8a`; 126 tests, clippy `-D
 > warnings` clean; in game `PASS` + `EXIT:0`, control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` +
 > `EXIT:0`, log gate 6/6.
+
+## Slice 12 — the ore chain for the four extra metals (0.2.11, 2026-11-23)
+
+### The scope authority, quoted
+
+The gap is this port's own, "Gaps after slice 11" item 1:
+
+> **The four `dirty_dust_*` + four `dust_*` items** (slice 10's gap 1, second half): registering them
+> adds four `mekanism:enriching` rows (`c:dirty_dusts/<m>` → `dust_<m>`), but the leg still does not
+> close — the crushing step needs `mekanism:clump_{lead,osmium,tin,uranium}`, and the smelting step
+> needs `mekanism:ingot_{lead,osmium,tin,uranium}`, which neither 26.3 nor this port has. A future
+> slice that takes it should carry the four clumps and four ingots in the same version and add an
+> enriching sweep, so the rows are provable rather than dead.
+
+**Chosen: exactly that slice**, the sixteen items the leg needs (four clumps, four dirty dusts, four
+dusts, four ingots) and the three row families they open: the Crusher's clump → dirty dust (148 → 152),
+the Enrichment Chamber's dirty dust → dust (132 → 136) and the Energized Smelter's dust → ingot (3 → 7).
+It also adds the port's **first enriching sweep** — the parity rule's debt for the 132 enriching rows
+carried since slice 2 — and proves all 136 in a real machine. It is the same machines-shaped work on
+the ledger's `deep` row: no new capability, hook, block entity, menu or state, only items and table
+rows the shipped machines already serve.
+
+### What the jar says (re-read from `v1.21.1-10.7.19.85`, `a00109e4`)
+
+| value | source | port |
+|---|---|---|
+| one clump + 0 gas → one dirty dust, 200 ticks | `processing/{lead,osmium,tin,uranium}/dirty_dust/from_clump.json` (`type: mekanism:crushing`, input `c:clumps/<m>`, count 1) | `crushing::TABLE`, the four new rows |
+| one dirty dust → one dust | `processing/<m>/dust/from_dirty_dust.json` (`type: mekanism:enriching`, input `c:dirty_dusts/<m>`, count 1) | `enriching::TABLE`, the four new rows |
+| one dust → one ingot, 200 ticks | `processing/<m>/ingot/from_dust_smelting.json` (`type: minecraft:smelting`, `cookingtime` 200) | `smelting::MEKANISM_ROWS`, 3 → 7 rows |
+| the sixteen items' art | `assets/mekanism/{textures/item,models/item}/{clump,dirty_dust,dust,ingot}_<m>.*` | `tools/carry_ore_chain.py` (50 files: the 16 new pairs plus iron/gold/copper re-derived, 25 items in all) |
+| the sixteen names | `item.mekanism.<kind>_<m>` in the jar's `en_us.json` | `assets/mekanism/lang/en_us.json` |
+| the stack size | the same `minecraft:gunpowder` template as every other item | `data/mekanism/horizon/item/<kind>_<m>.json` |
+
+The generators now report **313 crushing recipes → 152 rows** (183 skipped, 4 fewer than 148/187) and
+**322 enriching recipes → 136 rows** (195 skipped), and the smelter's own rows are **7** (three vanilla
+dusts plus the four jar dusts). The four `c:ingots/<m>` crushing rows (`dust/from_ingot.json`) the jar
+also holds are **not** taken: they are not part of the chain this slice closes, and the brief's table
+counts (152 / 136 / 7) are the scope — see "Gaps after slice 12" item 1.
+
+### The slice in the port's three layers
+
+- **`src/runtime.rs`** — the generated `crushing::TABLE` and `enriching::TABLE` grow by four rows each;
+  `smelting::MEKANISM_ROWS` grows from three to seven and gains a `#[cfg(test)] mekanism_rows()` size
+  accessor. Three new tests state the family rule per direction: one clump crushes into its dirty dust,
+  one dirty dust enriches into its dust, one dust smelts into its ingot — and each pins its table's row
+  count (152 / 136 / 7), so a dropped tag mapping fails the unit test, not just the game leg.
+- **`src/support.rs`** — unchanged. The three machines are generic over their tables, which is why the
+  twelve new rows (and the four smelting rows) work with no line of glue.
+- **Content** — sixteen `data/mekanism/horizon/item/<kind>_<m>.json` (the gunpowder template), sixteen
+  lang keys, sixteen creative-tab entries in material order, and the sixteen items' jar models and
+  textures through `tools/carry_ore_chain.py --check`.
+
+### Red → green
+
+The three tests were written first and ran red on the 0.2.10 tree
+(`../_shared/evidence/mekanism/slice12-unit-red.log`), **126 passed, 3 failed**:
+
+```
+---- runtime::tests::the_ore_chain_crushes_every_clump_into_its_dirty_dust stdout ----
+thread '...' panicked at src/runtime.rs:4502:13:
+assertion `left == right` failed: mekanism:clump_lead
+  left: None
+ right: Some(MachineRecipe { input: 1, output: ItemAmount { item: "mekanism:dirty_dust_lead", count: 1 } })
+
+---- runtime::tests::the_ore_chain_enriches_every_dirty_dust_into_its_dust stdout ----
+thread '...' panicked at src/runtime.rs:4516:13:
+assertion `left == right` failed: mekanism:dirty_dust_lead
+  left: None
+ right: Some(MachineRecipe { input: 1, output: ItemAmount { item: "mekanism:dust_lead", count: 1 } })
+
+---- runtime::tests::the_ore_chain_smelts_every_dust_into_its_ingot stdout ----
+thread '...' panicked at src/runtime.rs:4530:13:
+assertion `left == right` failed: mekanism:dust_lead
+  left: None
+ right: Some(MachineRecipe { input: 1, output: ItemAmount { item: "mekanism:ingot_lead", count: 1 } })
+
+test result: FAILED. 126 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Then green: **129 tests** (was 126; +3), 0 failed.
+
+### Coverage — every family this slice ships
+
+Per the parity rule (AGENTS.md, 2026-11-20):
+
+| family | status | proof |
+|---|---|---|
+| the sixteen new items: give-able, named, declared in the creative tab | **tested** (give-ability; the tab list itself has no in-game readout, as in every earlier slice) | A1 gives **forty** items (`… forty items …` in the PASS line) |
+| clump → dirty dust for the four metals (crushing 152 rows) | **tested** | D: `rows crushed: 152 of 152`, each new row `clump_<m> x1 -> dirty_dust_<m>`, input consumed |
+| dirty dust → dust for the four metals (enriching 136 rows) | **tested** | R: `rows enriching: 136 of 136`, each row's declared input count and output stack, input consumed |
+| dust → ingot for the four metals (the smelter's own 7 rows) | **tested** | Q: `10000/20000 FE, progress 0/200, input empty x0, output mekanism:ingot_lead x1` |
+| the whole chain in real machines, one operation each | **tested** | Q: enrichment `dust_lead x1` at 10,000 FE, smelter `ingot_lead x1` at 10,000 FE, crusher `dirty_dust_lead x1` at 10,000 FE (200 ticks × 50 FE/t from a 20,000 FE buffer) |
+| the enriching table has no row for an unregistered input | **tested** | R control: a chamber fed `minecraft:dirt` still holds it and makes nothing (`enriched dirt: [{"count": 1, "item": "minecraft:dirt"}, null, null]`) |
+| the newest family's assertion is fail-capable | **tested** | `SELFTEST=1`: `FAIL: … to say 'output empty x0', got '… output mekanism:dust_lead x1'` + `EXIT:1` |
+| everything slices 1–11 proved | **still green** | the same package leg: `PASS` + `EXIT:0`, 79/79 injecting, 15/15 purifying, 152/152 crushing, 7/7 washing, 7/7 crystallizing, all six e2e logs green |
+| the jar's `c:ingots/<m>` → dust rows | **not ported** | outside this slice's scope (the brief's 152/136/7 counts); see gaps item 1 |
+| the 163-row vanilla smelting table | **partly tested** | phase E/Q prove ore → ingot, sand → glass and the seven dust → ingot rows; no sweep yet — the next parity debt (gaps item 2) |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| the three family tests, RED first | `cargo test --offline` on the 0.2.10 tree | **126 passed, 3 failed** (`slice12-unit-red.log`) |
+| tests | `cargo test --offline` | **129 passed**, 0 failed (`slice12-test.log`, `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`slice12-clippy.log`, `sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (same step) |
+| recipe tables | the seven `gen_*.py --check` + `carry_crystallizer.py --check` + `carry_shards.py --check` + `carry_ore_chain.py --check` (`HORIZON_RES` set) | 163 / **136** / **152** / 79 / 15 / 7 / 7 rows; **18** + **14** + **50** carried files match the jar (`slice12-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **219,678 B**, `cmp` identical, sha256 `e487f3aebb981725c422219904b3c89a0f4c845944efe437327a5e801c623f66` (`slice12-build.log`, `slice12-build-second.log`, `slice12-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.11 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **322 entries** (`slice12-check.log`, `sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`slice12-fits.log`, `sdk-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (same log) |
+| archive | `unzip -l mekanism.hmod` | 322 entries, 40 item files, no `Cargo.lock` (`slice12-entries.txt`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (322 entries, no packed `Cargo.lock`) |
+| launcher build | `launcher-game.sh build mekanism` (in a lease, after removing the one `native-*` tag that carried this mod) | `Compiling mekanism (1 of 1)`, `native-0a875da-8722fcac5463` (`slice12-launcher-build.log`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 2,64,18 to say 'output empty x0', got '… output mekanism:dust_lead x1'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+
+The package-building steps ran with **`BUILD_LOCAL=1`**: the slot runner forwards `build`/`check` to
+the second machine, whose cargo has no `cargo-horizon-mod` subcommand (`error: no such command:
+horizon-mod`), while `test` and `lint` forward fine. The lease, the per-step job count and the
+`CARGO_INCREMENTAL=0` rule are unchanged.
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`../_shared/evidence/mekanism-e2e/e2e-package.log`, this slice's phases:
+
+```
+== Q: slice 12's chain — a lead clump, its dirty dust, its dust and its ingot ==
+  info(2,64,18): mekanism:enrichment_chamber: 10000/20000 FE, progress 0/200, input empty x0, output mekanism:dust_lead x1
+  energy(2,64,18): 10000
+  info(4,64,18): mekanism:energized_smelter: 10000/20000 FE, progress 0/200, input empty x0, output mekanism:ingot_lead x1
+  energy(4,64,18): 10000
+  info(6,64,18): mekanism:crusher: 10000/20000 FE, progress 0/200, input empty x0, output mekanism:dirty_dust_lead x1
+  energy(6,64,18): 10000
+== R: every carried enriching recipe in a real Enrichment Chamber ==
+  rows from the jar's mekanism:enriching data: 136
+  mekanism:dirty_dust_lead x1 -> {"count": 1, "item": "mekanism:dust_lead"}
+  …
+  rows enriching: 136 of 136
+  sweep PASS: all 136 carried enriching recipes ran in a real enrichment chamber …
+  enriched dirt: [{"count": 1, "item": "minecraft:dirt"}, null, null]
+  control PASS: the dirt is still in the input and nothing was made
+```
+
+What the numbers prove:
+
+- one `mekanism:dirty_dust_lead` in a chamber charged to its whole 20,000 FE buffer becomes exactly one
+  `mekanism:dust_lead`, spending exactly **10,000 FE** (50 FE/t × 200 ticks) and leaving `10000/20000`,
+  `progress 0/200` and an empty input slot;
+- that dust in a smelter becomes exactly one `mekanism:ingot_lead` for another **10,000 FE**;
+- a `mekanism:clump_lead` in a crusher becomes exactly one `mekanism:dirty_dust_lead` for **10,000 FE**
+  — the three rows the jar declares, each in its own real machine;
+- the enriching sweep runs **all 136** rows the table carries: the 132 rows carried since slice 2 had
+  never been exercised in a machine, and each now produces its declared stack from its declared input
+  count with the input consumed; the no-recipe control proves the sweep's assertions can distinguish a
+  row from `dirt`;
+- the selftest flips **this** phase's assertion (`output empty x0` vs `dust_lead x1`), so the newest
+  family's check is the one proven able to fail;
+- the earlier legs are unchanged: 79/79 injecting, 15/15 purifying, 152/152 crushing, 7/7 washing,
+  7/7 crystallizing, the five factories, the menus, save + relaunch, the control game's refusal
+  (`EXIT:1`) and the no-cable differential (`PASS`).
+
+All **four** legs ran on the final launcher build `native-0a875da-8722fcac5463`, whose exported
+`horizon-native-mods/mekanism/` is `cmp`-identical to this tree (the manifest, `src/`, `assets/`,
+`data/` and the two licence files) and names **0.2.11**, so the `PASS`/`EXIT` verdicts belong to the
+package recorded below.
+
+### What the harness taught this slice
+
+- **The parity debt was real and invisible.** 132 enriching rows had shipped without one of them ever
+  being crafted in a machine: `check` validates the table's shape, the unit tests the lookups, and no
+  leg touched the machine's other rows. The sweep is the first evidence that they work — and the four
+  new rows ride it, so a lost tag mapping fails the leg's `-ge 136` floor as well as the unit test.
+- **Two machines per row is the sweep's cost, not its risk.** 136 rows at batch 10 are 14 waits of 225
+  ticks, ~5 minutes of game time; an enrichment chamber is the crusher's shape (three slots, one input,
+  one output), so the crusher sweep's harness worked unchanged.
+- **`SELFTEST` moved with the newest family.** Phase P no longer flips; the flip lives in phase Q. A
+  selftest that keeps flipping an older phase stops proving the latest slice the moment the next one
+  lands.
+- **The stale tag had to go.** Only `native-0a875da-200d1e6142d3` (slice 11's) carried this mod, and it
+  was removed before the build, so `Compiling mekanism (1 of 1)` and `native-0a875da-8722fcac5463`
+  cannot be a reused binary. The other 21 tags carry other ports and were left alone.
+
+### Gaps after slice 12
+
+1. **The jar's `dust/from_ingot.json` rows for the four now-registered ingots** are four crushing rows
+   (`c:ingots/<m>` → `dust_<m>`, 152 → 156) this slice does not take: they are outside the brief's
+   chain and counts, and the crushing sweep would prove them at no extra cost. A next slice should add
+   them with the crafting/block family below.
+2. **The 163-row vanilla smelting table is still not swept.** Phases E/Q prove a handful of rows
+   (ore → ingot, sand → glass, the seven dust → ingot); the parity rule's next debt is an smelting
+   sweep over all 163, the way R pays the enriching one.
+3. The four ingots have **no block, nugget or crafting recipes** (`ingot/from_block`, `from_nuggets`,
+   `dust/from_ingot`, the nine-ingot block family), and the jar's `c:storage_blocks/<m>` art is not
+   carried: blocks are block-entity-free content, a natural next slice with the crushing rows above.
+4. The jar's `data/c/tags/item/{clumps,dirty_dusts,dusts,ingots}/<material>.json` are **still not
+   declared** (slice 11's gap 3): the machine's tables are Rust and the generators' `TAGS` expansion
+   plays the tag's role, so nothing in this port breaks, but another mod asking by tag would not see
+   these items. Needs an in-game tag readout to be provable.
+5. The chemical-container and energy slots, the composite model, the `active` state and the GUI are
+   slice 9's recorded deviations and still stand; everything else in *Gaps / deviations* and the
+   earlier slices' gap lists still stands.
+
+### `## Upstream defects fixed`
+
+None found in this slice: the jar's sixteen items, sixteen textures/models, sixteen lang keys and the
+three row families are consistent with each other, and the regenerated tables reproduce the jar's
+recipes exactly (one → one in every direction).
+
+### Deviations this slice records
+
+- The sixteen items are **plain items** on the gunpowder template with the jar's own art — no tool,
+  armour, block or nugget behaviour, exactly as the iron/gold/copper shards and crystals before them.
+- `c:clumps/<m>` and `c:dirty_dusts/<m>` are expanded to this port's `<kind>_<m>`, the only members the
+  game has; a pack that also installed another mod's clumps would carry those too, so the expansion
+  maps the jar's tag onto the ids this package declares rather than inventing one.
+- The creative tab carries the sixteen beside their iron/gold/copper siblings, in material order.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices,rust-review
+
+### Changelog (0.2.11) — supersedes 0.2.10
+
+> **0.2.11 — the four extra metals' ore chain.** `mekanism:clump_*`, `mekanism:dirty_dust_*`,
+> `mekanism:dust_*` and `mekanism:ingot_*` now exist for **lead, osmium, tin and uranium** (the jar's
+> own textures, models, names and tab entries), so the jar's chain runs end to end for them: a clump
+> crushes into its dirty dust, that dirty dust enriches into its dust and that dust smelts into its
+> ingot. The crushing table is **152 rows** of the jar's 313 (148 before), the enriching table **136**
+> of 322 (132 before) and the smelter's own rows **7** (3 before). The port's **first enriching sweep**
+> proves every one of the 136 rows in a real Enrichment Chamber — the parity rule's debt for the 132
+> rows carried since slice 2. Worked in game: a chamber charged with 20,000 FE turns one
+> `dirty_dust_lead` into exactly one `dust_lead` for 10,000 FE (`10000/20000 FE, progress 0/200,
+> input empty x0`), that dust smelts into `ingot_lead` for 10,000 FE, and a `clump_lead` crushes into
+> `dirty_dust_lead` for 10,000 FE; the sweep runs **136 of 136** rows and a `dirt` control makes
+> nothing; `SELFTEST=1` fails on the enrichment's own assertion (`output empty x0`); the unmodded game
+> still cannot give the blocks and the no-cable differential still passes; every earlier leg is
+> unchanged. Package: **322 entries, 219,678 B**, sha256
+> `e487f3aebb981725c422219904b3c89a0f4c845944efe437327a5e801c623f66`; `check` exit 0; `fits` `made
+> for` at the pin and `fits` at `0b14f8a`; 129 tests, clippy `-D warnings` clean; in game `PASS` +
+> `EXIT:0`, control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` + `EXIT:0`, log gate 6/6.

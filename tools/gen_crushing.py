@@ -64,18 +64,43 @@ TAGS: dict[str, list[str]] = {
     "c:clumps/copper": ["mekanism:clump_copper"],
     "c:clumps/gold": ["mekanism:clump_gold"],
     "c:clumps/iron": ["mekanism:clump_iron"],
+    "c:clumps/lead": ["mekanism:clump_lead"],
+    "c:clumps/osmium": ["mekanism:clump_osmium"],
+    "c:clumps/tin": ["mekanism:clump_tin"],
+    "c:clumps/uranium": ["mekanism:clump_uranium"],
 }
 
 # The items the port registers: vanilla's own, plus the three dusts of slices
-# 1-3 and the clumps and dirty dusts of slice 6, all declared in
+# 1-3, the clumps and dirty dusts of slice 6 and slice 12's four extra metals
+# (lead, osmium, tin, uranium), all declared in
 # `data/mekanism/horizon/item/`. The clump rows (clump -> dirty dust) need both
 # ends registered: the tag above names the input, this list the output.
-DUSTS = ["mekanism:dust_copper", "mekanism:dust_gold", "mekanism:dust_iron"]
-CLUMPS = ["mekanism:clump_copper", "mekanism:clump_gold", "mekanism:clump_iron"]
+DUSTS = [
+    "mekanism:dust_copper",
+    "mekanism:dust_gold",
+    "mekanism:dust_iron",
+    "mekanism:dust_lead",
+    "mekanism:dust_osmium",
+    "mekanism:dust_tin",
+    "mekanism:dust_uranium",
+]
+CLUMPS = [
+    "mekanism:clump_copper",
+    "mekanism:clump_gold",
+    "mekanism:clump_iron",
+    "mekanism:clump_lead",
+    "mekanism:clump_osmium",
+    "mekanism:clump_tin",
+    "mekanism:clump_uranium",
+]
 DIRTY_DUSTS = [
     "mekanism:dirty_dust_copper",
     "mekanism:dirty_dust_gold",
     "mekanism:dirty_dust_iron",
+    "mekanism:dirty_dust_lead",
+    "mekanism:dirty_dust_osmium",
+    "mekanism:dirty_dust_tin",
+    "mekanism:dirty_dust_uranium",
 ]
 
 

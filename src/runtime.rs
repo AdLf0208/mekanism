@@ -478,12 +478,25 @@ pub mod smelting {
     /// ingots (`data/mekanism/recipe/processing/<material>/ingot/
     /// from_dust_smelting.json`, one item in, one ingot out, 200 ticks). They are
     /// vanilla-type recipes of the pack, so the Energized Smelter smelts them; the
-    /// port carries the three dusts this slice registers.
+    /// port carries the dusts of slices 1-3 (into vanilla's ingots) and slice
+    /// 12's lead, osmium, tin and uranium (into this port's own ingots).
     static MEKANISM_ROWS: &[(&str, &str, u32)] = &[
         ("mekanism:dust_copper", "minecraft:copper_ingot", 1),
         ("mekanism:dust_gold", "minecraft:gold_ingot", 1),
         ("mekanism:dust_iron", "minecraft:iron_ingot", 1),
+        ("mekanism:dust_lead", "mekanism:ingot_lead", 1),
+        ("mekanism:dust_osmium", "mekanism:ingot_osmium", 1),
+        ("mekanism:dust_tin", "mekanism:ingot_tin", 1),
+        ("mekanism:dust_uranium", "mekanism:ingot_uranium", 1),
     ];
+
+    /// How many of the jar's own `minecraft:smelting` rows the table carries
+    /// (the tests' size check).
+    #[cfg(test)]
+    #[must_use]
+    pub fn mekanism_rows() -> usize {
+        MEKANISM_ROWS.len()
+    }
 
     /// The result of smelting `item`, `None` when nothing smelts it.
     ///
@@ -528,11 +541,15 @@ pub mod enriching {
     // `(input item, items consumed, output item, output count)`; a `c:`
     // tag is expanded to the members 26.3 has (see the tool's TAGS), and
     // a recipe whose output the port does not register is left out.
-    // Source recipes: 322. Rows: 132. Skipped: 199.
+    // Source recipes: 322. Rows: 136. Skipped: 195.
     static TABLE: &[(&str, u32, &str, u32)] = &[
         ("mekanism:dirty_dust_copper", 1, "mekanism:dust_copper", 1),
         ("mekanism:dirty_dust_gold", 1, "mekanism:dust_gold", 1),
         ("mekanism:dirty_dust_iron", 1, "mekanism:dust_iron", 1),
+        ("mekanism:dirty_dust_lead", 1, "mekanism:dust_lead", 1),
+        ("mekanism:dirty_dust_osmium", 1, "mekanism:dust_osmium", 1),
+        ("mekanism:dirty_dust_tin", 1, "mekanism:dust_tin", 1),
+        ("mekanism:dirty_dust_uranium", 1, "mekanism:dust_uranium", 1),
         ("minecraft:allium", 1, "minecraft:magenta_dye", 2),
         (
             "minecraft:ancient_debris",
@@ -1041,11 +1058,20 @@ pub mod crushing {
     // `(input item, items consumed, output item, output count)`; a `c:`
     // tag is expanded to the members 26.3 has (see the tool's TAGS), and
     // a recipe whose output the port does not register is left out.
-    // Source recipes: 313. Rows: 148. Skipped: 187.
+    // Source recipes: 313. Rows: 152. Skipped: 183.
     static TABLE: &[(&str, u32, &str, u32)] = &[
         ("mekanism:clump_copper", 1, "mekanism:dirty_dust_copper", 1),
         ("mekanism:clump_gold", 1, "mekanism:dirty_dust_gold", 1),
         ("mekanism:clump_iron", 1, "mekanism:dirty_dust_iron", 1),
+        ("mekanism:clump_lead", 1, "mekanism:dirty_dust_lead", 1),
+        ("mekanism:clump_osmium", 1, "mekanism:dirty_dust_osmium", 1),
+        ("mekanism:clump_tin", 1, "mekanism:dirty_dust_tin", 1),
+        (
+            "mekanism:clump_uranium",
+            1,
+            "mekanism:dirty_dust_uranium",
+            1,
+        ),
         ("minecraft:black_wool", 1, "minecraft:string", 4),
         ("minecraft:blaze_rod", 1, "minecraft:blaze_powder", 4),
         ("minecraft:blue_wool", 1, "minecraft:string", 4),
@@ -4475,6 +4501,56 @@ mod tests {
         assert_eq!(
             smelting::lookup("mekanism:dust_copper"),
             Some(one("minecraft:copper_ingot", 1))
+        );
+    }
+
+    /// Slice 12's four metals run the whole chain the jar declares, one row per
+    /// family: `processing/<m>/dirty_dust/from_clump.json` (`mekanism:crushing`,
+    /// one clump into one dirty dust), `processing/<m>/dust/from_dirty_dust.json`
+    /// (`mekanism:enriching`, one dirty dust into one dust) and
+    /// `processing/<m>/ingot/from_dust_smelting.json` (a `minecraft:smelting`
+    /// recipe the Energized Smelter takes, one dust into one ingot). The four
+    /// rows are the tool's `c:clumps/<m>` and `c:dirty_dusts/<m>` expansions; the
+    /// row counts pin the generators' output.
+    #[test]
+    fn the_ore_chain_crushes_every_clump_into_its_dirty_dust() {
+        for material in ["lead", "osmium", "tin", "uranium"] {
+            let clump = format!("mekanism:clump_{material}");
+            let dirty = format!("mekanism:dirty_dust_{material}");
+            assert_eq!(crushing::lookup(&clump), Some(one(&dirty, 1)), "{clump}");
+        }
+        assert_eq!(
+            crushing::len(),
+            152,
+            "the rows the generator keeps from the jar's 313 crushing recipes"
+        );
+    }
+
+    #[test]
+    fn the_ore_chain_enriches_every_dirty_dust_into_its_dust() {
+        for material in ["lead", "osmium", "tin", "uranium"] {
+            let dirty = format!("mekanism:dirty_dust_{material}");
+            let dust = format!("mekanism:dust_{material}");
+            assert_eq!(enriching::lookup(&dirty), Some(one(&dust, 1)), "{dirty}");
+        }
+        assert_eq!(
+            enriching::len(),
+            136,
+            "the rows the generator keeps from the jar's 322 enriching recipes"
+        );
+    }
+
+    #[test]
+    fn the_ore_chain_smelts_every_dust_into_its_ingot() {
+        for material in ["lead", "osmium", "tin", "uranium"] {
+            let dust = format!("mekanism:dust_{material}");
+            let ingot = format!("mekanism:ingot_{material}");
+            assert_eq!(smelting::lookup(&dust), Some(one(&ingot, 1)), "{dust}");
+        }
+        assert_eq!(
+            smelting::mekanism_rows(),
+            7,
+            "three vanilla-metal dusts and slice 12's four"
         );
     }
 

@@ -13,10 +13,12 @@ Rows are `(input item, items consumed per operation, output item, output count)`
 An input the jar writes as one item id (`{"item": ...}`) keeps its own count.
 
 Usage:
-  python3 tools/gen_enriching.py [--jar PATH] [--check]
+  python3 tools/gen_enriching.py [--jar PATH] [--check] [--rows]
 
 `--check` reads the committed rows back (whatever rustfmt did to their layout)
-and fails when they no longer match the jar.
+and fails when they no longer match the jar. `--rows` prints the rows as JSON,
+which the in-game sweep (`tools/enrich_sweep.py`) drives the real machine with,
+so the scenario and the table cannot drift apart.
 """
 import argparse
 import io
@@ -58,16 +60,32 @@ TAGS: dict[str, list[str]] = {
     "c:dirty_dusts/copper": ["mekanism:dirty_dust_copper"],
     "c:dirty_dusts/gold": ["mekanism:dirty_dust_gold"],
     "c:dirty_dusts/iron": ["mekanism:dirty_dust_iron"],
+    "c:dirty_dusts/lead": ["mekanism:dirty_dust_lead"],
+    "c:dirty_dusts/osmium": ["mekanism:dirty_dust_osmium"],
+    "c:dirty_dusts/tin": ["mekanism:dirty_dust_tin"],
+    "c:dirty_dusts/uranium": ["mekanism:dirty_dust_uranium"],
 }
 
 # The items the port registers: vanilla's own, plus the three dusts of slices
-# 1-3 and the dirty dusts of slice 6, all declared in
+# 1-3 and the dirty dusts of slices 6 and 12, all declared in
 # `data/mekanism/horizon/item/`.
-DUSTS = ["mekanism:dust_copper", "mekanism:dust_gold", "mekanism:dust_iron"]
+DUSTS = [
+    "mekanism:dust_copper",
+    "mekanism:dust_gold",
+    "mekanism:dust_iron",
+    "mekanism:dust_lead",
+    "mekanism:dust_osmium",
+    "mekanism:dust_tin",
+    "mekanism:dust_uranium",
+]
 DIRTY_DUSTS = [
     "mekanism:dirty_dust_copper",
     "mekanism:dirty_dust_gold",
     "mekanism:dirty_dust_iron",
+    "mekanism:dirty_dust_lead",
+    "mekanism:dirty_dust_osmium",
+    "mekanism:dirty_dust_tin",
+    "mekanism:dirty_dust_uranium",
 ]
 
 
@@ -156,9 +174,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--jar", type=Path, default=DEFAULT_JAR)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--rows", action="store_true", help="print the rows as JSON")
     args = parser.parse_args()
     text = OUT.read_text()
     expected, recipes, skipped = rows(args.jar)
+    if args.rows:
+        print(json.dumps(
+            [{"input": i, "consumed": c, "output": o, "count": n} for i, c, o, n in expected],
+            indent=1,
+        ))
+        return 0
     if args.check:
         committed = committed_rows(text)
         if committed != expected:
