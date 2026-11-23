@@ -3668,6 +3668,245 @@ pub fn crystallizer_pull(recipe: &CrystallizeRecipe, tank: &Tank) -> Option<(&'s
 }
 
 // ---------------------------------------------------------------------------
+// Slice 15: the Chemical Dissolution Chamber — an ore and acid into a dirty slurry
+// ---------------------------------------------------------------------------
+
+/// The acid every dissolution recipe takes (`chemical_input.chemical` in the
+/// jar's `processing/<material>/slurry/dirty/*.json`).
+pub const SULFURIC_ACID: &str = "mekanism:sulfuric_acid";
+
+/// The chamber's usage in FE per tick (`UsageConfig.chemicalDissolutionChamber`,
+/// `400L`).
+pub const DISSOLUTION_USAGE: i32 = 400;
+
+/// The chamber's buffer in FE (`StorageConfig.chemicalDissolutionChamber`,
+/// `160_000L, 1`).
+pub const DISSOLUTION_CAPACITY: i32 = 160_000;
+
+/// Ticks one operation takes (`TileEntityChemicalDissolutionChamber.BASE_TICKS_REQUIRED`
+/// = `5 * SharedConstants.TICKS_PER_SECOND`), so one operation costs
+/// 100 x 400 = 40,000 FE.
+pub const DISSOLUTION_TICKS: i32 = 100;
+
+/// The chamber's one operation: 100 ticks at 400 FE/t.
+pub const DISSOLUTION_OPERATION: Operation = Operation {
+    ticks: DISSOLUTION_TICKS,
+    usage: DISSOLUTION_USAGE,
+};
+
+/// Each of the chamber's two tanks in millibuckets
+/// (`TileEntityChemicalDissolutionChamber.MAX_CHEMICAL = 10 * BUCKET_VOLUME`):
+/// the acid it takes and the slurry it makes.
+pub const DISSOLUTION_TANK: u32 = 10_000;
+
+/// One `mekanism:dissolution` recipe as the chamber runs it: the items one
+/// operation consumes, the acid it spends **per tick** (every row in the jar is
+/// `per_tick_usage: true`), and the dirty slurry it makes.
+///
+/// Not `Recipe`, for the same reason as [`ItemAmount`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DissolveRecipe {
+    /// Items taken from the input slot when the operation finishes.
+    pub input: u32,
+    /// Units of [`SULFURIC_ACID`] one operating tick spends.
+    pub acid_per_tick: u32,
+    /// The dirty slurry it makes (`mekanism:dirty_<material>`).
+    pub output: &'static str,
+    /// Units of it one operation makes.
+    pub output_amount: u32,
+}
+
+/// The jar's `mekanism:dissolution` recipes over the items and slurries this
+/// port registers, generated into `src/runtime.rs` by `tools/gen_dissolving.py`.
+pub mod dissolving {
+    use super::DissolveRecipe;
+
+    /// How many rows the table holds.
+    pub const ROW_COUNT: usize = TABLE.len();
+
+    /// The recipe for `item`, `None` when nothing dissolves it.
+    ///
+    /// Upstream looks a dissolution recipe up by the item input; the acid is
+    /// the same chemical in every row, so an item names at most one row.
+    #[must_use]
+    pub fn recipe_for(item: &str) -> Option<DissolveRecipe> {
+        TABLE.iter().find(|row| row.0 == item).map(recipe)
+    }
+
+    /// One table row as the machine's recipe.
+    fn recipe(row: &Row) -> DissolveRecipe {
+        DissolveRecipe {
+            input: row.1,
+            acid_per_tick: row.2,
+            output: row.3,
+            output_amount: row.4,
+        }
+    }
+
+    /// The table's rows, so a test can assert every one is reachable and the
+    /// sweep can drive the machine from the committed data.
+    #[must_use]
+    pub fn rows() -> &'static [Row] {
+        TABLE
+    }
+
+    /// `(input item, items per operation, acid units per tick, dirty slurry,
+    /// slurry units per operation)`.
+    pub type Row = (&'static str, u32, u32, &'static str, u32);
+
+    // BEGIN GENERATED DISSOLVING TABLE (tools/gen_dissolving.py)
+    // Generated from the jar's `mekanism:dissolution` recipes by
+    // `tools/gen_dissolving.py`; do not edit by hand. Each row is
+    // `(input item, items per operation, acid units per tick, dirty
+    // slurry, slurry units per operation)`; every row is per-tick usage,
+    // so the acid is spent over the operation's 100 ticks, and a row whose
+    // ore or slurry this port does not know is left out.
+    // Source recipes: 23. Rows: 12. Skipped: 14.
+    static TABLE: &[Row] = &[
+        ("minecraft:copper_ore", 1, 1, "mekanism:dirty_copper", 1000),
+        (
+            "minecraft:deepslate_copper_ore",
+            1,
+            1,
+            "mekanism:dirty_copper",
+            1000,
+        ),
+        (
+            "minecraft:deepslate_gold_ore",
+            1,
+            1,
+            "mekanism:dirty_gold",
+            1000,
+        ),
+        (
+            "minecraft:deepslate_iron_ore",
+            1,
+            1,
+            "mekanism:dirty_iron",
+            1000,
+        ),
+        ("minecraft:gold_ore", 1, 1, "mekanism:dirty_gold", 1000),
+        ("minecraft:iron_ore", 1, 1, "mekanism:dirty_iron", 1000),
+        ("minecraft:raw_copper", 3, 1, "mekanism:dirty_copper", 2000),
+        (
+            "minecraft:raw_copper_block",
+            1,
+            2,
+            "mekanism:dirty_copper",
+            6000,
+        ),
+        ("minecraft:raw_gold", 3, 1, "mekanism:dirty_gold", 2000),
+        (
+            "minecraft:raw_gold_block",
+            1,
+            2,
+            "mekanism:dirty_gold",
+            6000,
+        ),
+        ("minecraft:raw_iron", 3, 1, "mekanism:dirty_iron", 2000),
+        (
+            "minecraft:raw_iron_block",
+            1,
+            2,
+            "mekanism:dirty_iron",
+            6000,
+        ),
+    ];
+    // END GENERATED DISSOLVING TABLE
+}
+
+/// One tick of the Chemical Dissolution Chamber
+/// (`TileEntityChemicalDissolutionChamber` through
+/// `ItemStackConstantChemicalToObjectCachedRecipe`): an item in the input slot
+/// and sulfuric acid in the chamber's own tank become a dirty slurry in its
+/// output tank.
+///
+/// Each operating tick costs `operation.usage` energy **and**
+/// `recipe.acid_per_tick` acid and adds one progress tick; on `operation.ticks`
+/// the recipe's item count is consumed and its slurry lands in the output tank.
+/// A tank of another chemical, or one with less than a tick's acid, **holds**
+/// the progress (upstream's constant-usage handler pauses rather than
+/// resetting); so do no energy and no room for the whole batch in the output
+/// tank. An empty input, an input without a recipe or too few items reset it.
+///
+/// # Panics
+/// When the recipe's output cannot be named as a chemical: every table row is
+/// generated from the jar's own register of slurries, so this is a table bug.
+pub fn process_dissolve_tick(
+    machine: &mut Machine,
+    operation: Operation,
+    acid: &mut Tank,
+    slurry: &mut Tank,
+    input: &mut ItemAmount,
+    lookup: &dyn Fn(&str) -> Option<DissolveRecipe>,
+) -> Outcome {
+    if input.is_empty() {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoInput);
+    }
+    let Some(recipe) = lookup(&input.item) else {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoRecipe);
+    };
+    if input.count < recipe.input.max(1) {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NotEnoughInput);
+    }
+    if acid
+        .held()
+        .is_none_or(|(held, stored)| held != SULFURIC_ACID || stored < recipe.acid_per_tick)
+    {
+        return Outcome::Idle(IdleReason::NoChemical);
+    }
+    if room_in_tank(
+        slurry,
+        recipe.output,
+        recipe.output_amount,
+        DISSOLUTION_TANK,
+    ) < recipe.output_amount
+    {
+        return Outcome::Idle(IdleReason::NoOutputSpace);
+    }
+    if machine.energy < operation.usage {
+        return Outcome::Idle(IdleReason::NoEnergy);
+    }
+    machine.energy -= operation.usage;
+    machine.progress += 1;
+    acid.spend(recipe.acid_per_tick);
+    if machine.progress < operation.ticks {
+        return Outcome::Working;
+    }
+    machine.progress = 0;
+    input.count -= recipe.input.max(1);
+    // The room check above guarantees the whole batch fits; a table row naming
+    // a chemical the port does not know is a generator bug, not input.
+    insert_chemical(
+        slurry,
+        recipe.output,
+        recipe.output_amount,
+        DISSOLUTION_TANK,
+    )
+    .expect("a generated dissolution row names a registered slurry");
+    Outcome::Produced
+}
+
+/// The acid the chamber pulls from a neighbour for the tick it is about to run:
+/// the chemical to ask for and how much, or `None` when its own tank already
+/// holds a tick's worth or holds a chemical the recipe does not take.
+///
+/// Exactly one tick's worth is asked for, so a neighbour loses the acid the
+/// operation spends and no more: the chamber's tank is a buffer, not a
+/// reservoir (the gas machines' recorded deviation: the port ships no pipes).
+#[must_use]
+pub fn dissolve_pull(recipe: &DissolveRecipe, acid: &Tank) -> Option<(&'static str, u32)> {
+    if acid.held().is_some_and(|(held, _)| held != SULFURIC_ACID) {
+        return None;
+    }
+    let want = recipe.acid_per_tick.saturating_sub(acid.amount);
+    (want > 0).then_some((SULFURIC_ACID, want))
+}
+
+// ---------------------------------------------------------------------------
 // The basic factories: the same operations, run side by side
 // ---------------------------------------------------------------------------
 
@@ -6493,6 +6732,281 @@ mod crystallizer_tests {
             crystallizing::slurries_that_fit(&ItemAmount::new("minecraft:diamond", 1), 64).count(),
             0,
             "a slot of another item takes no crystal at all"
+        );
+    }
+}
+
+#[cfg(test)]
+mod dissolution_tests {
+    use super::*;
+
+    /// The chamber's numbers are the jar's own
+    /// (`UsageConfig.chemicalDissolutionChamber` 400 FE/t,
+    /// `StorageConfig.chemicalDissolutionChamber` 160,000 FE,
+    /// `TileEntityChemicalDissolutionChamber.BASE_TICKS_REQUIRED` 100 ticks,
+    /// `MAX_CHEMICAL` 10,000 units), not the shared 200-tick machine's.
+    #[test]
+    fn the_chamber_is_the_jar_s_400_fe_a_tick_its_160_000_buffer_and_100_ticks() {
+        assert_eq!(
+            DISSOLUTION_USAGE, 400,
+            "UsageConfig.chemicalDissolutionChamber"
+        );
+        assert_eq!(
+            DISSOLUTION_CAPACITY, 160_000,
+            "StorageConfig.chemicalDissolutionChamber"
+        );
+        assert_eq!(
+            DISSOLUTION_TICKS, 100,
+            "BASE_TICKS_REQUIRED = 5 x TICKS_PER_SECOND"
+        );
+        assert_eq!(DISSOLUTION_OPERATION.usage, 400);
+        assert_eq!(DISSOLUTION_OPERATION.ticks, 100);
+        assert_eq!(
+            DISSOLUTION_OPERATION.usage * DISSOLUTION_OPERATION.ticks,
+            40_000,
+            "one operation is 40,000 FE, so the 160,000 buffer holds exactly four"
+        );
+        assert_eq!(DISSOLUTION_TANK, 10_000, "MAX_CHEMICAL = 10 x BUCKET");
+    }
+
+    /// The jar's 21 dissolution recipes over this port's items: twelve carry
+    /// (three vanilla ores x their two 26.3 members, and the raw ore / raw block
+    /// rows for iron, gold and copper), nine drop with lead, osmium, tin and
+    /// uranium, whose ores 26.3 does not have.
+    #[test]
+    fn every_carried_dissolution_row_is_the_jar_s() {
+        assert_eq!(
+            dissolving::ROW_COUNT,
+            12,
+            "6 ore rows (3 ores x 2 vanilla members) + 3 raw ore + 3 raw block"
+        );
+        for (input, count, acid, output, amount) in [
+            ("minecraft:iron_ore", 1, 1, "mekanism:dirty_iron", 1_000),
+            (
+                "minecraft:deepslate_iron_ore",
+                1,
+                1,
+                "mekanism:dirty_iron",
+                1_000,
+            ),
+            ("minecraft:gold_ore", 1, 1, "mekanism:dirty_gold", 1_000),
+            (
+                "minecraft:deepslate_gold_ore",
+                1,
+                1,
+                "mekanism:dirty_gold",
+                1_000,
+            ),
+            ("minecraft:copper_ore", 1, 1, "mekanism:dirty_copper", 1_000),
+            (
+                "minecraft:deepslate_copper_ore",
+                1,
+                1,
+                "mekanism:dirty_copper",
+                1_000,
+            ),
+            ("minecraft:raw_iron", 3, 1, "mekanism:dirty_iron", 2_000),
+            ("minecraft:raw_gold", 3, 1, "mekanism:dirty_gold", 2_000),
+            ("minecraft:raw_copper", 3, 1, "mekanism:dirty_copper", 2_000),
+            (
+                "minecraft:raw_iron_block",
+                1,
+                2,
+                "mekanism:dirty_iron",
+                6_000,
+            ),
+            (
+                "minecraft:raw_gold_block",
+                1,
+                2,
+                "mekanism:dirty_gold",
+                6_000,
+            ),
+            (
+                "minecraft:raw_copper_block",
+                1,
+                2,
+                "mekanism:dirty_copper",
+                6_000,
+            ),
+        ] {
+            let recipe = dissolving::recipe_for(input)
+                .unwrap_or_else(|| panic!("no dissolution row for {input}"));
+            assert_eq!(recipe.input, count, "{input}: the jar's item count");
+            assert_eq!(recipe.acid_per_tick, acid, "{input}: acid per tick");
+            assert_eq!(recipe.output, output, "{input}: the jar's slurry");
+            assert_eq!(
+                recipe.output_amount, amount,
+                "{input}: slurry per operation"
+            );
+        }
+        for dropped in [
+            "minecraft:dirt",
+            "mekanism:iron_ore",
+            "minecraft:nether_gold_ore",
+        ] {
+            assert_eq!(
+                dissolving::recipe_for(dropped),
+                None,
+                "{dropped} has no carried dissolution row"
+            );
+        }
+    }
+
+    /// One operation at the jar's price: 100 ticks x 400 FE, 100 units of acid
+    /// (1 a tick x 100 ticks), one ore in, 1,000 units of dirty slurry out —
+    /// and each of the energy, the acid and the tank moves by exactly that.
+    #[test]
+    fn one_dissolution_operation_costs_40_000_fe_and_100_acid() {
+        let mut machine = Machine {
+            energy: DISSOLUTION_CAPACITY,
+            progress: 0,
+        };
+        let mut acid = Tank::new(SULFURIC_ACID, 1_000);
+        let mut slurry = Tank::default();
+        let mut input = ItemAmount::new("minecraft:iron_ore", 1);
+        let mut outcomes = Vec::new();
+        for _ in 0..DISSOLUTION_TICKS {
+            outcomes.push(process_dissolve_tick(
+                &mut machine,
+                DISSOLUTION_OPERATION,
+                &mut acid,
+                &mut slurry,
+                &mut input,
+                &dissolving::recipe_for,
+            ));
+        }
+        assert!(
+            outcomes[..99].iter().all(|o| *o == Outcome::Working),
+            "the first 99 ticks are work"
+        );
+        assert_eq!(outcomes[99], Outcome::Produced);
+        assert_eq!(machine.energy, DISSOLUTION_CAPACITY - 40_000);
+        assert_eq!(machine.progress, 0);
+        assert_eq!(acid.held(), Some((SULFURIC_ACID, 900)), "100 ticks x 1");
+        assert_eq!(slurry.held(), Some(("mekanism:dirty_iron", 1_000)));
+        assert!(
+            input.is_empty(),
+            "the ore is consumed when the operation ends"
+        );
+    }
+
+    /// A chemical the recipe does not take — water in the acid tank — makes no
+    /// progress and spends nothing: the tank holds what it held and the buffer
+    /// stays full.
+    #[test]
+    fn a_chemical_the_recipe_does_not_take_holds_the_progress_and_spends_nothing() {
+        let mut machine = Machine {
+            energy: DISSOLUTION_CAPACITY,
+            progress: 0,
+        };
+        let mut acid = Tank::new("minecraft:water", 1_000);
+        let mut slurry = Tank::default();
+        let mut input = ItemAmount::new("minecraft:iron_ore", 1);
+        for _ in 0..DISSOLUTION_TICKS {
+            assert_eq!(
+                process_dissolve_tick(
+                    &mut machine,
+                    DISSOLUTION_OPERATION,
+                    &mut acid,
+                    &mut slurry,
+                    &mut input,
+                    &dissolving::recipe_for,
+                ),
+                Outcome::Idle(IdleReason::NoChemical)
+            );
+        }
+        assert_eq!(machine.energy, DISSOLUTION_CAPACITY, "no FE is spent");
+        assert_eq!(machine.progress, 0);
+        assert_eq!(acid.amount, 1_000);
+        assert!(slurry.held().is_none());
+        assert_eq!(input.count, 1);
+    }
+
+    /// Too little room in the output tank holds the progress (upstream's
+    /// `NOT_ENOUGH_OUTPUT_SPACE`), and so does an input with no row, which
+    /// resets it.
+    #[test]
+    fn a_full_output_tank_holds_and_an_input_without_a_row_resets() {
+        let mut machine = Machine {
+            energy: DISSOLUTION_CAPACITY,
+            progress: 3,
+        };
+        let mut acid = Tank::new(SULFURIC_ACID, 1_000);
+        let mut input = ItemAmount::new("minecraft:iron_ore", 1);
+        // 9,500 of another material leaves 500 units of room: less than one row.
+        let mut full = Tank::new("mekanism:dirty_gold", 9_500);
+        assert_eq!(
+            process_dissolve_tick(
+                &mut machine,
+                DISSOLUTION_OPERATION,
+                &mut acid,
+                &mut full,
+                &mut input,
+                &dissolving::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoOutputSpace)
+        );
+        assert_eq!(machine.progress, 3, "a full tank holds the progress");
+        assert_eq!(machine.energy, DISSOLUTION_CAPACITY);
+
+        let mut slurry = Tank::default();
+        let mut dirt = ItemAmount::new("minecraft:dirt", 1);
+        machine.progress = 5;
+        assert_eq!(
+            process_dissolve_tick(
+                &mut machine,
+                DISSOLUTION_OPERATION,
+                &mut acid,
+                &mut slurry,
+                &mut dirt,
+                &dissolving::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoRecipe)
+        );
+        assert_eq!(machine.progress, 0, "no recipe resets the progress");
+
+        // And too few raw ore (the row takes three) resets it as well.
+        let mut raw = ItemAmount::new("minecraft:raw_iron", 2);
+        machine.progress = 7;
+        assert_eq!(
+            process_dissolve_tick(
+                &mut machine,
+                DISSOLUTION_OPERATION,
+                &mut acid,
+                &mut slurry,
+                &mut raw,
+                &dissolving::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NotEnoughInput)
+        );
+        assert_eq!(machine.progress, 0);
+    }
+
+    /// The acid a tick asks a neighbour for is one tick's worth, never the
+    /// operation's: 1 unit for an ore, 2 for a raw block, and nothing when the
+    /// chamber's own tank already holds that tick.
+    #[test]
+    fn the_acid_pull_is_one_tick_s_worth() {
+        let ore = dissolving::recipe_for("minecraft:iron_ore").expect("a row");
+        let block = dissolving::recipe_for("minecraft:raw_iron_block").expect("a row");
+        assert_eq!(
+            dissolve_pull(&ore, &Tank::default()),
+            Some((SULFURIC_ACID, 1))
+        );
+        assert_eq!(
+            dissolve_pull(&block, &Tank::default()),
+            Some((SULFURIC_ACID, 2))
+        );
+        assert_eq!(
+            dissolve_pull(&ore, &Tank::new(SULFURIC_ACID, 1)),
+            None,
+            "a tank with a tick's acid asks for nothing"
+        );
+        assert_eq!(
+            dissolve_pull(&ore, &Tank::new("minecraft:water", 1_000)),
+            None,
+            "a tank of another chemical is not topped up"
         );
     }
 }

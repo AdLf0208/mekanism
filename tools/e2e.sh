@@ -35,8 +35,8 @@
 # Default run (must PASS):
 #  A  content: the five blocks and three dusts are give-able and place, an
 #     unknown id is refused, and every block's loot table drops the block;
-#  B  recipes: all five carried shaped recipes craft in a real table with their
-#     declared id and count, ingredients consumed, and two wrong-ingredient
+#  B  recipes: all seventeen carried shaped recipes craft in a real table with
+#     their declared id and count, ingredients consumed, and wrong-ingredient
 #     controls leave the result empty;
 #  C  the crusher: a charged crusher turns cobblestone into gravel for exactly
 #     10,000 FE, an uncharged one does nothing, an input with no recipe burns
@@ -137,12 +137,21 @@
 #     and uranium — crafts in a real table with its declared id and count, its
 #     grid emptied and its ingredients consumed; eight ingots and a dirt in the
 #     same grid make nothing; the placed block breaks into exactly one of itself.
-#     This is the assertion SELFTEST=1 flips (the nine-ingot row must then leave
-#     the result empty, so the run FAILS on the crafted block).
 #  T  the smelting sweeps: every carried smelting row — the 163 the 26.3 data
 #     expands to (rows smelted: 163 of 163) and the jar's own 7 dust -> ingot
 #     rows (rows smelted: 7 of 7) — runs in a real Energized Smelter with its
 #     input consumed and its declared output stack, plus a no-recipe control.
+#  V  the Chemical Dissolution Chamber (slice 15), the head of the slurry chain:
+#     a tank's 1,000 units of sulfuric acid beside a charged dissolution chamber
+#     turn one iron ore into exactly 1,000 units of dirty_iron for 40,000 FE
+#     (100 ticks x 400 FE) while the tank loses exactly the 100 units the
+#     per-tick recipe spends and the chamber keeps none of the acid; water in
+#     the chamber's own tank makes no progress and spends no FE (the readout
+#     unchanged) and a dirt in the slot makes nothing and draws no acid; the
+#     washer beside it then takes one unit of that slurry **through
+#     mekanism:chemical** and finishes one clean_iron row. This is the assertion
+#     SELFTEST=1 flips (the chamber's output must then read empty, so the run
+#     FAILS on the slurry it made).
 #  K  the five basic factories (slice 7): three processes of the same operation
 #     side by side — three ore in a basic purifying factory become nine clumps
 #     for 3 x 40,000 FE and 3 x 200 oxygen, one ore costs one operation (40,000
@@ -153,8 +162,9 @@
 #
 # NOCABLE=1 runs the cable scenario without the cable and asserts that the
 # smelter and the chamber stay empty (the differential control passing).
-# SELFTEST=1 flips phase U's nine-ingot result assertion (it must FAIL on the
-# crafted block): the newest family's own check is the one proven able to fail.
+# SELFTEST=1 flips phase V's dissolution output assertion (it must FAIL on the
+# dirty slurry the chamber made): the newest family's own check is the one
+# proven able to fail, and the flip moves with the newest family.
 #
 # CONTROL=1 (needs CONTROL_GAME=<an unmodded horizon-client>) first launches
 # that game in its own scratch home and world and shows that the block ids are
@@ -202,6 +212,7 @@ INJECTING_FACTORY=mekanism:basic_injecting_factory
 PURIFYING_FACTORY=mekanism:basic_purifying_factory
 WASHER=mekanism:chemical_washer
 CRYSTALLIZER=mekanism:chemical_crystallizer
+DISSOLUTION=mekanism:chemical_dissolution_chamber
 CRYSTAL=mekanism:crystal_iron
 BLOCK_LEAD=mekanism:block_lead
 BLOCK_OSMIUM=mekanism:block_osmium
@@ -524,7 +535,7 @@ arena
 echo "== A1: every carried block and item is give-able =="
 BLOCKS=("$SMELTER" "$CHAMBER" "$CRUSHER" "$INJECTION" "$PURIFICATION" "$CUBE" "$CABLE" "$TANK" \
     "$SMELTING_FACTORY" "$ENRICHING_FACTORY" "$CRUSHING_FACTORY" "$INJECTING_FACTORY" \
-    "$PURIFYING_FACTORY" "$WASHER" "$CRYSTALLIZER" \
+    "$PURIFYING_FACTORY" "$WASHER" "$CRYSTALLIZER" "$DISSOLUTION" \
     "$BLOCK_LEAD" "$BLOCK_OSMIUM" "$BLOCK_TIN" "$BLOCK_URANIUM")
 ITEMS=("mekanism:dust_iron" "mekanism:dust_gold" "mekanism:dust_copper" \
     "mekanism:shard_iron" "mekanism:shard_gold" "mekanism:shard_copper" \
@@ -561,7 +572,7 @@ for id in "${BLOCKS[@]}"; do
     place "$((-6 + i))" 64 26 "$id"
     i=$((i + 1))
 done
-# Past the array: nineteen blocks now stand at x=-6..12, so the probe sits at 15
+# Past the array: twenty blocks now stand at x=-6..13, so the probe sits at 15
 # (a new member of BLOCKS moves every hard-coded probe, as slices 5-9 learned).
 end "setblock 15 64 26 mekanism:not_a_block" >/dev/null 2>&1 || true
 ctl wait 3
@@ -919,8 +930,8 @@ ctl wait 3
 # nothing else): a 3x3 block from nine ingots, a shapeless nine ingots from a
 # block, a 3x3 ingot from nine nuggets and a shapeless nine nuggets from an
 # ingot. The rows are read back from the committed recipe and tag files, so the
-# scenario crafts what the package ships. The nine-ingot row's result is the
-# assertion SELFTEST=1 flips.
+# scenario crafts what the package ships. (The selftest's flip moved to phase V
+# with slice 15: it always inverts the newest family's own assertion.)
 echo "== U: slice 14's storage-block and nugget family in a real crafting table =="
 # B1 ends in creative; a creative table does not consume an ingredient and a
 # creative break drops nothing, so this phase puts the player back in survival
@@ -933,11 +944,10 @@ python3 -u "$PORT/tools/carry_storage.py" --rows >"$STORE_ROWS" \
 rows=$(jq 'length' "$STORE_ROWS")
 [ "$rows" -ge 16 ] || fail "the package yielded only $rows storage-block and nugget rows, expected 16"
 echo "  rows from the jar's storage-block and nugget recipes: $rows"
-SELFTEST_ARG=""
-if [ "$SELFTEST" = 1 ]; then
-    SELFTEST_ARG=--selftest
-fi
-python3 -u "$PORT/tools/craft_family.py" "$SOCK" "$CTL" "$STORE_ROWS" 10 64 28 $SELFTEST_ARG \
+# Not the selftest's flip any more: since slice 15 the newest family is the
+# dissolution chamber, and its own assertion in phase V is the one inverted
+# (the notes' lesson: the flip moves with the newest family).
+python3 -u "$PORT/tools/craft_family.py" "$SOCK" "$CTL" "$STORE_ROWS" 10 64 28 \
     || fail "the storage-block and nugget recipe check failed"
 # The counterfactual: the same nine-ingot grid with dirt where the mod's own
 # ingredient goes must leave the result empty, so the check cannot pass on a
@@ -1476,7 +1486,7 @@ expect_chem "holds nothing 0/10000 (answered by mekanism)" -- read 1 72 14
 # material. The operation is the shared 200 ticks, so it spends 200 units and
 # 400 FE/t x 200 = 80,000 FE. The seven rows this phase's generator now carries
 # are all swept in phase H; this is the headline on the newest material (the
-# slice-10 crystal) and the assertion SELFTEST=1 flips.
+# slice-10 crystal).
 echo "== P: slice 11's crystal leg — one crystal_lead + 4,000 HCl -> one shard_lead =="
 place 0 72 16 "$TANK"
 expect_chem "inserted 4000 mekanism:hydrogen_chloride into mekanism:basic_chemical_tank (4000/64000)" \
@@ -1842,6 +1852,126 @@ echo "  after relaunch, crystallizer: $(info_once 8 72 4 "$CRYSTALLIZER")"
 expect_contains 8 72 4 "$CRYSTALLIZER" "0/160000 FE, progress 67/200, input mekanism:clean_iron x400, output empty x0"
 echo "  (the saved compound survives: FE, progress and slots read back)"
 
+# ---------------------------------------------------------------------------
+# V. The Chemical Dissolution Chamber (slice 15): an ore and sulfuric acid into
+#    a dirty slurry, and the washer beside it taking that slurry
+# ---------------------------------------------------------------------------
+# The jar's numbers: 400 FE/t x 100 ticks = 40,000 FE an operation (a 160,000 FE
+# buffer), two 10,000-unit tanks, and every row `per_tick_usage: true` — one unit
+# of sulfuric acid a tick for an ore, so 100 units an operation. The chamber
+# pulls the tick's acid from the tank beside it through `mekanism:chemical` and
+# keeps none of it; what it makes is in its second tank, which the washer beside
+# it takes through the same capability. The rows are read back from the
+# generated table, so the scenario and the table cannot drift apart.
+echo "== V1: one iron ore dissolves into 1,000 units of dirty_iron for 40,000 FE and exactly 100 acid =="
+DROWS=$SCRATCH/dissolving-rows.json
+python3 -u "$PORT/tools/gen_dissolving.py" --rows >"$DROWS" \
+    || fail "the dissolution rows could not be read from the jar"
+rows=$(jq 'length' "$DROWS")
+# Twelve rows: three vanilla ores in their two 26.3 forms, and the raw ore / raw
+# block rows for iron, gold and copper. A mapping that drops one must fail the
+# leg, not quietly check a smaller table.
+[ "$rows" -ge 12 ] || fail "the jar yielded only $rows dissolution rows, expected 12"
+ORE_ROW=$(jq -r '.[] | select(.input == "minecraft:iron_ore")' "$DROWS")
+ACID_PER_TICK=$(jq -r '.acid_per_tick' <<<"$ORE_ROW")
+ORE_OUT=$(jq -r '.output' <<<"$ORE_ROW")
+ORE_AMOUNT=$(jq -r '.output_amount' <<<"$ORE_ROW")
+ACID_SPENT=$((ACID_PER_TICK * 100))
+ACID_LEFT=$((1000 - ACID_SPENT))
+echo "  rows from the jar's mekanism:dissolution data: $rows"
+echo "  minecraft:iron_ore: $ACID_PER_TICK acid a tick x 100 ticks = $ACID_SPENT, -> $ORE_AMOUNT $ORE_OUT"
+place 0 74 0 "$TANK"
+expect_chem "inserted 1000 mekanism:sulfuric_acid into mekanism:basic_chemical_tank (1000/64000)" \
+    -- insert 1000 mekanism:sulfuric_acid 0 74 0
+place 1 74 0 "$DISSOLUTION"
+ctl command "execute in minecraft:the_end run item replace block 1 74 0 container.0 with minecraft:iron_ore 1" >/dev/null
+ctl wait 6
+expect_contains 1 74 0 "$DISSOLUTION" "0/160000 FE, progress 0/100, input minecraft:iron_ore x1, acid empty 0/10000, output empty 0/10000"
+say "mekanism energy 160000 1 74 0"
+ctl wait 6
+# The machine starts on its first charged tick, so the assertion here is that it
+# took the energy at all (the exact 40,000 is asserted after the operation).
+expect_energy 1 74 0 "$DISSOLUTION" gt 0
+ctl wait 120
+if [ "$SELFTEST" = 1 ]; then
+    # The flip: the newest family's own output assertion, inverted. The machine
+    # really holds the slurry, so this poll exhausts and FAILS with the line.
+    expect_contains 1 74 0 "$DISSOLUTION" "output empty 0/10000"
+fi
+expect_contains 1 74 0 "$DISSOLUTION" "input empty x0, acid empty 0/10000, output $ORE_OUT $ORE_AMOUNT/10000"
+# 100 ticks x 400 FE: exactly a quarter of the 160,000 buffer.
+expect_energy 1 74 0 "$DISSOLUTION" eq 120000
+# The chamber's own saved tank holds the slurry; its acid tank is empty because
+# it pulled one tick's acid per tick and spent it.
+OUT_CHEM=$(block_data 1 74 0 output_chemical)
+OUT_AMOUNT=$(block_data 1 74 0 output_amount)
+ACID_AMOUNT=$(block_data 1 74 0 acid_amount)
+echo "  data get block 1 74 0 output_chemical: $OUT_CHEM"
+echo "  data get block 1 74 0 output_amount: $OUT_AMOUNT"
+echo "  data get block 1 74 0 acid_amount: $ACID_AMOUNT"
+case "$OUT_CHEM" in
+    *"$ORE_OUT"*) ;;
+    *) fail "the chamber's output tank does not hold $ORE_OUT: $OUT_CHEM" ;;
+esac
+case "$OUT_AMOUNT" in
+    *"$ORE_AMOUNT"*) ;;
+    *) fail "the chamber's output tank should hold $ORE_AMOUNT: $OUT_AMOUNT" ;;
+esac
+case "$ACID_AMOUNT" in
+    *" 0"*|*": 0"*) ;;
+    *) fail "the chamber's own acid tank should be empty after the operation: $ACID_AMOUNT" ;;
+esac
+# The acid came from the neighbour, through the capability: 1,000 - 100.
+expect_chem "holds mekanism:sulfuric_acid $ACID_LEFT/64000 (answered by mekanism)" \
+    -- read 0 74 0
+TANK_LEFT=$(block_data 0 74 0 amount)
+echo "  data get block 0 74 0 amount: $TANK_LEFT"
+case "$TANK_LEFT" in
+    *"$ACID_LEFT"*) ;;
+    *) fail "the neighbour tank should hold $ACID_LEFT after one operation: $TANK_LEFT" ;;
+esac
+# ...and a wrong chemical in the machine's own tank makes no progress and spends
+# no FE: water at the acid tank, exactly the counterfactual the unit test pins.
+place 4 74 0 "$DISSOLUTION"
+ctl command "execute in minecraft:the_end run item replace block 4 74 0 container.0 with minecraft:iron_ore 1" >/dev/null
+say "mekanism energy 160000 4 74 0"
+ctl wait 6
+ctl command "execute in minecraft:the_end run data merge block 4 74 0 {acid_chemical:\"minecraft:water\",acid_amount:1000}" >/dev/null
+ctl wait 120
+expect_contains 4 74 0 "$DISSOLUTION" "160000/160000 FE, progress 0/100, input minecraft:iron_ore x1, acid minecraft:water 1000/10000, output empty 0/10000"
+expect_energy 4 74 0 "$DISSOLUTION" eq 160000
+# An item the table has no row for makes nothing, spends nothing and, because it
+# could not work, does not siphon the acid beside it.
+place 5 74 0 "$TANK"
+expect_chem "inserted 1000 mekanism:sulfuric_acid into mekanism:basic_chemical_tank (1000/64000)" \
+    -- insert 1000 mekanism:sulfuric_acid 5 74 0
+place 6 74 0 "$DISSOLUTION"
+ctl command "execute in minecraft:the_end run item replace block 6 74 0 container.0 with minecraft:dirt 1" >/dev/null
+say "mekanism energy 160000 6 74 0"
+ctl wait 6
+ctl wait 120
+expect_contains 6 74 0 "$DISSOLUTION" "160000/160000 FE, progress 0/100, input minecraft:dirt x1, acid empty 0/10000, output empty 0/10000"
+expect_energy 6 74 0 "$DISSOLUTION" eq 160000
+expect_chem "holds mekanism:sulfuric_acid 1000/64000" -- read 5 74 0
+
+echo "== V2: the washer beside the chamber takes the slurry the chamber made =="
+place 2 74 0 "$WASHER"
+expect_fluid "inserted 1000 minecraft:water into mekanism:chemical_washer (1000/10000)" \
+    -- insert 1000 2 74 0
+say "mekanism energy 40000 2 74 0"
+ctl wait 6
+ctl wait 230
+# One washing operation: 5 mB of water and one unit of the chamber's dirty_iron
+# become one unit of clean_iron for 40,000 FE. The washer found the slurry in the
+# chamber's **second** tank through `mekanism:chemical`, and the chamber lost it.
+expect_contains 2 74 0 "$WASHER" "0/80000 FE, progress 0/200, water 995/10000 mB, input empty x0, output mekanism:clean_iron x1"
+CHAMBER_LEFT=$(block_data 1 74 0 output_amount)
+echo "  data get block 1 74 0 output_amount: $CHAMBER_LEFT"
+case "$CHAMBER_LEFT" in
+    *"$((ORE_AMOUNT - 1))"*) ;;
+    *) fail "the chamber should hold $((ORE_AMOUNT - 1)) units after the washer took one: $CHAMBER_LEFT" ;;
+esac
+
 echo "== the chamber opens its three-slot menu =="
 # Under --headless a mod container screen opens but neither `screen`, `close`
 # nor `quit` answers while it is open (the screen's tick never runs). The screen
@@ -1854,10 +1984,10 @@ jq -e '.ok == true and .screen == "container"' <<<"$state" >/dev/null \
 SCREEN_OPEN=1
 
 if [ "$NOCABLE" = 1 ]; then
-    echo "PASS: the chemical capability works (an insert lands in the tank's saved data, part of it drains into the gauge dropper, an unknown id and a block that answers no chemical both move nothing), its consumers pull a gas from a neighbour through the same capability and spend exactly one operation's worth on one operation (or nothing without a usable gas), the five basic factories run three processes of the same operation side by side (three ore -> nine clumps for 3 x 40,000 FE and 600 oxygen; one ore -> three clumps for one operation; 40,000 FE buys 200 progress ticks, not three operations), the washer takes water through the game's own fluid capability and dirty slurry through the chemical one and turns one operation into 5 mB of water and one unit of dirty slurry spent for one clean unit (while a clean slurry, an empty water tank, water at the chemical key and a chemical tank at the fluid key all move nothing), the crystallizer turns 200 units of a clean slurry into one crystal for 80,000 FE and five operations into five crystals, refusing a dirty slurry at its tank while a dirty slurry in a neighbour tank spends nothing, slice 12's four metals run their chain (dirty dust -> dust -> ingot, clump -> dirty dust) for 10,000 FE an operation, and without a cable the charged cube moves no energy into the adjacent smelter or chamber, which never smelt or enrich"
+    echo "PASS: the chemical capability works (an insert lands in the tank's saved data, part of it drains into the gauge dropper, an unknown id and a block that answers no chemical both move nothing), its consumers pull a gas from a neighbour through the same capability and spend exactly one operation's worth on one operation (or nothing without a usable gas), the five basic factories run three processes of the same operation side by side (three ore -> nine clumps for 3 x 40,000 FE and 600 oxygen; one ore -> three clumps for one operation; 40,000 FE buys 200 progress ticks, not three operations), the washer takes water through the game's own fluid capability and dirty slurry through the chemical one and turns one operation into 5 mB of water and one unit of dirty slurry spent for one clean unit (while a clean slurry, an empty water tank, water at the chemical key and a chemical tank at the fluid key all move nothing), the crystallizer turns 200 units of a clean slurry into one crystal for 80,000 FE and five operations into five crystals, refusing a dirty slurry at its tank while a dirty slurry in a neighbour tank spends nothing, slice 12's four metals run their chain (dirty dust -> dust -> ingot, clump -> dirty dust) for 10,000 FE an operation, the chemical dissolution chamber dissolves one iron ore into 1,000 units of dirty_iron for 40,000 FE and 100 of a neighbour tank's sulfuric acid while water and a dirt make nothing, and without a cable the charged cube moves no energy into the adjacent smelter or chamber, which never smelt or enrich"
 elif [ "$SELFTEST" = 1 ]; then
     echo "SELFTEST finished without failing (this is a bug in the test)"
     exit 1
 else
-    echo "PASS: the nineteen blocks, their forty-four items and sixteen shaped recipes and their loot tables work, and the four metals' storage-block and nugget family runs both ways in a real table (a block from nine ingots, nine ingots from a block, an ingot from nine nuggets and nine nuggets from an ingot, each with its id, its count, its grid emptied and its ingredients consumed, while eight ingots and a dirt make nothing and the placed block breaks into exactly one of itself), every carried crushing recipe runs in a real crusher (156 rows, slice 13's four ingot -> dust rows included), every carried smelting recipe - the 163 rows the 26.3 data expands to and the jar's own seven dust -> ingot rows - runs in a real Energized Smelter with its input consumed and its output stack asserted (a coal ore into coal, clay into terracotta and a tin dust into ingot_tin for 10,000 FE each, while a dirt the table has no row for stays put), every carried enriching recipe runs in a real enrichment chamber (136 rows, slice 12's four dirty dust -> dust rows included), every carried injecting recipe - the seven crystal->shard rows slice 11 adds included - runs in a real chemical injection chamber and every carried purifying recipe in a real purification chamber, both pulling their gas from a neighbour's tank through mekanism:chemical and spending exactly the operation's gas - 200 oxygen for one iron ore into three clumps at 40,000 FE - every carried washing recipe runs in a real chemical washer, whose water arrives through horizon:fluids and whose dirty slurry arrives through mekanism:chemical, one operation spending exactly 5 mB of water, one unit of dirty slurry and 40,000 FE for one unit of clean slurry, every carried crystallizing recipe - all seven slurries the washer makes, lead through uranium included - runs in a real chemical crystallizer that turns 200 units of its clean slurry into one crystal for 80,000 FE (five operations into five crystals from 1,000 units, a lead tank's 1,000 units into exactly two crystal_lead with 600 left, a hopper pulling them out, a dirty slurry refused by the tank and making nothing in a neighbour, and the crystallizer's own crystal_lead in an injection chamber becoming exactly one shard_lead for 80,000 FE and 200 of a neighbour tank's hydrogen chloride), the jar's chain runs end to end (a clump crushes into a dirty dust and that dirty dust enriches into a dust, while a purification chamber has no row for it), and slice 12's four metals run their own chain in real machines (a dirty_dust_lead enriches into dust_lead for 10,000 FE, that dust smelts into ingot_lead, and a clump_lead crushes into dirty_dust_lead), the five basic factories run three processes of the same operation side by side (three ore in the purifying factory become nine clumps for 3 x 40,000 FE and exactly 600 of the neighbour's oxygen, one ore costs one operation, and 40,000 FE buys 200 progress ticks rather than three operations, while a smelting factory turns three ore into three ingots for its 30,000 FE buffer), the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input, a no-gas and a wrong-gas neighbour do nothing - the menus open, the machines', the factories' and the crystallizer's FE, progress and tanks survive a save and relaunch, and the chemical capability moves one chemical into the tank's saved data, drains part of it into the gauge dropper through the item capability, and refuses an unknown id by name while a block that answers no chemical moves nothing"
+    echo "PASS: the twenty blocks, their forty-five items and seventeen shaped recipes and their loot tables work, and the four metals' storage-block and nugget family runs both ways in a real table (a block from nine ingots, nine ingots from a block, an ingot from nine nuggets and nine nuggets from an ingot, each with its id, its count, its grid emptied and its ingredients consumed, while eight ingots and a dirt make nothing and the placed block breaks into exactly one of itself), every carried crushing recipe runs in a real crusher (156 rows, slice 13's four ingot -> dust rows included), every carried smelting recipe - the 163 rows the 26.3 data expands to and the jar's own seven dust -> ingot rows - runs in a real Energized Smelter with its input consumed and its output stack asserted (a coal ore into coal, clay into terracotta and a tin dust into ingot_tin for 10,000 FE each, while a dirt the table has no row for stays put), every carried enriching recipe runs in a real enrichment chamber (136 rows, slice 12's four dirty dust -> dust rows included), every carried injecting recipe - the seven crystal->shard rows slice 11 adds included - runs in a real chemical injection chamber and every carried purifying recipe in a real purification chamber, both pulling their gas from a neighbour's tank through mekanism:chemical and spending exactly the operation's gas - 200 oxygen for one iron ore into three clumps at 40,000 FE - every carried washing recipe runs in a real chemical washer, whose water arrives through horizon:fluids and whose dirty slurry arrives through mekanism:chemical, one operation spending exactly 5 mB of water, one unit of dirty slurry and 40,000 FE for one unit of clean slurry, every carried crystallizing recipe - all seven slurries the washer makes, lead through uranium included - runs in a real chemical crystallizer that turns 200 units of its clean slurry into one crystal for 80,000 FE (five operations into five crystals from 1,000 units, a lead tank's 1,000 units into exactly two crystal_lead with 600 left, a hopper pulling them out, a dirty slurry refused by the tank and making nothing in a neighbour, and the crystallizer's own crystal_lead in an injection chamber becoming exactly one shard_lead for 80,000 FE and 200 of a neighbour tank's hydrogen chloride), the chemical dissolution chamber dissolves one iron ore into exactly 1,000 units of dirty_iron for 40,000 FE and exactly 100 of a neighbour tank's sulfuric acid, while water in its own tank and a dirt in its slot make nothing and spend nothing, and the washer beside it takes that slurry through mekanism:chemical and finishes one clean_iron row, the jar's chain runs end to end (a clump crushes into a dirty dust and that dirty dust enriches into a dust, while a purification chamber has no row for it), and slice 12's four metals run their own chain in real machines (a dirty_dust_lead enriches into dust_lead for 10,000 FE, that dust smelts into ingot_lead, and a clump_lead crushes into dirty_dust_lead), the five basic factories run three processes of the same operation side by side (three ore in the purifying factory become nine clumps for 3 x 40,000 FE and exactly 600 of the neighbour's oxygen, one ore costs one operation, and 40,000 FE buys 200 progress ticks rather than three operations, while a smelting factory turns three ore into three ingots for its 30,000 FE buffer), the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input, a no-gas and a wrong-gas neighbour do nothing - the menus open, the machines', the factories' and the crystallizer's FE, progress and tanks survive a save and relaunch, and the chemical capability moves one chemical into the tank's saved data, drains part of it into the gauge dropper through the item capability, and refuses an unknown id by name while a block that answers no chemical moves nothing"
 fi

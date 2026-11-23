@@ -18,7 +18,8 @@ use crate::runtime::{
     CABLE_CAPACITY, CHAMBER_CAPACITY, CHAMBER_OPERATION, CHAMBER_TICKS, CHEMICALS,
     CRUSHER_CAPACITY, CRUSHER_OPERATION, CRUSHER_TICKS, CRUSHING_FACTORY_CAPACITY,
     CRYSTALLIZER_CAPACITY, CRYSTALLIZER_OPERATION, CRYSTALLIZER_TANK, CRYSTALLIZER_TICKS,
-    CUBE_CAPACITY, CUBE_RATE, CrystallizeRecipe, DROPPER_CAPACITY, EMPTY_CHEMICAL,
+    CUBE_CAPACITY, CUBE_RATE, CrystallizeRecipe, DISSOLUTION_CAPACITY, DISSOLUTION_OPERATION,
+    DISSOLUTION_TANK, DISSOLUTION_TICKS, DROPPER_CAPACITY, EMPTY_CHEMICAL,
     ENRICHING_FACTORY_CAPACITY, FACTORY_PROCESSES, FACTORY_TICKS, FactoryProcess, FluidTank,
     GasRecipe, INJECTING_FACTORY_CAPACITY, INJECTING_FACTORY_TANK, INJECTION_CAPACITY,
     INJECTION_OPERATION, INJECTION_TANK, INJECTION_TICKS, IdleReason, ItemAmount, Machine,
@@ -26,11 +27,12 @@ use crate::runtime::{
     PURIFY_TICKS, PURIFYING_FACTORY_CAPACITY, PURIFYING_FACTORY_TANK, SLURRIES, SMELTER_CAPACITY,
     SMELTER_OPERATION, SMELTER_TICKS, SMELTING_FACTORY_CAPACITY, TANK_CAPACITY, Tank,
     WASHER_CAPACITY, WASHER_OPERATION, WASHER_SLURRY, WASHER_TICKS, WASHER_WATER, WATER,
-    clamp_energy, crushing, crystallizer_pull, crystallizing, dropper_move, energy_after_extract,
-    energy_after_insert, enriching, extract_chemical, factory_gas_want, gas_pull, injecting,
-    insert_chemical, operations_per_tick, process_crystal_tick, process_factory_tick,
-    process_gas_factory_tick, process_gas_tick, process_tick, process_wash_tick, purifying,
-    room_for, room_in_tank, smelting, washer_pull, washing,
+    clamp_energy, crushing, crystallizer_pull, crystallizing, dissolve_pull, dissolving,
+    dropper_move, energy_after_extract, energy_after_insert, enriching, extract_chemical,
+    factory_gas_want, gas_pull, injecting, insert_chemical, operations_per_tick,
+    process_crystal_tick, process_dissolve_tick, process_factory_tick, process_gas_factory_tick,
+    process_gas_tick, process_tick, process_wash_tick, purifying, room_for, room_in_tank, smelting,
+    washer_pull, washing,
 };
 
 /// The five blocks of slices 1-3.
@@ -68,6 +70,10 @@ pub(crate) const WASHER: &str = "mekanism:chemical_washer";
 /// slurry in, a crystal item out.
 pub(crate) const CRYSTALLIZER: &str = "mekanism:chemical_crystallizer";
 
+/// Slice 15's machine: the Chemical Dissolution Chamber, the head of the slurry
+/// chain — an ore and sulfuric acid in, a dirty slurry out.
+pub(crate) const DISSOLUTION: &str = "mekanism:chemical_dissolution_chamber";
+
 /// The block entity types, in this mod's namespace (`/mekanism` has no
 /// bearing on them). One type per block, as the retired bundle's
 /// `block_entity` hook named the block it was asked about.
@@ -86,6 +92,7 @@ const INJECTING_FACTORY_TYPE: &str = "basic_injecting_factory";
 const PURIFYING_FACTORY_TYPE: &str = "basic_purifying_factory";
 const WASHER_TYPE: &str = "chemical_washer";
 const CRYSTALLIZER_TYPE: &str = "chemical_crystallizer";
+const DISSOLUTION_TYPE: &str = "chemical_dissolution_chamber";
 
 /// A machine's menu slots: input, unused (the furnace menu's fuel slot) and
 /// output.
@@ -104,6 +111,9 @@ const FACTORY_OUTPUT_SLOTS: [usize; FACTORY_PROCESSES] = [3, 4, 5];
 
 /// The crystallizer's one slot: its output.
 const CRYSTAL_SLOT: usize = 0;
+
+/// The dissolution chamber's one slot: the ore (or raw ore) it dissolves.
+const DISSOLVE_SLOT: usize = 0;
 
 /// The vanilla furnace menu's four data slots: flame (stored / capacity) then
 /// arrow (progress / required ticks).
@@ -433,6 +443,28 @@ pub(crate) fn declare(registrar: &mut dyn Registrar, context: &RegistrationConte
     if let Err(error) = registrar.block_entity_part(&kind, CrystallizerPart) {
         context.refuse(&error.to_string());
     }
+    // Slice 15: the Chemical Dissolution Chamber — the head of the slurry chain.
+    // A one-slot container (the ore), a 160,000 FE insert-only buffer, and two
+    // 10,000-unit tanks answered through `mekanism:chemical`: tank 0 the acid it
+    // takes (`MAX_CHEMICAL`, fill only), tank 1 the dirty slurry it makes
+    // (extract only). One operation is 100 ticks at 400 FE/t, and every row in
+    // the jar spends its acid per tick.
+    let key = registrar.block_key(DISSOLUTION);
+    registrar.block_container(&key, dissolution_container());
+    registrar.block_energy(&key, machine_battery(DISSOLUTION_CAPACITY));
+    let kind = registrar
+        .block_entity_type(DISSOLUTION_TYPE)
+        .blocks(&[DISSOLUTION_TYPE])
+        .build();
+    registrar.block_entity_capability(&CHEMICAL, &kind, |_, at| {
+        Some(Box::new(DissolutionTanks {
+            side: at,
+            capacity: DISSOLUTION_TANK,
+        }) as Box<dyn ResourceHandler<Chemical>>)
+    });
+    if let Err(error) = registrar.block_entity_part(&kind, DissolutionPart) {
+        context.refuse(&error.to_string());
+    }
 }
 
 /// The one fluid the washer's tank takes, kept as the registration-time key the
@@ -495,6 +527,21 @@ pub(crate) fn crystallizer_container() -> ModContainer {
     }
 }
 
+/// The dissolution chamber's container: one slot, the ore it dissolves.
+///
+/// Its outputs are chemicals (the two tanks), and the acid-fill, chemical-drain
+/// and energy slots upstream declares are container conveniences this port does
+/// not draw — the same deviation the washer and the crystallizer record.
+pub(crate) fn dissolution_container() -> ModContainer {
+    ModContainer {
+        slots: 1,
+        faces: std::array::from_fn(|_| vec![DISSOLVE_SLOT]),
+        inputs: vec![DISSOLVE_SLOT],
+        outputs: Vec::new(),
+        menu: None,
+    }
+}
+
 /// A machine's FE buffer: `capacity` that may be filled from any face and
 /// drained by none (upstream's machines take energy and give none).
 pub(crate) fn machine_battery(capacity: i32) -> ModEnergyBuffer {
@@ -544,6 +591,7 @@ pub(crate) fn machine_capacity(id: &str) -> Option<i32> {
         PURIFYING_FACTORY => Some(PURIFYING_FACTORY_CAPACITY),
         WASHER => Some(WASHER_CAPACITY),
         CRYSTALLIZER => Some(CRYSTALLIZER_CAPACITY),
+        DISSOLUTION => Some(DISSOLUTION_CAPACITY),
         CUBE => Some(CUBE_CAPACITY),
         CABLE => Some(CABLE_CAPACITY),
         _ => None,
@@ -562,6 +610,7 @@ pub(crate) fn machine_ticks(id: &str) -> Option<i32> {
         | PURIFYING_FACTORY => Some(FACTORY_TICKS),
         WASHER => Some(WASHER_TICKS),
         CRYSTALLIZER => Some(CRYSTALLIZER_TICKS),
+        DISSOLUTION => Some(DISSOLUTION_TICKS),
         _ => None,
     }
 }
@@ -576,6 +625,12 @@ pub(crate) fn is_washer(id: &str) -> bool {
 /// its tank's and its output slot's.
 pub(crate) fn is_crystallizer(id: &str) -> bool {
     id == CRYSTALLIZER
+}
+
+/// Whether the Chemical Dissolution Chamber stands at `id`: its `/mekanism info`
+/// line is its ore slot's and its two tanks'.
+pub(crate) fn is_dissolution(id: &str) -> bool {
+    id == DISSOLUTION
 }
 
 /// Whether one of the five basic factories stands at `id`.
@@ -811,6 +866,34 @@ pub(crate) fn crystallizer_info_text(
         tank.amount,
         stack_name(output),
         output.count
+    )
+}
+
+/// The `/mekanism info` report line for the Chemical Dissolution Chamber: its
+/// buffer, its progress, the ore in its slot and both of its tanks, each named
+/// by what it holds (`empty` at 0).
+pub(crate) fn dissolution_info_text(
+    id: &str,
+    capacity: i32,
+    machine: Machine,
+    acid: &Tank,
+    slurry: &Tank,
+    input: &ItemAmount,
+) -> String {
+    format!(
+        "{id}: {}/{} FE, progress {}/{}, input {} x{}, acid {} {}/{}, output {} {}/{}",
+        machine.energy,
+        capacity,
+        machine.progress,
+        DISSOLUTION_TICKS,
+        stack_name(input),
+        input.count,
+        tank_name(acid),
+        acid.amount,
+        DISSOLUTION_TANK,
+        tank_name(slurry),
+        slurry.amount,
+        DISSOLUTION_TANK
     )
 }
 
@@ -1555,6 +1638,118 @@ fn crystal_of(recipe: &CrystallizeRecipe) -> ItemAmount {
     ItemAmount::new(recipe.output, recipe.output_count)
 }
 
+/// The Chemical Dissolution Chamber's behaviour: one operation at a time over an
+/// ore in its one slot, sulfuric acid in its own tank, and the dirty slurry it
+/// makes in a second tank — over its own 160,000 FE buffer.
+///
+/// Upstream's acid-fill, chemical-drain and energy slots are container
+/// conveniences this port does not draw (the washer's and the crystallizer's
+/// recorded deviation), so the tanks are the chemical interface and `/mekanism
+/// info` reports them. The chamber is the **head** of the slurry chain: what it
+/// makes is what the washer beside it takes.
+pub(crate) struct DissolutionPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for DissolutionPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for DissolutionPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    /// One server tick: draw the tick's acid from a neighbour when the machine
+    /// could work (through `mekanism:chemical`; the gas machines' recorded
+    /// deviation — no pipes, so a machine takes what it is about to spend), then
+    /// run one operation's tick over the slot, both tanks and the buffer. An idle
+    /// tick that only held its progress (no energy, no output room, no acid)
+    /// changes nothing and answers `Unchanged`; a reset (an empty slot, an item
+    /// with no row, too few items) is a change and is written back.
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        let single = event.entity.items.len() != 1;
+        if single {
+            event.entity.items.resize(1, None);
+        }
+        let mut saved = Tag::Compound(event.entity.nbt.clone());
+        let mut machine = read_machine(&saved, DISSOLUTION_CAPACITY);
+        machine.progress = machine.progress.clamp(0, (DISSOLUTION_TICKS - 1).max(0));
+        let mut acid = read_prefixed_tank(&saved, "acid");
+        let mut slurry = read_prefixed_tank(&saved, "output");
+        let mut input = slot_stack(&*host, event.entity.items[DISSOLVE_SLOT].as_ref());
+        let pulled = dissolution_draw(&machine, &mut acid, &slurry, &input, host, event.pos);
+        let outcome = process_dissolve_tick(
+            &mut machine,
+            DISSOLUTION_OPERATION,
+            &mut acid,
+            &mut slurry,
+            &mut input,
+            &dissolving::recipe_for,
+        );
+        write_state(&mut saved, machine.energy, machine.progress);
+        write_prefixed_tank(&mut saved, "acid", &acid);
+        write_prefixed_tank(&mut saved, "output", &slurry);
+        if let Tag::Compound(nbt) = saved {
+            event.entity.nbt = nbt;
+        }
+        set_slot(&*host, &mut event.entity.items, DISSOLVE_SLOT, &input);
+        let idle = matches!(
+            outcome,
+            Outcome::Idle(
+                IdleReason::NoEnergy | IdleReason::NoOutputSpace | IdleReason::NoChemical
+            )
+        );
+        if idle && pulled == 0 && !single {
+            *event.reply = BlockEntityTickReply::Unchanged;
+        }
+    }
+}
+
+/// Draw one tick's acid from an adjacent chemical handler through [`CHEMICAL`],
+/// and answer how much the neighbour gave.
+///
+/// It draws only when the machine could actually work — an item with a row, the
+/// row's item count, room for the whole batch of slurry and energy for a tick —
+/// so a stalled chamber never siphons a neighbour it cannot use (the gas
+/// machines' slice-7 guard, pinned here from the start).
+fn dissolution_draw(
+    machine: &Machine,
+    acid: &mut Tank,
+    slurry: &Tank,
+    input: &ItemAmount,
+    host: &mut dyn ServerHost,
+    pos: [i32; 3],
+) -> u32 {
+    if machine.energy < DISSOLUTION_OPERATION.usage || input.is_empty() {
+        return 0;
+    }
+    let Some(recipe) = dissolving::recipe_for(&input.item) else {
+        return 0;
+    };
+    if input.count < recipe.input.max(1) {
+        return 0;
+    }
+    if room_in_tank(
+        slurry,
+        recipe.output,
+        recipe.output_amount,
+        DISSOLUTION_TANK,
+    ) < recipe.output_amount
+    {
+        return 0;
+    }
+    let Some((chemical, want)) = dissolve_pull(&recipe, acid) else {
+        return 0;
+    };
+    let room = DISSOLUTION_TANK.saturating_sub(acid.amount);
+    let want = want.min(room);
+    if want == 0 {
+        return 0;
+    }
+    let pulled = pull_chemical(host, pos, chemical, want);
+    let _ = insert_chemical(acid, chemical, pulled, DISSOLUTION_TANK);
+    pulled
+}
+
 /// The state one gas-machine tick works on, bundled so the top-up and the
 /// operation read the same view of it.
 struct GasTick<'a> {
@@ -1631,11 +1826,19 @@ fn pull_chemical(host: &mut dyn ServerHost, pos: [i32; 3], chemical: &str, want:
             if got >= want {
                 break;
             }
-            if handler.resource(host, 0).as_ref() != Some(&chemical) {
-                continue;
+            // Every tank of the neighbour is asked, not just tank 0: the chamber's
+            // slurry is its second tank (its first holds the acid), and a machine
+            // must be able to take a product from any tank that holds it.
+            for index in 0..handler.size(host) {
+                if got >= want {
+                    break;
+                }
+                if handler.resource(host, index).as_ref() != Some(&chemical) {
+                    continue;
+                }
+                let came = handler.extract(host, tx, index, &chemical, want - got);
+                got = got.saturating_add(came);
             }
-            let came = handler.extract(host, tx, 0, &chemical, want - got);
-            got = got.saturating_add(came);
         }
         Ok::<u32, ()>(got)
     });
@@ -1901,6 +2104,133 @@ impl ResourceHandler<Chemical> for WasherTanks {
             return 0;
         }
         if self.store(host, &input, &output) {
+            came
+        } else {
+            0
+        }
+    }
+}
+
+/// The chemical capability for the Chemical Dissolution Chamber: its **two**
+/// tanks, tank 0 the sulfuric acid it takes (insert only, upstream's
+/// `BasicChemicalTank.inputModern`) and tank 1 the dirty slurry it makes (extract
+/// only, upstream's `output`), both kept in the entity's saved compound
+/// (`acid_*`/`output_*`).
+///
+/// The slurry at index 1 is what the washer beside it pulls: with this handler's
+/// two tanks the washer asks tank 0 (the acid, which it does not take) and then
+/// tank 1, so the chamber's product is reachable through the capability and not
+/// just through this port's commands.
+pub(crate) struct DissolutionTanks {
+    side: BlockSide,
+    capacity: u32,
+}
+
+impl DissolutionTanks {
+    /// What the block entity here holds; two empty tanks for a stale one.
+    fn held(&self, host: &mut dyn ServerHost) -> (Tank, Tank) {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return (Tank::default(), Tank::default());
+        };
+        let Some(saved) = entity.data(&*host) else {
+            return (Tank::default(), Tank::default());
+        };
+        let saved = Tag::Compound(saved);
+        (
+            read_prefixed_tank(&saved, "acid"),
+            read_prefixed_tank(&saved, "output"),
+        )
+    }
+
+    /// Write both tanks back into the block entity here: whether it loaded.
+    fn store(&self, host: &mut dyn ServerHost, acid: &Tank, slurry: &Tank) -> bool {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return false;
+        };
+        let mut saved = Tag::Compound(Compound::new());
+        write_prefixed_tank(&mut saved, "acid", acid);
+        write_prefixed_tank(&mut saved, "output", slurry);
+        let Tag::Compound(patch) = saved else {
+            return false;
+        };
+        entity
+            .merge_data(host, patch)
+            .ok()
+            .is_some_and(|loaded| loaded)
+    }
+}
+
+impl ResourceHandler<Chemical> for DissolutionTanks {
+    fn size(&self, _: &mut dyn ServerHost) -> usize {
+        2
+    }
+
+    fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<Chemical> {
+        let (acid, slurry) = self.held(host);
+        let tank = match index {
+            0 => acid,
+            1 => slurry,
+            _ => return None,
+        };
+        tank.held().and_then(|(id, _)| Chemical::new(id))
+    }
+
+    fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32 {
+        let (acid, slurry) = self.held(host);
+        match index {
+            0 => acid.amount,
+            1 => slurry.amount,
+            _ => 0,
+        }
+    }
+
+    fn capacity(&self, _: &mut dyn ServerHost, index: usize, _: &Chemical) -> u32 {
+        if index < 2 { self.capacity } else { 0 }
+    }
+
+    /// A fill goes into the **acid** tank only: the slurry tank is filled by the
+    /// machine's own operation, as upstream's `BasicChemicalTank.output` is.
+    fn insert(
+        &self,
+        host: &mut dyn ServerHost,
+        _: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index != 0 {
+            return 0;
+        }
+        let (mut acid, slurry) = self.held(host);
+        match insert_chemical(&mut acid, chemical.as_str(), amount, self.capacity) {
+            Ok(0) => 0,
+            Ok(went) if self.store(host, &acid, &slurry) => went,
+            Ok(_) => 0,
+            // A chemical Mekanism does not register: the handler cannot name it
+            // back, so it answers 0 (`/mekanism chemical insert` names it).
+            Err(_) => 0,
+        }
+    }
+
+    /// A drain takes from the **slurry** tank only: the acid is automation's to
+    /// fill, not to empty.
+    fn extract(
+        &self,
+        host: &mut dyn ServerHost,
+        _: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index != 1 {
+            return 0;
+        }
+        let (acid, mut slurry) = self.held(host);
+        let came = extract_chemical(&mut slurry, chemical.as_str(), amount);
+        if came == 0 {
+            return 0;
+        }
+        if self.store(host, &acid, &slurry) {
             came
         } else {
             0
@@ -2553,6 +2883,24 @@ pub(crate) fn info_line(host: &mut dyn ServerHost, pos: [i32; 3]) -> Option<Stri
             &output,
         ));
     }
+    if is_dissolution(&id) {
+        let input = slot_stack(
+            &*host,
+            entity
+                .item_slot(&*host, DISSOLVE_SLOT as u32)
+                .ok()
+                .flatten()
+                .as_ref(),
+        );
+        return Some(dissolution_info_text(
+            &id,
+            capacity,
+            read_machine(&saved, capacity),
+            &read_prefixed_tank(&saved, "acid"),
+            &read_prefixed_tank(&saved, "output"),
+            &input,
+        ));
+    }
     let input = slot_stack(
         &*host,
         entity
@@ -2828,6 +3176,9 @@ mod tests {
         assert_eq!(machine_capacity(CRUSHER), Some(CRUSHER_CAPACITY));
         assert_eq!(machine_capacity(INJECTION), Some(INJECTION_CAPACITY));
         assert_eq!(machine_capacity(PURIFICATION), Some(PURIFY_CAPACITY));
+        assert_eq!(machine_capacity(WASHER), Some(WASHER_CAPACITY));
+        assert_eq!(machine_capacity(CRYSTALLIZER), Some(CRYSTALLIZER_CAPACITY));
+        assert_eq!(machine_capacity(DISSOLUTION), Some(DISSOLUTION_CAPACITY));
         assert_eq!(machine_capacity(CUBE), Some(CUBE_CAPACITY));
         assert_eq!(machine_capacity(CABLE), Some(CABLE_CAPACITY));
         assert_eq!(machine_capacity("minecraft:chest"), None);
@@ -2836,6 +3187,13 @@ mod tests {
         assert_eq!(machine_ticks(CRUSHER), Some(200));
         assert_eq!(machine_ticks(INJECTION), Some(200));
         assert_eq!(machine_ticks(PURIFICATION), Some(200));
+        assert_eq!(machine_ticks(WASHER), Some(200));
+        assert_eq!(machine_ticks(CRYSTALLIZER), Some(200));
+        assert_eq!(
+            machine_ticks(DISSOLUTION),
+            Some(100),
+            "the dissolution chamber's own BASE_TICKS_REQUIRED = 5 x 20"
+        );
         assert_eq!(machine_ticks(CUBE), None, "the cube runs no operation");
         assert_eq!(machine_ticks(CABLE), None);
     }
@@ -3277,6 +3635,105 @@ mod crystallizer_support_tests {
             saved.get("chemical"),
             Some(&Tag::String("mekanism:clean_iron".into())),
             "the saved chemical is the id `/data get block` reads"
+        );
+    }
+
+    /// Slice 15: the Chemical Dissolution Chamber is the jar's own machine — 400
+    /// FE/t, a 160,000 FE buffer, 100 ticks an operation and two 10,000-unit
+    /// tanks — with one input slot, and its info line reports the ore and both
+    /// tanks.
+    #[test]
+    fn the_dissolution_chamber_is_the_jar_s_numbers_with_one_input_slot() {
+        assert_eq!(DISSOLUTION, "mekanism:chemical_dissolution_chamber");
+        assert_eq!(DISSOLUTION_TYPE, "chemical_dissolution_chamber");
+        assert_eq!(machine_capacity(DISSOLUTION), Some(160_000));
+        assert_eq!(machine_ticks(DISSOLUTION), Some(100));
+        assert_eq!(DISSOLUTION_OPERATION.usage, 400, "UsageConfig");
+        assert_eq!(DISSOLUTION_OPERATION.ticks, 100, "BASE_TICKS_REQUIRED");
+        assert_eq!(DISSOLUTION_TANK, 10_000, "MAX_CHEMICAL");
+        let buffer = machine_battery(DISSOLUTION_CAPACITY);
+        assert_eq!(
+            (buffer.max_insert, buffer.max_extract),
+            (DISSOLUTION_CAPACITY, 0),
+            "a machine takes energy and gives none"
+        );
+        let container = dissolution_container();
+        assert_eq!(container.slots, 1);
+        assert_eq!(container.inputs, vec![DISSOLVE_SLOT]);
+        assert!(
+            container.outputs.is_empty(),
+            "its output is a chemical, so there is no output slot"
+        );
+        assert_eq!(container.menu, None, "one slot is not a menu");
+        assert!(is_dissolution(DISSOLUTION));
+        assert!(!is_dissolution(CRYSTALLIZER));
+    }
+
+    /// The chamber's info line the in-game leg asserts: the ore, the acid in
+    /// tank 0 and the slurry in tank 1, each with its own 10,000 capacity.
+    #[test]
+    fn the_dissolution_info_line_is_the_one_the_e2e_asserts() {
+        assert_eq!(
+            dissolution_info_text(
+                DISSOLUTION,
+                DISSOLUTION_CAPACITY,
+                Machine {
+                    energy: 120_000,
+                    progress: 0
+                },
+                &Tank::new("mekanism:sulfuric_acid", 900),
+                &Tank::new("mekanism:dirty_iron", 1_000),
+                &ItemAmount::default(),
+            ),
+            "mekanism:chemical_dissolution_chamber: 120000/160000 FE, progress 0/100, \
+             input empty x0, acid mekanism:sulfuric_acid 900/10000, \
+             output mekanism:dirty_iron 1000/10000"
+        );
+        assert_eq!(
+            dissolution_info_text(
+                DISSOLUTION,
+                DISSOLUTION_CAPACITY,
+                Machine::default(),
+                &Tank::default(),
+                &Tank::default(),
+                &ItemAmount::new("minecraft:iron_ore", 1),
+            ),
+            "mekanism:chemical_dissolution_chamber: 0/160000 FE, progress 0/100, \
+             input minecraft:iron_ore x1, acid empty 0/10000, output empty 0/10000"
+        );
+    }
+
+    /// The chamber's two tanks save and read back under their own prefixes, so a
+    /// tick's acid and slurry survive a save and `/data get block` can read them.
+    #[test]
+    fn the_dissolution_tanks_save_and_read_back() {
+        let mut saved = Tag::Compound(Compound::new());
+        write_prefixed_tank(
+            &mut saved,
+            "acid",
+            &Tank::new("mekanism:sulfuric_acid", 900),
+        );
+        write_prefixed_tank(
+            &mut saved,
+            "output",
+            &Tank::new("mekanism:dirty_iron", 1_000),
+        );
+        assert_eq!(
+            read_prefixed_tank(&saved, "acid"),
+            Tank::new("mekanism:sulfuric_acid", 900)
+        );
+        assert_eq!(
+            read_prefixed_tank(&saved, "output"),
+            Tank::new("mekanism:dirty_iron", 1_000)
+        );
+        assert_eq!(
+            saved.get("acid_chemical"),
+            Some(&Tag::String("mekanism:sulfuric_acid".into()))
+        );
+        assert_eq!(
+            saved.get("output_amount"),
+            Some(&Tag::Int(1_000)),
+            "the saved amount is the int `/data get block` reads"
         );
     }
 }

@@ -1,0 +1,10 @@
+{
+  "item": true,
+  "properties": {
+    "explosion_resistance": 16.0,
+    "hardness": 3.5,
+    "requires_tool": true,
+    "sounds": "minecraft:stone"
+  },
+  "template": "minecraft:barrel"
+}

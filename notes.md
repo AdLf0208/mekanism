@@ -3962,3 +3962,305 @@ Skills: superpowers/using-superpowers,writing-plans,test-driven-development,syst
 > `4b5163cd96a7dcc53602f4de1ead2240e99534cd8fa182b37dd10317e2b77382`; `check` exit 0; `fits` `made for`
 > at the pin and `fits` at `0b14f8a`; 131 tests, clippy `-D warnings` clean; in game `PASS` + `EXIT:0`,
 > control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` + `EXIT:0`, log gate 6/6.
+
+## Slice 15 — the Chemical Dissolution Chamber (0.2.14, 2026-11-23)
+
+### The scope authority, quoted
+
+The gap line is this port's own, `FINDINGS.md`'s next-slice item 2 and the round-14 queue note:
+
+> 2. **Ore-processing chain, remaining**: … the **Chemical Dissolution Chamber** (needs sulfuric acid
+>    + an ore-shard family) and the **Chemical Oxidizer** (item → gas). The dissolution chamber is the
+>    one the brief allowed as a stretch and is the next real machine; it needs `mekanism:sulfuric_acid`
+>    (already a registered chemical) plus a per-material ore → slurry table.
+
+**Chosen: that machine, and nothing else.** It closes the head of the ore chain: the washer,
+crystallizer, injecting chamber, crusher and smelter already carry every step **after** the slurry,
+and the chamber is the one machine that makes the slurry (and therefore the only thing that can feed
+the washer from ore). It fits the ledger's **`deep`** row as the tier's **machine** shape that slices
+5–9 already use: a block entity with saved state, a container, an insert-only energy buffer and two
+chemical tanks in the block's own tick. No renderer, no GUI and no entity: the same shape as the
+injection chamber (its closest sibling: `TileEntityAdvancedElectricMachine`'s constants, but the
+chamber's own `BASE_TICKS_REQUIRED`).
+
+### The upstream numbers, with the file that gives each
+
+Read from upstream **tag `v1.21.1-10.7.19.85`** (commit `a00109e4856fd38b9c5b3dd7f22ce4a59cd65a80`,
+the source of the installed jar) and from the jar's own data. Analysis only; the Rust is a clean-room
+rewrite.
+
+| value | source | port |
+|---|---|---|
+| **400 FE/t** | `common/config/UsageConfig.java:66` (`chemicalDissolutionChamber`, `400L`) | `DISSOLUTION_USAGE` |
+| **160,000 FE** buffer | `common/config/StorageConfig.java:82-83` (`chemicalDissolutionChamber`, `160_000L, 1`) | `DISSOLUTION_CAPACITY` |
+| **100 ticks** an operation (`5 * TICKS_PER_SECOND`), so **40,000 FE** each | `common/tile/machine/TileEntityChemicalDissolutionChamber.java:76` (`BASE_TICKS_REQUIRED`) | `DISSOLUTION_TICKS`, `DISSOLUTION_OPERATION` |
+| **two 10,000-unit tanks** (acid in, slurry out) | `TileEntityChemicalDissolutionChamber.java:75` (`MAX_CHEMICAL = 10L * FluidType.BUCKET_VOLUME`) | `DISSOLUTION_TANK`, both handler slots |
+| acid **per tick**, not per operation | the jar's `processing/<m>/slurry/dirty/from_ore.json`: `"per_tick_usage": true`, `"chemical_input": {"amount": 1, …}`; upstream reads it with `ItemStackConstantChemicalToObjectCachedRecipe.dissolution` (`TileEntityChemicalDissolutionChamber.createNewCachedRecipe`, `:176-183`) | 1 unit a tick → **100 units** an operation for an ore |
+| output at the operation's **finish**: 1,000 units for an ore, 2,000 for 3 raw ore, 6,000 for a raw block | `from_ore.json`/`from_raw_ore.json`/`from_raw_block.json` (`"output": {"amount": …}`); `outputHandler.handleOutput` at `finishProcessing` | `DissolveRecipe::output_amount` |
+| one item input slot; a 3.5/16 machine block | `getInitialInventory` (`inputSlot`), the `MachineBuilder.createMachine` family the other machines use | `dissolution_container` (1 slot), `mineable/pickaxe` |
+
+The numbers are **not** the shared 200-tick machine's: this machine's operation is half as long, so
+one operation is 40,000 FE and the 160,000 buffer holds exactly four (a fact the unit test pins).
+
+### What the jar's recipe set actually is (read, not assumed)
+
+`data/mekanism/recipe/**` holds **23** `mekanism:dissolution` recipes. Twelve are carried (9 files
+expanded to 12 rows, because a vanilla ore tag has two 26.3 members) and eleven are not:
+
+| family | files | rows | carried |
+|---|---|---|---|
+| `processing/{copper,gold,iron}/slurry/dirty/from_ore.json` | 3 | 6 (`c:ores/<m>` = stone + deepslate) | yes |
+| `processing/{copper,gold,iron}/slurry/dirty/from_raw_ore.json` | 3 | 3 (`minecraft:raw_<m>`, 3 items) | yes |
+| `processing/{copper,gold,iron}/slurry/dirty/from_raw_block.json` | 3 | 3 (`minecraft:raw_<m>_block`, 2 acid a tick) | yes |
+| `processing/{lead,osmium,tin,uranium}/slurry/dirty/*.json` | 12 | 0 | **no**: 26.3 has no such ore, raw item or raw block, so the tag has no member |
+| `processing/uranium/hydrofluoric_acid{,_from_block}.json` | 2 | 0 | **no**: its output is `mekanism:hydrofluoric_acid`, a gas, not a slurry this machine makes (upstream runs both through the same `ChemicalDissolutionRecipe` type) |
+
+That is `tools/gen_dissolving.py`'s `23 recipes / 12 rows / 14 skipped` header;
+
+### The slice in the port's layers
+
+- **`tools/gen_dissolving.py`** (new): reads the jar's `mekanism:dissolution` files, expands the
+  `c:` item tags to their 26.3 members (`TAGS`), drops a row whose slurry this port does not know,
+  writes the Rust table between markers, and has `--check` (committed rows vs the jar, rustfmt-safe)
+  and `--rows` (the table as JSON, which the in-game phase drives itself with, so scenario and table
+  cannot drift).
+- **`src/runtime.rs`** (pure, unit-tested): the constants above, `DissolveRecipe`,
+  `dissolving::{recipe_for, rows, ROW_COUNT}`, `process_dissolve_tick` (energy + acid per tick, the
+  item and the slurry at the finish, hold on no acid/energy/room, reset on an empty slot, an item
+  with no row or too few items) and `dissolve_pull` (one tick's acid from a neighbour, never the
+  operation's).
+- **`src/support.rs`**: `DissolutionPart` (the tick), `DissolutionTanks` (two tanks answered through
+  `mekanism:chemical`: tank 0 acid, fill only; tank 1 the dirty slurry, drain only), the one-slot
+  container, the registration, the `/mekanism info` line, and **`pull_chemical` now asks every tank
+  of a neighbour**, not just index 0 — the chamber's slurry is tank 1, and without that the washer
+  beside it could never take the product (the washer/ crystallizer pulls had the same latent defect).
+- **`tools/carry_dissolution.py`** (new): six files from the jar — four textures and the item model
+  byte for byte, the block model **flattened** (a `neoforge:composite` of a cutout child and a
+  translucent glass child, emitted as one `cutout` model, the crystallizer's recorded deviation) —
+  with `--check`.
+- **Content** (authored): the barrel-template block declaration (3.5 / 16, `requires_tool`, stone
+  sounds), the self-drop loot table, a twelve-variant blockstate (the template's `facing`×`open`; the
+  jar's block has `facing` only, the other machines' recorded deviation), eight lang keys, a creative
+  tab entry, the shaped recipe in 26.3's dialect with the port's vanilla stand-ins (refined obsidian →
+  obsidian, ultimate circuit → redstone; the two chemical tanks are this port's own), and the block
+  added to `minecraft:mineable/pickaxe`.
+- **`tools/check-block-tags.py`** (new): every declared block must be in `mineable/pickaxe` and have
+  a loot table — see "Harness facts" for the defect it turns into a check.
+
+### Red → green
+
+**The family's Rust test, RED first.** Five `runtime::dissolution_tests` were written against an
+empty generated table (`../_shared/evidence/mekanism/slice15-red.log`, verbatim):
+
+```
+---- runtime::dissolution_tests::every_carried_dissolution_row_is_the_jar_s stdout ----
+thread '…' panicked at src/runtime.rs:6716:9:
+assertion `left == right` failed: 6 ore rows (3 ores x 2 vanilla members) + 3 raw ore + 3 raw block
+  left: 0
+ right: 12
+…
+test result: FAILED. 132 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out
+error: test failed, to rerun pass `--lib`
+```
+
+Then `gen_dissolving.py` filled the table and the five passed: `140 passed; 0 failed`
+(`sdk-test.log`). The table's other ten rows are pinned by the same test (`recipe_for` per item, the
+count, the acid per tick, the slurry and its amount), so a generator change that drops or reshapes a
+row fails the unit test even before the game.
+
+**The in-game red** is the flip of the newest family's own assertion. Since slice 15 the flip has
+**moved** to phase V (the notes' own slice-13 lesson: the flip moves with the newest family; phase U's
+nine-ingot flip is no longer passed, and `craft_family.py`'s `SELFTEST` environment fallback was
+removed so only an explicit `--selftest` inverts it). `SELFTEST=1` on the delivered package
+(`../_shared/evidence/mekanism-e2e/e2e-selftest.log`):
+
+```
+FAIL: expected /mekanism info at 1,74,0 to say 'output empty 0/10000', got 'mekanism:chemical_dissolution_chamber: 120000/160000 FE, progress 0/100, input empty x0, acid empty 0/10000, output mekanism:dirty_iron 1000/10000'
+EXIT:1
+```
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the chamber block: give, place, read back, unknown id refused | **tested** | A1 (20 blocks / 45 items), A2 `20 blocks place and read back; an unknown id is refused` |
+| the block's loot table drops it (survival, correct tool) | **tested** | B2 `20 blocks each dropped their own item` |
+| the carried shaped recipe (ITI/CXC/ITI over the port's items) | **tested** | B1 crafts 17/17 (`craft_check.py`), the new row quoted in the e2e log |
+| its machine numbers (400 FE/t, 160,000 FE, 100 ticks, 40,000 FE an operation, two 10,000-unit tanks) | **tested** | unit tests + V1: `120000/160000 FE` after one operation |
+| iron ore → 1,000 units of `dirty_iron` for 40,000 FE and **100** acid, the acid from a neighbour tank through `mekanism:chemical`, none kept in the machine | **tested** | V1 (transcript below): `output mekanism:dirty_iron 1000/10000`, `amount … 900` |
+| the same saved state through `data get block` (`output_chemical`, `output_amount`, `acid_amount`) | **tested** | V1: `"mekanism:dirty_iron"`, `1000`, `0` |
+| water in the machine's own acid tank: no progress, no FE spent, the readout unchanged | **tested** | V1 counterfactual: `160000/160000 FE, progress 0/100, … acid minecraft:water 1000/10000, output empty 0/10000` |
+| an item with no row (dirt): nothing made, no FE spent, no acid siphoned | **tested** | V1 counterfactual: `160000/160000 FE … input minecraft:dirt x1`, neighbour still 1,000 |
+| the product leaves through `mekanism:chemical` and the washer beside it washes it | **tested** | V2: washer `… output mekanism:clean_iron x1`, chamber tank 999 |
+| **every carried recipe** (the other 11 rows: deepslate copper/gold/iron, raw ore ×3, raw block ×3) | **not swept in game yet** | carried and pinned by the unit test's exact table; the brief limited this slice to one phase and forbade a second full sweep, so the 12-row dissolution sweep is the recorded gap 1 below |
+| the acid's own production (`mekanism:sulfuric_acid` as a gas, its item/bucket form, the Chemical Oxidizer/Infuser chain) | **not ported** | the chamber takes acid from a tank beside it; the port registers the id and this consumer, not the producers (gap 2) |
+| upstream's acid-fill / chemical-drain / energy slots, its GUI, side config, upgrades, ejector, the `active` state and the composite model's translucent glass | **not ported** | the washer/crystallizer's recorded deviations (convenience slots, vanilla menu-less container), the model flattened to `cutout`, the template's unused `open` state stands in |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command (through the slot runner) | Result |
+|---|---|---|
+| the family's tests, RED first | `cargo test --offline` on the empty table | **132 passed, 5 failed** (`slice15-red.log`) |
+| tests | `cargo test --offline` | **140 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (local: the remote box formats its own copy) | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt` then `cargo fmt --check` (local) | clean (`sdk-fmt.log`) |
+| recipe tables | the eight `gen_*.py --check` (`gen_smelting` with `--resources`) | 163 / 136 / 156 / 79 / 15 / 7 / 7 / **12** rows (`slice15-recipe-tables.log`) |
+| carried art | `carry_dissolution.py` + the four earlier `carry_*.py --check` | 6 + 18 + 14 + 50 + 52 files match the jar (`slice15-carry.log`) |
+| block tags | `python3 tools/check-block-tags.py` | `20 declared blocks are in mineable/pickaxe and have a loot table` (`slice15-block-tags.log`) |
+| recipe types | `python3 ports/tools/check-recipe-types.py mekanism` | `mekanism: ok` (`slice15-recipe-types.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` | `Built ./target/horizon-mod/mekanism.hmod` (`sdk-build.log`) |
+| same package twice | the same again | **`cmp` identical** (`sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | `mekanism 0.2.14 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **252,981 B, SHA-256 `2a755a80…70d3`**, exit 0 (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`sdk-fits.log`) |
+| fits, **a different build** | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 (`sdk-fits.log`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (`397 entries`, no packed `Cargo.lock`, 140 tests) |
+| archive shape | `unzip -l mekanism.hmod` | 397 files, no `Cargo.lock` |
+| launcher build | `launcher-game.sh build mekanism` | **`Compiling mekanism (1 of 1)`**, `native-0a875da-2c6f9dbe7777` (`slice15-launcher-build.log`) |
+
+**No `native-*` tag carried this mod before the final build**: the two earlier tags were deleted and
+the check re-run (`for d in …/versions/native-*; do [ -d "$d/horizon-native-mods/mekanism" ] && echo
+CARRIES; done` → no output), so `Compiling mekanism (1 of 1)` and the new tag cannot be a reused
+binary. The four legs below therefore ran the **delivered bytes**: after the final `cargo
+horizon-mod build`, `unzip -p mekanism.hmod <file>` and the exported
+`~/.cache/horizon-e2e/0a875da/mekanism/horizon-native-mods/mekanism/<file>` are `sha256`-identical
+for `src/runtime.rs`, `src/support.rs`, `src/lib.rs`, `horizon-mod.toml`, the pickaxe tag and the
+chamber's loot table, and the exported manifest names 0.2.14.
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`ports/tools/launcher-game.sh run mekanism` → `PASS` + `EXIT:0`
+(`../_shared/evidence/mekanism-e2e/e2e-package.log`), the new phases verbatim:
+
+```
+== V1: one iron ore dissolves into 1,000 units of dirty_iron for 40,000 FE and exactly 100 acid ==
+  rows from the jar's mekanism:dissolution data: 12
+  minecraft:iron_ore: 1 acid a tick x 100 ticks = 100, -> 1000 mekanism:dirty_iron
+  chemical insert 1000 mekanism:sulfuric_acid 0 74 0: chemical: inserted 1000 mekanism:sulfuric_acid into mekanism:basic_chemical_tank (1000/64000)
+  info(1,74,0): mekanism:chemical_dissolution_chamber: 0/160000 FE, progress 0/100, input minecraft:iron_ore x1, acid empty 0/10000, output empty 0/10000
+  info(1,74,0): mekanism:chemical_dissolution_chamber: 120000/160000 FE, progress 0/100, input empty x0, acid empty 0/10000, output mekanism:dirty_iron 1000/10000
+  energy(1,74,0): 120000
+  data get block 1 74 0 output_chemical: 1, 74, 0 has the following block data: "mekanism:dirty_iron"
+  data get block 1 74 0 output_amount: 1, 74, 0 has the following block data: 1000
+  data get block 1 74 0 acid_amount: 1, 74, 0 has the following block data: 0
+  chemical read 0 74 0: chemical: mekanism:basic_chemical_tank holds mekanism:sulfuric_acid 900/64000 (answered by mekanism)
+  data get block 0 74 0 amount: 0, 74, 0 has the following block data: 900
+  info(4,74,0): mekanism:chemical_dissolution_chamber: 160000/160000 FE, progress 0/100, input minecraft:iron_ore x1, acid minecraft:water 1000/10000, output empty 0/10000
+  energy(4,74,0): 160000
+  info(6,74,0): mekanism:chemical_dissolution_chamber: 160000/160000 FE, progress 0/100, input minecraft:dirt x1, acid empty 0/10000, output empty 0/10000
+  energy(6,74,0): 160000
+  chemical read 5 74 0: chemical: mekanism:basic_chemical_tank holds mekanism:sulfuric_acid 1000/64000 (answered by mekanism)
+== V2: the washer beside the chamber takes the slurry the chamber made ==
+  fluid insert 1000 2 74 0: fluid: inserted 1000 minecraft:water into mekanism:chemical_washer (1000/10000)
+  info(2,74,0): mekanism:chemical_washer: 0/80000 FE, progress 0/200, water 995/10000 mB, input empty x0, output mekanism:clean_iron x1
+  data get block 1 74 0 output_amount: 1, 74, 0 has the following block data: 999
+```
+
+What the numbers prove: one iron ore left the slot, the whole 100 ticks cost exactly 40,000 FE
+(160,000 → 120,000), the neighbour tank fell by exactly the 100 units the per-tick recipe spends
+(1,000 → 900), the chamber kept none of the acid, and its own second tank holds the jar's 1,000 units
+of `dirty_iron`; **water** in that same tank makes no progress and spends no FE, and a **dirt** in
+the slot makes nothing and does not even siphon the acid beside it; and the washer beside it took one
+unit of the chamber's slurry **through `mekanism:chemical`** (from the chamber's second tank) and
+finished one clean-slurry row.
+
+| leg | result | evidence |
+|---|---|---|
+| package (default) | **`PASS` + `EXIT:0`** | `e2e-package.log` |
+| unmodded game (`GAME=$CONTROL_GAME CONTROL=0`) | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** | `e2e-control.log` |
+| fail-capable (`SELFTEST=1`) | **`FAIL: expected … at 1,74,0 to say 'output empty 0/10000', got '… output mekanism:dirty_iron 1000/10000'` + `EXIT:1`** | `e2e-selftest.log` |
+| differential (`NOCABLE=1`) | **`PASS` + `EXIT:0`** (no energy reaches the smelter or chamber; phase V still dissolves and washes) | `e2e-nocable.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` (`slice15-log-gate.log`) |
+
+Slices 1–14 are unchanged and still green in the same package leg: 156/156 crushing, 163/163 + 7/7
+smelting, 136/136 enriching, 79/79 injecting, 15/15 purifying, 7/7 washing, 7/7 crystallizing, the
+five factories, the menus, the save + relaunch, and all 16 storage-block and nugget recipes.
+
+### Harness facts this slice added
+
+- **A `requires_tool` block missing from `mineable/pickaxe` breaks without dropping — and nothing
+  else says so.** The new block dropped nothing in B2 while the injection chamber beside it dropped
+  itself. The isolating probe (a throw-away script, removed after the finding) placed each block,
+  switched to survival with an iron pickaxe and broke it: the new block `"drops":{}`, the neighbour
+  `{"mekanism:chemical_injection_chamber":1}`; `/loot give @s mine <pos>` gave the dissolve chamber,
+  so the **loot table was fine** and the drop gate was `Items::correct_for_drops` +
+  `player_destroy_block`'s `harvest = !requires_tool || correct_for_drops(held, name)` — i.e. the
+  pickaxe's `mineable/pickaxe` rule. The fix is the tag member; the class fix is
+  `tools/check-block-tags.py`, which fails on a declared block that is not in the tag or has no loot
+  table (run in the ladder, and proven able to fail by removing the member from a copy).
+- **The selftest's flip has to move with the newest family.** `SELFTEST=1` still failed on phase U's
+  nine-ingot row (slice 14's flip) and never reached phase V. `craft_family.py` read `SELFTEST` from
+  the environment as a default; the e2e now passes `--selftest` only deliberately, and phase V owns
+  the flip.
+- **`/data merge block` puts a chemical the capability refuses (water) into a tank's saved data**, so
+  the "water in the tank" counterfactual is real: the machine's own tank reads
+  `acid minecraft:water 1000/10000` and the tick holds at `NoChemical`.
+- **`pull_chemical` had to ask every tank.** The chamber's slurry is tank 1 of a two-tank handler; a
+  pull that only asked index 0 could never take it. The washer's and crystallizer's pulls had the
+  same latent gap (a washer can now feed a crystallizer beside it through the capability).
+
+### Gaps after slice 15
+
+1. **The 12-row dissolution sweep.** Only the iron-ore row is proven in game; the other eleven rows
+   (deepslate copper/gold/iron, the three raw ores at 3 items, the three raw blocks at 2 acid a tick)
+   are carried and pinned by the unit test, but a real-machine sweep is the parity debt this slice's
+   brief deferred ("add only this family's phase … do not add a second full sweep").
+2. **The acid chain.** `mekanism:sulfuric_acid` is a registered id and this machine consumes it, but
+   nothing in the port *makes* it: upstream's Chemical Oxidizer (sulfur → sulfur dioxide) and
+   Chemical Infuser are unported, and the chemical has no item/bucket form, so the e2e fills a tank
+   through `/mekanism chemical insert`.
+3. **Upstream's convenience slots and GUI** (the acid-fill slot, the chemical-drain slot, the energy
+   slot, the real screen), the `active` state, side configuration, upgrades, the ejector and the
+   translucent glass of the composite model are not carried (the washer/crystallizer's deviations).
+4. The `c:` item tags, the raw storage blocks and ores, the composite client model and the remaining
+   Mekanism machines stand as the earlier slices' gaps; everything in *Gaps / deviations* and the
+   earlier slices' lists still stands.
+
+### `## Upstream defects fixed`
+
+None found in this slice: the jar's 21 slurry rows are consistent with its own slurry register and
+the 26.3 items (the raw-block rows' 2-acid-a-tick is deliberate — a raw block makes 6,000 units for
+200 acid, the same 1:10 ratio as an ore's 1,000 for 100), and the two `hydrofluoric_acid` rows are the
+same recipe type producing a **gas**, which the chamber's two-tank slurry shape cannot express; they
+are dropped and printed rather than forced into a slurry tank.
+
+### Deviations this slice records
+
+- **The acid is pulled from a neighbour, per tick.** Upstream fills the tank through automation and
+  the machine runs from its buffer; the port ships no pipes, so the chamber draws one tick's acid
+  from an adjacent `mekanism:chemical` handler — and only when it could complete an operation (item,
+  room for the batch, energy). The gas machines' and washer's recorded deviation, and the e2e's
+  `900` proves the draw is exactly the operation's spend.
+- **The output tank is tank 1 of the handler** and reachable only by a drain (upstream's
+  `BasicChemicalTank.output`); the acid tank is tank 0 and fill-only.
+- **The block model is flattened** from the jar's composite to one `cutout` model (the glass draws
+  cutout), and the blockstate is the barrel template's `facing`×`open` while the jar has `facing`
+  only — the crystallizer's and the other machines' recorded deviations.
+- **The shaped recipe uses vanilla stand-ins** (obsidian, redstone, iron block) for the three tags
+  this port does not register, and the port's own `mekanism:basic_chemical_tank` for the jar's tank;
+  the pattern `ITI/CXC/ITI` is the jar's.
+- **`mineable/pickaxe` is declared for the new block**, because the engine's drop gate needs it
+  (see "Harness facts"); `needs_stone_tool` is still not declared (slice 14's pin gap).
+
+Skills: superpowers/using-superpowers,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+### Changelog (0.2.14) — supersedes 0.2.13
+
+> **0.2.14 — the Chemical Dissolution Chamber.** The head of the ore chain exists:
+> `mekanism:chemical_dissolution_chamber` turns an ore and sulfuric acid into dirty slurry. It is the
+> jar's own machine — **400 FE/t, 100 ticks and 40,000 FE an operation, a 160,000 FE buffer and two
+> 10,000-unit tanks**, one ore slot — and every one of the jar's dissolution rows spends its acid
+> **per tick** (100 units an operation for an ore), drawn from a tank beside it through
+> `mekanism:chemical` and kept nowhere. **Twelve** of the jar's 23 `mekanism:dissolution` recipes are
+> carried (the three 26.3 ores in their stone and deepslate forms, their raw ores at three items and
+> their raw blocks at 6,000 units); the nine lead/osmium/tin/uranium rows have no 26.3 ore and the
+> two hydrofluoric-acid rows are a gas, so they are dropped and printed. In game: one iron ore
+> becomes exactly 1,000 units of `dirty_iron` for 40,000 FE while the neighbour tank falls 1,000 →
+> 900, water in the machine's own tank makes no progress and spends no FE, a dirt in the slot makes
+> nothing and draws no acid, and the washer beside it takes one unit of that slurry through the
+> capability and finishes one `clean_iron` row. `pull_chemical` now asks every tank of a neighbour,
+> so a machine can take a product from a two-tank handler; `tools/check-block-tags.py` guards the
+> `mineable/pickaxe` + loot-table pair whose absence made the first build's block drop nothing.
+> Package: **397 entries, 252,981 B**, sha256
+> `2a755a80b3945bb98db9fa8cd3ed9638401509c1722b427f353cab3b46d870d3`; `check` exit 0; `fits` `made
+> for` at the pin and `fits` at `0b14f8a`; 140 tests, clippy `-D warnings` clean; in game `PASS` +
+> `EXIT:0`, control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` + `EXIT:0`, log gate 6/6.

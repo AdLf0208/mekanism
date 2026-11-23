@@ -1,5 +1,59 @@
 # Validation
 
+## 0.2.14 — the Chemical Dissolution Chamber, slice 15 (2026-11-23)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`); the packaging, `fmt` and launcher steps used `BUILD_LOCAL=1` (the `.hmod` must
+land here, and the remote box has no `cargo-horizon-mod`), while `test`/`clippy`/recipe checks
+forwarded.
+
+The family's rule was written first and watched fail against an empty generated table
+(`slice15-red.log`, `132 passed; 5 failed`), then the generator filled the table and the five
+passed. Upstream numbers: **400 FE/t** (`UsageConfig.java:66`), **160,000 FE**
+(`StorageConfig.java:82-83`), **100 ticks / 40,000 FE** an operation
+(`TileEntityChemicalDissolutionChamber.java:76`), **two 10,000-unit tanks** (`:75`), and the acid
+**per tick** (`per_tick_usage: true` in `processing/<m>/slurry/dirty/from_ore.json` → 100 units an
+operation for an ore).
+
+| Check | Command | Result |
+|---|---|---|
+| the family's tests, RED first | `cargo test --offline` on the empty table | **132 passed, 5 failed** (`slice15-red.log`) |
+| tests | `cargo test --offline` (forwarded) | **140 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt`, then `cargo fmt --check` (local) | clean (`sdk-fmt.log`) |
+| recipe tables | the eight `gen_*.py --check` (`gen_smelting` with `--resources`) | 163 / 136 / 156 / 79 / 15 / 7 / 7 / **12** rows (`slice15-recipe-tables.log`) |
+| carried art | `carry_dissolution.py` + the four earlier `carry_*.py --check` | 6 + 18 + 14 + 50 + 52 files match the jar (`slice15-carry.log`) |
+| block tags | `python3 tools/check-block-tags.py` | 20 blocks in `mineable/pickaxe` with a loot table (`slice15-block-tags.log`) |
+| recipe types | `python3 ports/tools/check-recipe-types.py mekanism` | `mekanism: ok` (`slice15-recipe-types.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **252,981 B**, `cmp` identical, sha256 `2a755a80b3945bb98db9fa8cd3ed9638401509c1722b427f353cab3b46d870d3` (`sdk-build.log`, `sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.14 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **397 entries** (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`sdk-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`sdk-fits.log`) |
+| archive | `unzip -l mekanism.hmod` | 397 entries, no `Cargo.lock` |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (397 entries, package matches the tree, 140 tests, clippy 0) |
+| launcher build | `launcher-game.sh build mekanism` (in a lease; **no** `native-*` tag carried this mod before it, checked twice) | `Compiling mekanism (1 of 1)`, `native-0a875da-2c6f9dbe7777` (`slice15-launcher-build.log`) |
+| in game | `launcher-game.sh run mekanism` | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 1,74,0 to say 'output empty 0/10000', got '… output mekanism:dirty_iron 1000/10000'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` (`slice15-log-gate.log`) |
+
+The in-game leg proves, per the parity rule: the **twenty** blocks and **forty-five** items are
+give-able and placeable, an unknown id is refused, the **seventeen** shaped recipes craft and the
+twenty blocks' loot tables drop the block, and every earlier sweep is unchanged (156 crushing,
+163 + 7 smelting, 136 enriching, 79 injecting, 15 purifying, 7 washing, 7 crystallizing, the five
+factories, save + relaunch). The new family: one iron ore → **1,000 units of `dirty_iron`** for
+**40,000 FE** with the neighbour tank falling **1,000 → 900** (the per-tick acid), the chamber
+keeping none; water in its own tank makes no progress and spends no FE; a dirt in the slot makes
+nothing and draws no acid; and the washer beside it takes one unit of that slurry through
+`mekanism:chemical` and finishes one `clean_iron` row. The **twelve** dissolution recipes are carried
+and pinned by the unit test; only the iron-ore row is swept in game — the brief limited this slice to
+one phase, and the remaining eleven rows are the recorded gap 1 in `notes.md`.
+
 ## 0.2.13 — the four metals' storage-block and nugget family, slice 14 (2026-11-23)
 
 Validated on Linux against the campaign pin **Horizon

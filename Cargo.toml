@@ -7,10 +7,10 @@
 #
 # Cargo's name and version are not the mod's identity: horizon-mod.toml is.
 name = "mekanism"
-version = "0.2.13"
+version = "0.2.14"
 edition = "2024"
 license = "MIT"
-description = "Mekanism for Horizon: the Energized Smelter, the Enrichment Chamber, the Crusher, the Basic Energy Cube, the Basic Universal Cable, the chemical capability (the Basic Chemical Tank and the Gauge Dropper), its consumers the Chemical Injection Chamber (raw ore into shards, and every crystal the crystallizer makes into its material's shard) and the Purification Chamber, the five basic factories, the Chemical Washer (a fluid input through horizon:fluids) the Chemical Crystallizer (a clean slurry into a crystal, for all seven slurries the washer makes), the four extra metals' ore chain (clump -> dirty dust -> dust -> ingot), the smelting sweep (every carried smelting row in a real smelter) with the four ingot -> dust crushing rows, and the storage-block and nugget family (four blocks, four nuggets and the jar's sixteen recipes between blocks, ingots and nuggets)"
+description = "Mekanism for Horizon: the Energized Smelter, the Enrichment Chamber, the Crusher, the Basic Energy Cube, the Basic Universal Cable, the chemical capability (the Basic Chemical Tank and the Gauge Dropper), its consumers the Chemical Injection Chamber (raw ore into shards, and every crystal the crystallizer makes into its material's shard) and the Purification Chamber, the five basic factories, the Chemical Washer (a fluid input through horizon:fluids) the Chemical Crystallizer (a clean slurry into a crystal, for all seven slurries the washer makes), the four extra metals' ore chain (clump -> dirty dust -> dust -> ingot), the smelting sweep (every carried smelting row in a real smelter) with the four ingot -> dust crushing rows, the storage-block and nugget family (four blocks, four nuggets and the jar's sixteen recipes between blocks, ingots and nuggets), and the Chemical Dissolution Chamber (an ore and sulfuric acid per tick into a dirty slurry: 400 FE/t, 100 ticks and 40,000 FE an operation, a 160,000 FE buffer and two 10,000-unit tanks)"
 publish = false
 
 [dependencies]

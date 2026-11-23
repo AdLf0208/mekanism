@@ -16,14 +16,16 @@ Two counterfactuals make it fail-capable:
 
 - `--control`: the same nine-ingot grid with **dirt** in the centre cell must
   leave the result empty (a table that crafts whatever it is handed fails here);
-- `SELFTEST`/`--selftest`: the nine-ingot row's result assertion is inverted, so
-  the run must fail with `FAIL: … crafted …` (the newest family's own check).
+- `--selftest`: the nine-ingot row's result assertion is inverted, so the run
+  must fail with `FAIL: … crafted …`. The e2e no longer passes this flag: since
+  slice 15 the selftest inverts phase V's dissolution assertion instead ("the
+  flip moves with the newest family"), and the flag is kept here so the row can
+  still be proven able to fail on its own.
 
     python3 tools/craft_family.py SOCK CTL ROWS_JSON X Y Z [--selftest]
     python3 tools/craft_family.py SOCK CTL ROWS_JSON X Y Z --control
 """
 import json
-import os
 import subprocess
 import sys
 
@@ -38,7 +40,7 @@ def main() -> int:
         raise SystemExit(__doc__)
     sock, ctl, rows_path, x, y, z = args[0], args[1], args[2], args[3], args[4], args[5]
     control = "--control" in args
-    selftest = "--selftest" in args or os.environ.get("SELFTEST") == "1"
+    selftest = "--selftest" in args
     rows = json.load(open(rows_path))
 
     def run(*command):

@@ -336,6 +336,28 @@ def main() -> int:
         "mekanism:chemical_crystallizer", 1, "minecraft:obsidian",
     )
 
+    # --- slice 15: the Chemical Dissolution Chamber -----------------------
+    # The jar's ITI/CXC/ITI around a steel casing, with the crystallizer's
+    # vanilla stand-ins for the tags this port does not register: refined
+    # obsidian -> obsidian, ultimate circuit -> redstone; the two chemical tanks
+    # are this port's own.
+    check(
+        "chemical dissolution chamber: 4 obsidian + 2 chemical tanks + 2 redstone + iron block",
+        [
+            ("minecraft:obsidian", 4),
+            ("mekanism:basic_chemical_tank", 2),
+            ("minecraft:redstone", 2),
+            ("minecraft:iron_block", 1),
+        ],
+        [
+            ("minecraft:obsidian", every(100, 102, 106, 108)),
+            ("mekanism:basic_chemical_tank", every(101, 107)),
+            ("minecraft:redstone", every(103, 105)),
+            ("minecraft:iron_block", every(104)),
+        ],
+        "mekanism:chemical_dissolution_chamber", 1, "minecraft:obsidian",
+    )
+
     # --- controls: a wrong ingredient leaves the result empty -------------
     empty_control(
         "smelter with a stick where the glass goes",
