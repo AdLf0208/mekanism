@@ -1,0 +1,11 @@
+{
+  "category": "misc",
+  "ingredients": [
+    "mekanism:block_tin"
+  ],
+  "result": {
+    "count": 9,
+    "id": "mekanism:ingot_tin"
+  },
+  "type": "minecraft:crafting_shapeless"
+}

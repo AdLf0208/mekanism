@@ -1,4 +1,4 @@
-# Mekanism for Horizon — slices 1–11
+# Mekanism for Horizon — slices 1–14
 
 One flat **SDK package** (`horizon-mod.toml`, `api = "0.2"`) for Mekanism
 10.7.19.85 (MIT), the exact ATM10 jar. The carried blocks, items, models,
@@ -14,7 +14,7 @@ here; the behaviour is `src/lib.rs` (one `impl mod_api::Hooks`) and
   `mekanism:enriching` recipes (raw ore 3 → 4, raw block 1 → 12), and
   `mekanism:dust_{iron,gold,copper}` for the smelter's dust → ingot recipes;
 - `mekanism:crusher` — 50 FE/t, 200 ticks per operation (10,000 FE), 20,000 FE
-  buffer and the same three-slot menu; the jar's 145 `mekanism:crushing` rows
+  buffer and the same three-slot menu; the jar's 156 `mekanism:crushing` rows
   this port can finish (cobblestone → gravel, gravel → sand, wool → string,
   ingots → dusts, the stone/deepslate/tuff/copper conversions and more);
 - `mekanism:chemical_injection_chamber` — 400 FE/t, 200 ticks per operation
@@ -43,6 +43,14 @@ here; the behaviour is `src/lib.rs` (one `impl mod_api::Hooks`) and
   — each running three processes of its recipe side by side over one buffer and,
   for the two gas factories, one shared tank (half the base machine's storage per
   process);
+- **the four metals' storage blocks and nuggets** — `mekanism:block_{lead,osmium,tin,uranium}`
+  (the jar's own art, upstream's hardness/resistance per metal — osmium 7.5/12,
+  the others 5/9 or 5/6 — self-drop loot, `mineable/pickaxe` and
+  `beacon_base_blocks`) and `mekanism:nugget_{lead,osmium,tin,uranium}`, with all
+  sixteen of the jar's recipes between them: a 3x3 block from nine ingots and a
+  3x3 ingot from nine nuggets over the `c:ingots`/`c:nuggets` tags the port
+  declares, plus the shapeless nine-ingots-from-a-block and
+  nine-nuggets-from-an-ingot rows;
 - `mekanism:basic_energy_cube` — 4,000,000 FE at 4,000 FE/t;
 - `mekanism:basic_universal_cable` — moves 8,000 FE/t between the block
   entities beside it, on its own tick;
@@ -73,9 +81,12 @@ The recipe tables are generated into `src/runtime.rs` by
 all seven have `--check`, and `--rows` feeds the in-game sweeps
 (`tools/crush_sweep.py`, `tools/inject_sweep.py`, `tools/gas_sweep.py`,
 `tools/wash_sweep.py`, `tools/crystal_sweep.py`) so the scenario and the table
-cannot drift apart. `tools/carry_crystallizer.py --check` and
-`tools/carry_shards.py --check` re-derive the crystallizer's and the seven
-shards' carried art from the jar.
+cannot drift apart. `tools/carry_crystallizer.py --check`,
+`tools/carry_shards.py --check`, `tools/carry_ore_chain.py --check` and
+`tools/carry_storage.py --check` re-derive the carried art from the jar — the
+last one also the storage-block and nugget family's models, blockstates,
+textures, `c:` tags and its sixteen recipes (translated to 26.3's ingredient
+dialect only), and `--rows` feeds `tools/craft_family.py`.
 
 ```sh
 # the pure rules and the glue's declarations, on the host target

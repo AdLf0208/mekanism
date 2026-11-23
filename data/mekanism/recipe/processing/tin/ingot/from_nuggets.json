@@ -1,0 +1,17 @@
+{
+  "category": "misc",
+  "key": {
+    "#": "#c:nuggets/tin",
+    "P": "mekanism:nugget_tin"
+  },
+  "pattern": [
+    "###",
+    "#P#",
+    "###"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:ingot_tin"
+  },
+  "type": "minecraft:crafting_shaped"
+}

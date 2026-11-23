@@ -1,0 +1,18 @@
+{
+  "pools": [
+    {
+      "condition": {
+        "type": "minecraft:survives_explosion"
+      },
+      "entries": [
+        {
+          "name": "mekanism:block_tin",
+          "type": "minecraft:item"
+        }
+      ],
+      "rolls": 1.0
+    }
+  ],
+  "random_sequence": "mekanism:blocks/block_tin",
+  "type": "minecraft:block"
+}

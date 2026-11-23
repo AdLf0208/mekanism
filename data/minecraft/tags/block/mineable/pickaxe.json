@@ -14,6 +14,10 @@
     "mekanism:basic_injecting_factory",
     "mekanism:basic_purifying_factory",
     "mekanism:chemical_washer",
-    "mekanism:chemical_crystallizer"
+    "mekanism:chemical_crystallizer",
+    "mekanism:block_lead",
+    "mekanism:block_osmium",
+    "mekanism:block_tin",
+    "mekanism:block_uranium"
   ]
 }

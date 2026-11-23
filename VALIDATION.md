@@ -1,5 +1,52 @@
 # Validation
 
+## 0.2.13 — the four metals' storage-block and nugget family, slice 14 (2026-11-23)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`); the package-building steps used `BUILD_LOCAL=1` (the `.hmod` must land
+here), while `test`, `clippy` and `fmt` forwarded to the second machine.
+
+This slice changes **no Rust**: it is the tier's content half (four plain blocks on
+`minecraft:iron_block`, four plain nuggets on `minecraft:gunpowder`, the jar's art, loot,
+`c:` tags and sixteen recipes). Its family test is the content check
+`tools/carry_storage.py --check`, red on the 0.2.12 tree and green after; the regression
+gate is the unchanged crate (131 tests, clippy, fmt).
+
+| Check | Command | Result |
+|---|---|---|
+| the family's data test, RED first | `carry_storage.py --check` on the 0.2.12 tree | **52 file(s) the jar carries are not in the package**, exit 1 (`slice14-content-red.log`) |
+| the family's data test | `carry_storage.py --check` | `52 carried files match the jar`, exit 0 (`slice14-content-green.log`) |
+| tests | `cargo test --offline` (forwarded) | **131 passed**, 0 failed (`slice14-test.log`, `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (forwarded) | exit 0, 0 warnings (`slice14-clippy.log`, `sdk-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`, forwarded) | clean (`slice14-fmt.log`, `sdk-fmt.log`) |
+| recipe tables | the seven `gen_*.py --check` (`gen_smelting` with `--resources`) + the four `carry_*.py --check` | 163 / 136 / 156 / 79 / 15 / 7 / 7 rows; 52 + 18 + 14 + 50 carried files match the jar (`slice14-recipe-tables.log`) |
+| recipe types | `python3 ports/tools/check-recipe-types.py mekanism` | `mekanism: ok`, exit 0 (`slice14-recipe-types.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **241,323 B**, `cmp` identical, sha256 `4b5163cd96a7dcc53602f4de1ead2240e99534cd8fa182b37dd10317e2b77382` (`slice14-build.log`, `slice14-build-second.log`, `slice14-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.13 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **387 entries** (`slice14-check.log`, `sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`slice14-fits.log`, `sdk-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`slice14-fits-other.log`) |
+| archive | `unzip -l mekanism.hmod` | 387 entries, no `Cargo.lock` (`slice14-entries.txt`, `sdk-entries.txt`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (387 entries, no packed `Cargo.lock`, package matches the tree, 131 tests) (`slice14-verify-package.log`) |
+| launcher build | `launcher-game.sh build mekanism` (in a lease; **no** `native-*` tag carried this mod before it, checked twice) | `Compiling mekanism (1 of 1)`, `native-0a875da-2e8eeedf8c96` (`slice14-launcher-build.log`) |
+| in game | `launcher-game.sh run mekanism` | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: selftest: expected no result for block_lead from 9 ingot_lead, got mekanism:block_lead x1` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` (`slice14-log-gate.log`) |
+
+The in-game leg proves, per the parity rule: the **nineteen** blocks and **forty-four** items are
+give-able and placeable, an unknown id is refused, the sixteen carried shaped recipes craft, the
+nineteen blocks' loot tables drop the block, every carried crushing (**156**), smelting (**163 vanilla
++ the jar's 7**), enriching (136), injecting (79), purifying (15), washing (7) and crystallizing (7)
+recipe runs, and the new family end to end: all **sixteen** storage-block and nugget recipes craft
+(`craft PASS: all 16 …`, quoted in `notes.md`), eight ingots and a dirt in the same 3x3 make nothing,
+and the placed `mekanism:block_lead` breaks into exactly one of itself. The game log holds **0**
+`invalid ingredient` lines, so the tag-keyed 3x3 cells resolved.
+
 ## 0.2.12 — the smelting sweep and the four ingot → dust rows, slice 13 (2026-11-23)
 
 Validated on Linux against the campaign pin **Horizon

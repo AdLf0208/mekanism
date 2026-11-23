@@ -1,0 +1,17 @@
+{
+  "category": "misc",
+  "key": {
+    "#": "#c:nuggets/osmium",
+    "P": "mekanism:nugget_osmium"
+  },
+  "pattern": [
+    "###",
+    "#P#",
+    "###"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:ingot_osmium"
+  },
+  "type": "minecraft:crafting_shaped"
+}

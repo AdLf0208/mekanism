@@ -1,4 +1,4 @@
-# Mekanism → Horizon, slices 1–13 (the ore-processing machines, the cable, the chemical chain, the factories, the washer, the crystallizer, the crystal → shard leg, the four extra metals' ore chain and the smelting sweep)
+# Mekanism → Horizon, slices 1–14 (the ore-processing machines, the cable, the chemical chain, the factories, the washer, the crystallizer, the crystal → shard leg, the four extra metals' ore chain, the smelting sweep and their storage-block and nugget family)
 
 > **0.2.0 (2026-11-18): migrated to the flat SDK package** (`api = "0.2"`, one
 > `impl mod_api::Hooks`, `src/runtime.rs` byte-identical, content at the package
@@ -40,8 +40,9 @@ are below, and **slice 10** the four crystals that complete the crystallizer's s
 chamber's shards, **slice 12** the rest of the ore chain for the four metals those crystals are
 made of (clump → dirty dust → dust → ingot), with the port's first **enriching sweep** proving all
 136 enriching rows in a real machine, and **slice 13** the smelting sweep (all 163 vanilla rows and
-the jar's seven dust → ingot rows) plus the jar's four ingot → dust crushing rows. Everything else in
-Mekanism is a planned gap (below).
+the jar's seven dust → ingot rows) plus the jar's four ingot → dust crushing rows, and **slice 14** the
+four metals' storage-block and nugget family (four blocks, four nuggets and all sixteen of the jar's
+recipes between them, each crafted in game). Everything else in Mekanism is a planned gap (below).
 
 ## Class + tier, approach, licence
 
@@ -3679,3 +3680,285 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > `0b20e8dbdfd9f5c82bd721305b8b883664b12a35864c1fbcc5588d7d18bfdb71`; `check` exit 0; `fits` `made
 > for` at the pin and `fits` at `0b14f8a`; 131 tests, clippy `-D warnings` clean; in game `PASS` +
 > `EXIT:0`, control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` + `EXIT:0`, log gate 6/6.
+
+## Slice 14 — the four metals' storage-block and nugget family (0.2.13, 2026-11-23)
+
+### The scope authority, quoted
+
+The gap line is this port's own, "Gaps after slice 13" item 1, and it is also `FINDINGS.md`'s
+next-slice item 1 — the previous slice's own `## Next slice`:
+
+> 1. **The four ingots still have no block, nugget or crafting recipes** (`ingot/from_block`,
+>    `from_nuggets`, the nine-ingot block family) and the jar's `c:storage_blocks/<m>` art is not
+>    carried: blocks are block-entity-free content and the natural next slice, with their loot tables
+>    and the `dust/from_block`/`ingot/from_block` rows.
+
+> 1. … Next: **the storage-block and nugget family for the four metals**
+>    (`processing/<m>/storage_blocks/from_ingots.json`, `nugget/from_ingot.json`,
+>    `ingot/from_block.json`, `ingot/from_nuggets.json` in the jar, plus the `c:storage_blocks/<m>` art)
+>    — block-entity-free content with loot tables and shaped/shapeless recipes.
+
+**Chosen: that family, and nothing else.** It is the whole of gap 1 that is implementable at this pin:
+four storage blocks, four nuggets, their art, their loot, their vanilla tag memberships and every
+crafting recipe the jar declares between blocks, ingots and nuggets. It fits the ledger's **`deep`**
+row as the tier's **content half** — plain blocks and items on vanilla templates, no block entity, no
+tick, no capability, no menu, no renderer — which is exactly the shape `horizon/docs/modpacks.md` asks
+a `data`-shaped feature to take, and the shape the gap line named.
+
+### What the jar's recipe set actually is (read, not assumed)
+
+`data/mekanism/recipe/processing/<material>/…` in `Mekanism-1.21.1-10.7.19.85.jar`, all four metals
+(lead, osmium, tin, uranium — the identical set modulo the material):
+
+| file | type | shape | result |
+|---|---|---|---|
+| `storage_blocks/from_ingots.json` | `minecraft:crafting_shaped` | `###` / `#P#` / `###`, `#` = tag `c:ingots/<m>`, `P` = `mekanism:ingot_<m>` | `mekanism:block_<m>` ×1 |
+| `ingot/from_block.json` | `minecraft:crafting_shapeless` | one `mekanism:block_<m>` | `mekanism:ingot_<m>` ×9 |
+| `ingot/from_nuggets.json` | `minecraft:crafting_shaped` | `###` / `#P#` / `###`, `#` = tag `c:nuggets/<m>`, `P` = `mekanism:nugget_<m>` | `mekanism:ingot_<m>` ×1 |
+| `nugget/from_ingot.json` | `minecraft:crafting_shapeless` | one `mekanism:ingot_<m>` | `mekanism:nugget_<m>` ×9 |
+
+Lead, verbatim (the other three differ only in the material):
+
+```json
+{"type":"minecraft:crafting_shaped","category":"misc","key":{"#":{"tag":"c:ingots/lead"},"P":{"item":"mekanism:ingot_lead"}},"pattern":["###","#P#","###"],"result":{"count":1,"id":"mekanism:block_lead"}}
+{"type":"minecraft:crafting_shapeless","category":"misc","ingredients":[{"item":"mekanism:block_lead"}],"result":{"count":9,"id":"mekanism:ingot_lead"}}
+{"type":"minecraft:crafting_shaped","category":"misc","key":{"#":{"tag":"c:nuggets/lead"},"P":{"item":"mekanism:nugget_lead"}},"pattern":["###","#P#","###"],"result":{"count":1,"id":"mekanism:ingot_lead"}}
+{"type":"minecraft:crafting_shapeless","category":"misc","ingredients":[{"item":"mekanism:ingot_lead"}],"result":{"count":9,"id":"mekanism:nugget_lead"}}
+```
+
+**Two rows that do not exist, and are therefore not carried** (the brief's "carry what exists"):
+
+- **no `nugget/from_block`** — `grep -rl 'nugget_<m>' data/mekanism/recipe` finds only
+  `nugget/from_ingot.json` and `ingot/from_nuggets.json` for each metal, so nine nuggets never come
+  from a block;
+- **no `dust/from_block`** — `find data -name 'from_block*'` has no dust row, and the only two
+  recipes in the whole jar that name `mekanism:block_<m>` are the two above. The jar's `dust/from_ingot`
+  row (one ingot → one dust, `mekanism:crushing`) is already in the Crusher's table since slice 13.
+
+The jar's own item tags are shipped beside them and are what the recipes name:
+`data/c/tags/item/{ingots,nuggets,storage_blocks}/<m>.json`, each `{"values":["mekanism:<kind>_<m>"]}` —
+exact to carry, because this port registers the only member.
+
+### What the jar says about the block and the nugget (upstream truth)
+
+| value | source | port |
+|---|---|---|
+| osmium 7.5 hardness / 12 resistance | `BlockResourceInfo.java:10` (`OSMIUM("osmium", 7.5F, 12, …)`) | `data/mekanism/horizon/block/block_osmium.json` |
+| tin 5 / 6 | `BlockResourceInfo.java:12` | `block_tin.json` |
+| lead 5 / 9, uranium 5 / 9 | `BlockResourceInfo.java:14,16` | `block_lead.json`, `block_uranium.json` |
+| `requiresCorrectToolForDrops()` and **no** `sound(...)` (so vanilla's default `STONE`) | `BlockResource.java:18` + `BlockResourceInfo.modifyProperties` | `"requires_tool": true`, `"sounds": "minecraft:stone"` |
+| the block art | `assets/mekanism/models/block/storage/<m>.json` (`cube_all` over `mekanism:block/block_<m>`), `blockstates/block_<m>.json`, `models/item/block_<m>.json` | carried byte for byte |
+| the nugget is a plain `Item` with the jar's own texture/model and "‹Metal› Nugget" | `assets/mekanism/models/item/nugget_<m>.json`, `lang/en_us.json` | item on `minecraft:gunpowder`, the jar's art and lang |
+| `mineable/pickaxe`, `needs_stone_tool`, `beacon_base_blocks` list all four | `data/minecraft/tags/block/*.json` in the jar | `mineable/pickaxe` and `beacon_base_blocks` carried; `needs_stone_tool` **not** (the pin implements no tool-tier tag: `grep needs_stone_tool crates/**` is empty), recorded as a gap |
+
+### The slice in the port's layers
+
+- **`tools/carry_storage.py`** (new) derives 52 files from the jar and has `--check`: the 24 art
+  files (models, blockstates, textures), the 12 `c:` tag files, and the **16 recipes translated to
+  26.3's ingredient dialect and nothing else** — `{"item": x}`/`{"tag": x}` become a bare id and
+  `#x` (slice 3's defect, which made every 1.21.1-shaped recipe unloadable). `--rows` reads the
+  **committed** recipe and tag files and emits the grid each one declares for the in-game check.
+- **Content** (authored): four `data/mekanism/horizon/block/block_<m>.json` declarations on
+  `minecraft:iron_block` with the upstream numbers above, four `horizon/item/nugget_<m>.json` on
+  `minecraft:gunpowder`, four `loot_table/blocks/block_<m>.json` (26.3's self-drop shape), eight lang
+  keys, eight creative-tab entries, and the four blocks added to `mineable/pickaxe` plus the new
+  `beacon_base_blocks` file.
+- **`src/`** — **unchanged.** Nothing in this family is behaviour: the blocks are plain blocks, the
+  nuggets plain items, and crafting is the engine's. The port's own gap line said it first ("blocks
+  are block-entity-free content").
+- **`tools/craft_family.py`** (new) crafts every row of `--rows` in a real table, asserting the
+  result's id and count, that the stack reaches the inventory, that the grid emptied and that a
+  counted ingredient is gone; `--control` runs the nine-ingot grid with dirt in the centre cell;
+  `--selftest` inverts the nine-ingot row's assertion. The read of the grid goes through a guard that
+  first proves the reply is the **crafting table's** menu (slot 200), because `ctl screen` otherwise
+  answers the player's inventory menu and a "null result" there would be vacuous.
+
+### Red → green
+
+**The family's test is `tools/carry_storage.py --check`** (this slice changes no Rust, so there is no
+cargo-level red to quote; AGENTS.md's "a job that touches no Rust" case). On the 0.2.12 tree
+(`../_shared/evidence/mekanism/slice14-content-red.log`):
+
+```
+52 file(s) the jar carries are not in the package:
+  missing assets/mekanism/blockstates/block_lead.json
+  …
+  missing data/mekanism/recipe/processing/uranium/storage_blocks/from_ingots.json
+```
+
+Then the files exist and it is green: `52 carried files match the jar` (`slice14-content-green.log`).
+
+**The in-game red** is the flip of the newest family's own assertion: `SELFTEST=1` on the delivered
+package (`../_shared/evidence/mekanism-e2e/e2e-selftest.log`):
+
+```
+FAIL: selftest: expected no result for block_lead from 9 ingot_lead, got mekanism:block_lead x1
+FAIL: the storage-block and nugget recipe check failed
+EXIT:1
+```
+
+An earlier selftest run failed on a later row instead (`nugget_uranium … got None`) because the flip
+left its grid occupied and polluted the following crafts; the flip now closes its table and stops the
+run, so the log names the flip's own row. That red is kept in the transcript above, not hidden.
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the four storage blocks give, place and read back; an unknown id is refused | **tested** | A1: 19 blocks + 44 items give-able; A2: `19 blocks place and read back; an unknown id is refused` (probe at 15,64,26) |
+| the four nuggets give and read back | **tested** | A1 (44 items) |
+| the four blocks' loot tables drop the block | **tested** | B2: `19 blocks each dropped their own item`; U: `mekanism:block_lead broke into 1 of itself` (`ctl break` reply `.drops`) |
+| **all 16 carried recipes** (block from 9 ingots, 9 ingots from a block, ingot from 9 nuggets, 9 nuggets from an ingot, ×4 metals), each crafted the way it declares | **tested** | U: `rows from the jar's storage-block and nugget recipes: 16`, then `craft PASS: all 16 carried storage-block and nugget recipes craft with their declared id and count, their grid empties and their ingredients are consumed` |
+| the 3x3 recipes' tag-keyed cells actually resolve | **tested** | the four `block_<m> from 9 ingot_<m>` and four `ingot_<m> from 9 nugget_<m>` rows craft — with an unresolved tag the shaped recipe is rejected at load and the result slot stays empty; the game log holds **0** `invalid ingredient` lines on both the probe and the delivered leg |
+| a wrong ingredient in the same grid makes nothing | **tested** | U control: `block_lead from 9 ingot_lead with dirt in the centre -> null`, `control PASS: eight ingots and a dirt make nothing` |
+| the newest family's assertion can fail | **tested** | `SELFTEST=1` → the flip above, `EXIT:1` |
+| `c:storage_blocks/<m>` and the `c:ingots`/`c:nuggets` tags for iron, gold and copper | **not ported** | only the four metals' three tag families are declared (the ones this family's recipes name); slice 11's gap 3 stands for the other materials |
+| `needs_stone_tool` (a wooden pickaxe must not drop these blocks) | **blocked(pin implements no tool-tier tag)** | `grep -rn needs_stone_tool crates/` is empty at the pin, so the tag would be inert data; any pickaxe drops the block, recorded as a deviation |
+| `dust/from_block`, `nugget/from_block` | **not ported — the jar has no such row** | see "What the jar's recipe set actually is"; inventing them would be a new shape |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command (through the slot runner) | Result |
+|---|---|---|
+| the family's data test, RED first | `carry_storage.py --check` on the 0.2.12 tree | **52 missing files**, exit 1 (`slice14-content-red.log`) |
+| the family's data test | `carry_storage.py --check` | `52 carried files match the jar`, exit 0 |
+| tests | `cargo test --offline` (forwarded to the remote runner) | **131 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (forwarded) | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (forwarded) | clean (`sdk-fmt.log`) |
+| recipe tables | `gen_{smelting,enriching,crushing,injecting,purifying,washing,crystallizing}.py --check` | 163 / 136 / 156 / 79 / 15 / 7 / 7 rows (`sdk-recipe-tables.log`) |
+| carried art | `carry_{crystallizer,shards,ore_chain,storage}.py --check` | 52 files for this family, all the earlier ones green |
+| recipe types | `python3 ports/tools/check-recipe-types.py mekanism` | `mekanism: ok` (`slice14-recipe-types.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` | `Built ./target/horizon-mod/mekanism.hmod` (`sdk-build.log`) |
+| same package twice | the same again | **`cmp` identical** (`sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | `mekanism 0.2.13 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **241,323 B, SHA-256 `4b5163cd…b77382`**, exit 0 (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`sdk-fits.log`) |
+| fits, **a different build** | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 (`sdk-fits.log`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (`387 entries`, no packed `Cargo.lock`) |
+| archive shape | `unzip -l mekanism.hmod` | 387 files, no `Cargo.lock` (`sdk-entries.txt`) |
+| launcher build | `ports/tools/launcher-game.sh build mekanism` | **`Compiling mekanism (1 of 1)`**, `native-0a875da-2e8eeedf8c96` (`slice14-launcher-build.log`) |
+
+**No `native-*` tag carried this mod before the build**, checked twice
+(`for d in …/versions/native-*; do [ -d "$d/horizon-native-mods/mekanism" ] && echo CARRIES; done` →
+no output both times), so `Compiling mekanism (1 of 1)` and the new tag cannot be a reused binary.
+(The launcher prunes native builds after an export, so `native-0a875da-2e8eeedf8c96` is no longer in
+`…/versions/`; the exported game under `~/.cache/horizon-e2e/0a875da/mekanism/` is what the four legs
+ran, and its ctl reports the same pin.)
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`ports/tools/launcher-game.sh run mekanism` → `PASS` + `EXIT:0`
+(`../_shared/evidence/mekanism-e2e/e2e-package.log`), the new phase verbatim:
+
+```
+== U: slice 14's storage-block and nugget family in a real crafting table ==
+  rows from the jar's storage-block and nugget recipes: 16
+  block_lead from 9 ingot_lead -> {"count": 1, "item": "mekanism:block_lead", "slot": 200}
+  ingot_lead x9 from block_lead -> {"count": 9, "item": "mekanism:ingot_lead", "slot": 200}
+  ingot_lead from 9 nugget_lead -> {"count": 1, "item": "mekanism:ingot_lead", "slot": 200}
+  nugget_lead x9 from ingot_lead -> {"count": 9, "item": "mekanism:nugget_lead", "slot": 200}
+  … the same four rows for osmium, tin and uranium …
+craft PASS: all 16 carried storage-block and nugget recipes craft with their declared id and count,
+their grid empties and their ingredients are consumed
+== control: dirt in the block_lead from 9 ingot_lead grid ==
+  block_lead from 9 ingot_lead with dirt in the centre -> null
+  control PASS: eight ingots and a dirt make nothing
+== U: the placed block drops exactly one of itself ==
+  mekanism:block_lead broke into 1 of itself
+```
+
+(One line per recipe is quoted from the log; the full sixteen are in it, and its `A2` line reads
+`19 blocks place and read back; an unknown id is refused` while `B2` reads `19 blocks each dropped
+their own item`.)
+
+What the numbers prove: each recipe produced **exactly the declared id and count** (×1 for the two
+3x3 rows, ×9 for the two shapeless ones), the grid emptied and the counted ingredient was gone, so
+the ingredients really were consumed; the tag-keyed 3x3 rows only craft if `c:ingots/<m>` and
+`c:nuggets/<m>` resolved; the same grid with **dirt** in the centre makes nothing, so the check
+cannot pass on a table that crafts whatever it is handed; and the placed block broke into exactly one
+of itself, i.e. its loot table dropped it in survival.
+
+| leg | result | evidence |
+|---|---|---|
+| package (default) | **`PASS` + `EXIT:0`** | `e2e-package.log` |
+| unmodded game (`GAME=$CONTROL_GAME CONTROL=0`) | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** | `e2e-control.log` |
+| fail-capable (`SELFTEST=1`) | **`FAIL: selftest: expected no result for block_lead from 9 ingot_lead, got mekanism:block_lead x1` + `EXIT:1`** | `e2e-selftest.log` |
+| differential (`NOCABLE=1`) | **`PASS` + `EXIT:0`** (no energy reaches the smelter or chamber; phase U still crafts 16/16) | `e2e-nocable.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` (`slice14-log-gate.log`) |
+
+Slices 1–13 are unchanged and still green in the same package leg: 156/156 crushing, 163/163 + 7/7
+smelting, 136/136 enriching, 79/79 injecting, 15/15 purifying, 7/7 washing, 7/7 crystallizing, the
+five factories, the menus, the save + relaunch.
+
+### Harness facts this slice added
+
+- **`ctl screen` answers the player's inventory menu when no screen is open.** A "the result slot is
+  empty" assertion read from that reply is **vacuous** — it cost the first dirt control its meaning
+  (the result slot 200 does not exist in the inventory menu, so it is always empty). Every read of the
+  grid now goes through a guard that first proves the reply carries **slot 200**, the crafting table's
+  result; if it does not, the run exits with `the crafting table is not open` instead of passing.
+- **A phase that needs consumption or drops must set `gamemode survival` itself.** B1 ends in
+  creative (a creative table returns the grid and a creative break drops nothing: the first run broke
+  `block_lead` in **2 ticks** with `drops: {}`), so phase U sets survival at its start; the survival
+  probe then dropped `{"mekanism:block_lead": 1}` from the same block with the same pickaxe — the
+  differential that named the cause.
+- **An early return in a sweep leaves its container state behind.** The first `SELFTEST=1` run's flip
+  returned with nine ingots still in the grid, so a *later* row failed (`nugget_uranium … got None`)
+  and the log did not name the flip. The flip now closes its table and stops the run, so the only
+  `FAIL:` line is its own.
+
+### Gaps after slice 14
+
+1. **`needs_stone_tool`** (and every other `needs_*_tool` tag) is inert at this pin: no engine code
+   reads it, so the four blocks drop to any pickaxe. Upstream gates them behind a stone pickaxe.
+   Re-check when the engine implements tool tiers.
+2. **The `c:` tags for the other materials are still undeclared** (slice 11's gap 3): the four metals'
+   `c:ingots`, `c:nuggets` and `c:storage_blocks` now exist and are proven by the recipes; iron, gold
+   and copper's own tags, and `c:clumps`/`c:dirty_dusts`/`c:dusts`, are not.
+3. The raw storage blocks (`mekanism:block_raw_<m>`), the ores and the raw items remain unported —
+   out of this family's scope; the jar's art for them is in the same `models/block/storage/` folder.
+4. Everything else in *Gaps / deviations* and the earlier slices' gap lists still stands (the rest of
+   Mekanism, the 129-of-322 enriching table, no pipes, the vanilla furnace GUI, the plain cube/cable
+   models, the 4,000 FE cable call, no energy item, no `active` state, no config).
+
+### `## Upstream defects fixed`
+
+None found in this slice: the jar's four recipe shapes, the four `c:` tag files, the block
+declarations' numbers and the loot tables are consistent with each other, and the one thing that
+looked like a defect — the 3x3 rows putting the mod's own item in the centre beside a tag that holds
+only that item — is deliberate upstream redundancy (it prefers the mod's ingot when another mod's
+lead is also in the pack), so it is carried as written.
+
+### Deviations this slice records
+
+- **The recipes are the jar's, in 26.3's dialect.** `{"item": …}`/`{"tag": …}` are written as a bare
+  id and `#tag`; nothing about the pattern, the key, the result or the count changed. This is the same
+  translation slice 3 introduced for the five block recipes, and the game log shows 0
+  `invalid ingredient` lines.
+- **`c:ingots/<m>` and `c:nuggets/<m>` are declared for the four metals only**, because they are the
+  tags the family's recipes name; the port's own items are their only members, which is exactly what
+  the jar's files say.
+- **The nuggets are plain items** on `minecraft:gunpowder` (stack 64) with the jar's art — no tool,
+  armour or other behaviour, as the four metals' dusts and ingots before them.
+- **`needs_stone_tool` is not carried** (see the coverage row): carrying a tag the engine ignores would
+  claim a behaviour the port does not have.
+
+Skills: superpowers/using-superpowers,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices (loaded for the slice; it changed no code because the slice adds none — it is the tier's content half, and the skill's `cargo fmt`/`clippy -D warnings`/`cargo test` hand-back checks ran as the unchanged regression gate)
+
+### Changelog (0.2.13) — supersedes 0.2.12
+
+> **0.2.13 — the four metals' storage blocks and nuggets.** `mekanism:block_{lead,osmium,tin,uranium}`
+> and `mekanism:nugget_{lead,osmium,tin,uranium}` exist, with the jar's own models, blockstates,
+> textures, names and tab entries and the upstream hardness/resistance per metal (osmium 7.5/12, lead
+> and uranium 5/9, tin 5/6), self-drop loot and `mineable/pickaxe` + `beacon_base_blocks` membership.
+> All **sixteen** of the jar's recipes between blocks, ingots and nuggets are carried — a 3x3 block
+> from nine ingots and a 3x3 ingot from nine nuggets over the `c:ingots`/`c:nuggets` tags the port now
+> declares, plus the shapeless nine-ingots-from-a-block and nine-nuggets-from-an-ingot rows — and every
+> one of them is crafted in a real table in game: `craft PASS: all 16 carried storage-block and nugget
+> recipes craft with their declared id and count, their grid empties and their ingredients are
+> consumed`, while eight ingots and a dirt in the same grid make nothing, and the placed block breaks
+> into exactly one of itself. The jar has no nugget-from-block and no dust-from-block row, so neither is
+> invented. No Rust changed: this is the tier's content half — plain blocks, plain items and the engine's
+> crafting. Package: **387 entries, 241,323 B**, sha256
+> `4b5163cd96a7dcc53602f4de1ead2240e99534cd8fa182b37dd10317e2b77382`; `check` exit 0; `fits` `made for`
+> at the pin and `fits` at `0b14f8a`; 131 tests, clippy `-D warnings` clean; in game `PASS` + `EXIT:0`,
+> control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` + `EXIT:0`, log gate 6/6.

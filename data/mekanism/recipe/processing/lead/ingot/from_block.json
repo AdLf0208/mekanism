@@ -1,0 +1,11 @@
+{
+  "category": "misc",
+  "ingredients": [
+    "mekanism:block_lead"
+  ],
+  "result": {
+    "count": 9,
+    "id": "mekanism:ingot_lead"
+  },
+  "type": "minecraft:crafting_shapeless"
+}

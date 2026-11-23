@@ -13,7 +13,7 @@
 # Local-only until the maintainer approves publishing (ARCHITECTURE.md §8).
 id = "mekanism"
 name = "Mekanism"
-version = "0.2.12"
+version = "0.2.13"
 description = """A port of Mekanism for Horizon, slices 1-11. The ore-processing machines: the
 Energized Smelter, the Enrichment Chamber and the Crusher (50 FE/t, 200 ticks and 10,000 FE per
 operation, a 20,000 FE buffer, three slots and the vanilla furnace menu, the jar's smelting,
@@ -66,7 +66,13 @@ machine. Slice 13 sweeps the smelting table the Energized Smelter has carried si
 carried `minecraft:smelting` row — the 163 the 26.3 data expands to and the jar's own seven dust ->
 ingot rows — runs in a real smelter with its input consumed and its declared output stack, and the
 crusher gains the jar's four `c:ingots/<m>` -> dust rows for lead, osmium, tin and uranium (156
-crushing rows). Not ported: the rest of Mekanism — the advanced,
+crushing rows). Slice 14 is the storage-block and nugget family the four metals were missing:
+`mekanism:block_{lead,osmium,tin,uranium}` (the jar's own art, the upstream hardness/resistance per
+metal, self-drop loot, `mineable/pickaxe` and `beacon_base_blocks`) and `mekanism:nugget_*` join the
+package with all sixteen of the jar's recipes between blocks, ingots and nuggets — a 3x3 block from
+nine ingots and a 3x3 ingot from nine nuggets over the `c:ingots`/`c:nuggets` tags the port now
+declares, plus the shapeless nine-ingots-from-a-block and nine-nuggets-from-an-ingot rows — every one
+crafted in game. Not ported: the rest of Mekanism — the advanced,
 elite and ultimate factory tiers, the dissolution chamber, the pigments,
 upgrades, side configuration, the Configurator, the Digital Miner, the Teleporter, jetpacks, the
 multiblocks and the mod's own GUIs."""

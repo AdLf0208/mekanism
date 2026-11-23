@@ -1,0 +1,17 @@
+{
+  "category": "misc",
+  "key": {
+    "#": "#c:ingots/lead",
+    "P": "mekanism:ingot_lead"
+  },
+  "pattern": [
+    "###",
+    "#P#",
+    "###"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:block_lead"
+  },
+  "type": "minecraft:crafting_shaped"
+}

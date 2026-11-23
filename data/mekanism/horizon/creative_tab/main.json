@@ -56,6 +56,14 @@
     "mekanism:crystal_lead",
     "mekanism:crystal_osmium",
     "mekanism:crystal_tin",
-    "mekanism:crystal_uranium"
+    "mekanism:crystal_uranium",
+    "mekanism:block_lead",
+    "mekanism:nugget_lead",
+    "mekanism:block_osmium",
+    "mekanism:nugget_osmium",
+    "mekanism:block_tin",
+    "mekanism:nugget_tin",
+    "mekanism:block_uranium",
+    "mekanism:nugget_uranium"
   ]
 }
