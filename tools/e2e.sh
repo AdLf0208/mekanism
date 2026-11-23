@@ -104,8 +104,12 @@
 #     FE and 200 units; N3 proves a dirty slurry beside it makes no progress,
 #     spends no FE, and is refused by the machine's own tank by name; N4 pulls
 #     the crystals out through a hopper;
-#  O  the crystallizing sweep: every carried crystallizing row (3) runs in a real
-#     crystallizer with its clean slurry consumed and its crystal made.
+#  O  the crystallizing sweep: every carried crystallizing row (7 — the seven
+#     slurries the washer makes) runs in a real crystallizer with its clean
+#     slurry consumed and its crystal made.
+# N0  the four crystals slice 10 adds (lead, osmium, tin, uranium): 1,000 units
+#     of clean_lead beside a charged crystallizer make exactly two crystal_lead
+#     and leave the neighbour at 600; this is the assertion SELFTEST=1 flips.
 #  K  the five basic factories (slice 7): three processes of the same operation
 #     side by side — three ore in a basic purifying factory become nine clumps
 #     for 3 x 40,000 FE and 3 x 200 oxygen, one ore costs one operation (40,000
@@ -116,8 +120,8 @@
 #
 # NOCABLE=1 runs the cable scenario without the cable and asserts that the
 # smelter and the chamber stay empty (the differential control passing).
-# SELFTEST=1 flips the crystallizer's output assertion of phase N1 (it must FAIL):
-# the newest family's own check is the one proven able to fail.
+# SELFTEST=1 flips the lead crystallizer's output assertion of phase N0 (it must
+# FAIL): the newest family's own check is the one proven able to fail.
 #
 # CONTROL=1 (needs CONTROL_GAME=<an unmodded horizon-client>) first launches
 # that game in its own scratch home and world and shows that the block ids are
@@ -489,6 +493,8 @@ ITEMS=("mekanism:dust_iron" "mekanism:dust_gold" "mekanism:dust_copper" \
     "mekanism:clump_iron" "mekanism:clump_gold" "mekanism:clump_copper" \
     "mekanism:dirty_dust_iron" "mekanism:dirty_dust_gold" "mekanism:dirty_dust_copper" \
     "mekanism:crystal_iron" "mekanism:crystal_gold" "mekanism:crystal_copper" \
+    "mekanism:crystal_lead" "mekanism:crystal_osmium" "mekanism:crystal_tin" \
+    "mekanism:crystal_uranium" \
     "$DROPPER")
 for id in "${BLOCKS[@]}" "${ITEMS[@]}"; do
     ctl command "clear @s" >/dev/null
@@ -1332,7 +1338,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# N. The Chemical Crystallizer: a clean slurry into a crystal (slice 9)
+# N. The Chemical Crystallizer: a clean slurry into a crystal (slices 9-10)
 # ---------------------------------------------------------------------------
 # The jar's numbers: 400 FE/t x 200 ticks = 80,000 FE an operation, a 160,000 FE
 # insert-only buffer (exactly two operations), one 10,000-unit tank that takes a
@@ -1340,6 +1346,27 @@ fi
 # 200 units of a clean slurry make one crystal, and the slurry is spent when the
 # operation finishes. The tank beside the machine is the chemical side; the
 # crystal leaves through the container's own slot.
+echo "== N0: slice 10's four crystals — 1,000 units of clean_lead, one charge, two crystal_lead =="
+place 0 72 14 "$TANK"
+expect_chem "inserted 1000 mekanism:clean_lead into mekanism:basic_chemical_tank (1000/64000)" \
+    -- insert 1000 mekanism:clean_lead 0 72 14
+place 1 72 14 "$CRYSTALLIZER"
+# The same arithmetic as N1, on a row this port did not have at 0.2.8: one
+# 160,000 FE charge is exactly two operations, so two crystals from 400 of the
+# 1,000 units beside it and 600 left. This is the assertion SELFTEST=1 flips.
+say "mekanism energy 160000 1 72 14"
+ctl wait 6
+ctl wait 430
+if [ "$SELFTEST" = 1 ]; then
+    echo "(selftest: asserting the lead crystallizer's output slot is still empty)"
+    expect_contains 1 72 14 "$CRYSTALLIZER" "output empty x0"
+else
+    expect_contains 1 72 14 "$CRYSTALLIZER" "0/160000 FE, progress 0/200, input empty x0, output mekanism:crystal_lead x2"
+    expect_energy 1 72 14 "$CRYSTALLIZER" eq 0
+    expect_chem "holds mekanism:clean_lead 600/64000 (answered by mekanism)" -- read 0 72 14
+    expect_chem "holds nothing 0/10000 (answered by mekanism)" -- read 1 72 14
+fi
+
 echo "== N1: two operations, the buffer's whole 160,000 FE, from 1,000 units =="
 place 0 72 10 "$TANK"
 expect_chem "inserted 1000 mekanism:clean_iron into mekanism:basic_chemical_tank (1000/64000)" \
@@ -1347,44 +1374,39 @@ expect_chem "inserted 1000 mekanism:clean_iron into mekanism:basic_chemical_tank
 place 1 72 10 "$CRYSTALLIZER"
 # 400 FE/t x 200 ticks = 80,000 FE per operation, and the 160,000 buffer holds
 # exactly two of them: one charge spends it all on two crystals and 400 units of
-# the neighbour's slurry. (The brief's headline asked for five crystals 230 ticks
-# after one charge; that is one operation, not five — five operations are 1,000
-# ticks and 400,000 FE, which is what N1b charges.)
+# the neighbour's slurry. (The slice-9 brief's headline asked for five crystals
+# 230 ticks after one charge; that is one operation, not five — five operations
+# are 1,000 ticks and 400,000 FE, which is what N1b charges.)
 say "mekanism energy 160000 1 72 10"
 ctl wait 6
 ctl wait 430
-if [ "$SELFTEST" = 1 ]; then
-    echo "(selftest: asserting the crystallizer's output slot is still empty)"
-    expect_contains 1 72 10 "$CRYSTALLIZER" "output empty x0"
-else
-    expect_contains 1 72 10 "$CRYSTALLIZER" "0/160000 FE, progress 0/200, input empty x0, output $CRYSTAL x2"
-    expect_energy 1 72 10 "$CRYSTALLIZER" eq 0
-    # Two operations x 200 units: the neighbour gave 400 and has 600 left; the
-    # machine's own tank is empty (it spends what it drew when the operation
-    # finishes).
-    expect_chem "holds mekanism:clean_iron 600/64000 (answered by mekanism)" -- read 0 72 10
-    expect_chem "holds nothing 0/10000 (answered by mekanism)" -- read 1 72 10
-    # The second operation is the one the first 0.2.8 run lost: a slot holding
-    # one material's crystal stopped the draw loop at another material's row.
-    echo "== N1b: three more operations, three more charges, five crystals from 1,000 units =="
-    for charge in 160000 80000; do
-        say "mekanism energy $charge 1 72 10"
-        ctl wait 4
-        ctl wait 430
-    done
-    expect_contains 1 72 10 "$CRYSTALLIZER" "0/160000 FE, progress 0/200, input empty x0, output $CRYSTAL x5"
-    expect_energy 1 72 10 "$CRYSTALLIZER" eq 0
-    CRYSTAL_ENERGY=$(block_data 1 72 10 energy)
-    echo "  data get block 1 72 10 energy: $CRYSTAL_ENERGY"
-    case "$CRYSTAL_ENERGY" in
-        *" 0"*|*": 0"*) ;;
-        *) fail "five operations should spend the whole 400,000 FE charged: $CRYSTAL_ENERGY" ;;
-    esac
-    # 5 operations x 200 units: the tank beside it is empty, and the machine's
-    # own tank too.
-    expect_chem "holds nothing 0/64000 (answered by mekanism)" -- read 0 72 10
-    expect_chem "holds nothing 0/10000 (answered by mekanism)" -- read 1 72 10
-fi
+expect_contains 1 72 10 "$CRYSTALLIZER" "0/160000 FE, progress 0/200, input empty x0, output $CRYSTAL x2"
+expect_energy 1 72 10 "$CRYSTALLIZER" eq 0
+# Two operations x 200 units: the neighbour gave 400 and has 600 left; the
+# machine's own tank is empty (it spends what it drew when the operation
+# finishes).
+expect_chem "holds mekanism:clean_iron 600/64000 (answered by mekanism)" -- read 0 72 10
+expect_chem "holds nothing 0/10000 (answered by mekanism)" -- read 1 72 10
+# The second operation is the one the first 0.2.8 run lost: a slot holding
+# one material's crystal stopped the draw loop at another material's row.
+echo "== N1b: three more operations, three more charges, five crystals from 1,000 units =="
+for charge in 160000 80000; do
+    say "mekanism energy $charge 1 72 10"
+    ctl wait 4
+    ctl wait 430
+done
+expect_contains 1 72 10 "$CRYSTALLIZER" "0/160000 FE, progress 0/200, input empty x0, output $CRYSTAL x5"
+expect_energy 1 72 10 "$CRYSTALLIZER" eq 0
+CRYSTAL_ENERGY=$(block_data 1 72 10 energy)
+echo "  data get block 1 72 10 energy: $CRYSTAL_ENERGY"
+case "$CRYSTAL_ENERGY" in
+    *" 0"*|*": 0"*) ;;
+    *) fail "five operations should spend the whole 400,000 FE charged: $CRYSTAL_ENERGY" ;;
+esac
+# 5 operations x 200 units: the tank beside it is empty, and the machine's
+# own tank too.
+expect_chem "holds nothing 0/64000 (answered by mekanism)" -- read 0 72 10
+expect_chem "holds nothing 0/10000 (answered by mekanism)" -- read 1 72 10
 
 echo "== N2: one operation costs 80,000 FE and 200 units, and makes one crystal =="
 place 4 72 8 "$TANK"
@@ -1420,23 +1442,19 @@ expect_energy 1 72 12 "$CRYSTALLIZER" eq 160000
 expect_chem "holds mekanism:dirty_iron 1000/64000" -- read 0 72 12
 
 echo "== N4: a hopper under the output slot pulls the crystals into a chest =="
-if [ "$SELFTEST" = 1 ]; then
-    echo "  (selftest: no crystals were made)"
-else
-    place 1 71 10 minecraft:hopper
-    place 1 70 10 minecraft:chest
-    ctl wait 4
-    ctl wait 100
-    CHEST=$(ctl container 1 70 10)
-    echo "  ctl container 1 70 10: $CHEST"
-    echo "$CHEST" \
-        | jq -e '[.slots[] | select(.item == "mekanism:crystal_iron") | .count] | add == 5' \
-            >/dev/null \
-        || fail "the chest did not take the five crystals the output slot held: $CHEST"
-    # The output slot is empty again, and the machine makes no more: its
-    # neighbour tank is empty.
-    expect_contains 1 72 10 "$CRYSTALLIZER" "output empty x0"
-fi
+place 1 71 10 minecraft:hopper
+place 1 70 10 minecraft:chest
+ctl wait 4
+ctl wait 100
+CHEST=$(ctl container 1 70 10)
+echo "  ctl container 1 70 10: $CHEST"
+echo "$CHEST" \
+    | jq -e '[.slots[] | select(.item == "mekanism:crystal_iron") | .count] | add == 5' \
+        >/dev/null \
+    || fail "the chest did not take the five crystals the output slot held: $CHEST"
+# The output slot is empty again, and the machine makes no more: its
+# neighbour tank is empty.
+expect_contains 1 72 10 "$CRYSTALLIZER" "output empty x0"
 
 # ---------------------------------------------------------------------------
 # O. The sweep: every carried crystallizing row through a real crystallizer
@@ -1451,7 +1469,10 @@ else
     python3 -u "$PORT/tools/gen_crystallizing.py" --rows >"$CROWS" \
         || fail "the crystallizing rows could not be read from the jar"
     rows=$(jq 'length' "$CROWS")
-    [ "$rows" -ge 3 ] || fail "the jar yielded only $rows crystallizing rows"
+    # The washer makes seven slurries and slice 10 carries a crystal for every
+    # one, so the sweep must see all seven rows — a dropped row is a dead washer
+    # recipe, not a smaller sweep.
+    [ "$rows" -ge 7 ] || fail "the jar yielded only $rows crystallizing rows, expected 7"
     echo "  rows from the jar's mekanism:crystallizing data: $rows"
     HORIZON_LOG="$HORIZON_HOME/logs/latest.log" \
         python3 -u "$PORT/tools/crystal_sweep.py" "$SOCK" "$CTL" "$CROWS" 6 72 -4 --batch 3 \
@@ -1558,5 +1579,5 @@ elif [ "$SELFTEST" = 1 ]; then
     echo "SELFTEST finished without failing (this is a bug in the test)"
     exit 1
 else
-    echo "PASS: the fifteen blocks, their sixteen shaped recipes and their loot tables work, every carried crushing recipe runs in a real crusher, every carried injecting recipe runs in a real chemical injection chamber and every carried purifying recipe in a real purification chamber, both pulling their gas from a neighbour's tank through mekanism:chemical and spending exactly the operation's gas - 200 oxygen for one iron ore into three clumps at 40,000 FE - every carried washing recipe runs in a real chemical washer, whose water arrives through horizon:fluids and whose dirty slurry arrives through mekanism:chemical, one operation spending exactly 5 mB of water, one unit of dirty slurry and 40,000 FE for one unit of clean slurry, every carried crystallizing recipe runs in a real chemical crystallizer that turns 200 units of its clean slurry into one crystal for 80,000 FE (five operations into five crystals from 1,000 units, a hopper pulling them out, a dirty slurry refused by the tank and making nothing in a neighbour), the jar's chain runs end to end (a clump crushes into a dirty dust and that dirty dust enriches into a dust, while a purification chamber has no row for it), the five basic factories run three processes of the same operation side by side (three ore in the purifying factory become nine clumps for 3 x 40,000 FE and exactly 600 of the neighbour's oxygen, one ore costs one operation, and 40,000 FE buys 200 progress ticks rather than three operations, while a smelting factory turns three ore into three ingots for its 30,000 FE buffer), the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input, a no-gas and a wrong-gas neighbour do nothing - the menus open, the machines', the factories' and the crystallizer's FE, progress and tanks survive a save and relaunch, and the chemical capability moves one chemical into the tank's saved data, drains part of it into the gauge dropper through the item capability, and refuses an unknown id by name while a block that answers no chemical moves nothing"
+    echo "PASS: the fifteen blocks, their twenty items and sixteen shaped recipes and their loot tables work, every carried crushing recipe runs in a real crusher, every carried injecting recipe runs in a real chemical injection chamber and every carried purifying recipe in a real purification chamber, both pulling their gas from a neighbour's tank through mekanism:chemical and spending exactly the operation's gas - 200 oxygen for one iron ore into three clumps at 40,000 FE - every carried washing recipe runs in a real chemical washer, whose water arrives through horizon:fluids and whose dirty slurry arrives through mekanism:chemical, one operation spending exactly 5 mB of water, one unit of dirty slurry and 40,000 FE for one unit of clean slurry, every carried crystallizing recipe - all seven slurries the washer makes, lead through uranium included - runs in a real chemical crystallizer that turns 200 units of its clean slurry into one crystal for 80,000 FE (five operations into five crystals from 1,000 units, a lead tank's 1,000 units into exactly two crystal_lead with 600 left, a hopper pulling them out, a dirty slurry refused by the tank and making nothing in a neighbour), the jar's chain runs end to end (a clump crushes into a dirty dust and that dirty dust enriches into a dust, while a purification chamber has no row for it), the five basic factories run three processes of the same operation side by side (three ore in the purifying factory become nine clumps for 3 x 40,000 FE and exactly 600 of the neighbour's oxygen, one ore costs one operation, and 40,000 FE buys 200 progress ticks rather than three operations, while a smelting factory turns three ore into three ingots for its 30,000 FE buffer), the smelter, cube, cable and enrichment chamber work end to end - the cube's FE reaches the chamber through the cable and turns one ore into two dust, that dust smelts into two ingots, an unsmeltable input, a no-gas and a wrong-gas neighbour do nothing - the menus open, the machines', the factories' and the crystallizer's FE, progress and tanks survive a save and relaunch, and the chemical capability moves one chemical into the tank's saved data, drains part of it into the gauge dropper through the item capability, and refuses an unknown id by name while a block that answers no chemical moves nothing"
 fi

@@ -7,10 +7,10 @@
 #
 # Cargo's name and version are not the mod's identity: horizon-mod.toml is.
 name = "mekanism"
-version = "0.2.8"
+version = "0.2.9"
 edition = "2024"
 license = "MIT"
-description = "Mekanism for Horizon: the Energized Smelter, the Enrichment Chamber, the Crusher, the Basic Energy Cube, the Basic Universal Cable, the chemical capability (the Basic Chemical Tank and the Gauge Dropper), its consumers the Chemical Injection Chamber and the Purification Chamber, the five basic factories, the Chemical Washer (a fluid input through horizon:fluids) and the Chemical Crystallizer (a clean slurry into a crystal)"
+description = "Mekanism for Horizon: the Energized Smelter, the Enrichment Chamber, the Crusher, the Basic Energy Cube, the Basic Universal Cable, the chemical capability (the Basic Chemical Tank and the Gauge Dropper), its consumers the Chemical Injection Chamber and the Purification Chamber, the five basic factories, the Chemical Washer (a fluid input through horizon:fluids) and the Chemical Crystallizer (a clean slurry into a crystal, for all seven slurries the washer makes)"
 publish = false
 
 [dependencies]

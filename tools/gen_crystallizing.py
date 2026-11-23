@@ -35,10 +35,11 @@ BEGIN = "    // BEGIN GENERATED CRYSTALLIZING TABLE (tools/gen_crystallizing.py)
 END = "    // END GENERATED CRYSTALLIZING TABLE\n"
 
 # The crystals this port registers as items (`data/mekanism/horizon/item/
-# crystal_<material>.json`). The jar also crystallizes lead, osmium, tin and
-# uranium, and makes lithium dust and salt from lithium and brine; none of those
-# items exist in this port, so their rows are skipped.
-CRYSTALS = {"copper", "gold", "iron"}
+# crystal_<material>.json`): exactly the seven slurries the washer can make
+# (`mekanism:washing`'s rows), so no washer row dead-ends at the crystallizer.
+# The jar also crystallizes lithium, brine and antimatter; none of those items
+# exists in this port, so their three rows are skipped.
+CRYSTALS = {"copper", "gold", "iron", "lead", "osmium", "tin", "uranium"}
 
 
 def rows(jar: Path) -> tuple[list[tuple[str, int, str, int]], int, list[str]]:

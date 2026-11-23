@@ -5,14 +5,16 @@ Six files are the jar's own bytes and three more are derived from them:
 
 - `assets/mekanism/textures/block/models/chemical_crystallizer.png`,
   `_elements1.png`, `_elements2.png` — the block's faces;
-- `assets/mekanism/textures/item/crystal_{iron,gold,copper}.png` — the crystals;
+- `assets/mekanism/textures/item/crystal_<material>.png` — the crystals (the
+  seven slurries the washer makes: copper, gold, iron, lead, osmium, tin,
+  uranium);
 - `assets/mekanism/models/block/chemical_crystallizer.json` — the jar's model,
   **flattened**: upstream ships a `neoforge:composite` of a cutout child and a
   translucent one, and the pin's model loader has no composite, so this tool
   emits one model holding both children's elements with `render_type: cutout`
   (the glass chamber therefore renders cutout rather than translucent — recorded
   as a deviation in `notes.md`);
-- `assets/mekanism/models/item/crystal_{iron,gold,copper}.json` — the jar's own
+- `assets/mekanism/models/item/crystal_<material>.json` — the jar's own
   JSON, re-serialised compactly.
 
 The **blockstate** is authored, not carried: the block is the barrel template
@@ -42,7 +44,7 @@ TEXTURES = [
     "textures/block/models/chemical_crystallizer_elements1.png",
     "textures/block/models/chemical_crystallizer_elements2.png",
 ]
-CRYSTALS = ["iron", "gold", "copper"]
+CRYSTALS = ["iron", "gold", "copper", "lead", "osmium", "tin", "uranium"]
 ITEM_TEXTURES = [f"textures/item/crystal_{material}.png" for material in CRYSTALS]
 ITEM_MODELS = [f"models/item/crystal_{material}.json" for material in CRYSTALS]
 

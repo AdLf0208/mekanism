@@ -1,5 +1,46 @@
 # Validation
 
+## 0.2.9 — the four missing crystals, slice 10 (2026-11-23)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`).
+
+| Check | Command | Result |
+|---|---|---|
+| the four rows + the late-row stall case, RED first | `cargo test --offline` on the untouched table | **121 passed, 4 failed** (`left: 3 / right: 7`; `no row for mekanism:clean_lead`) (`slice10-unit-red.log`) |
+| tests | `cargo test --offline` | **125 passed**, 0 failed (`slice10-test.log`, `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`slice10-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`slice10-clippy.log`) |
+| recipe tables | the seven `gen_*.py --check` + `carry_crystallizer.py --check` (`HORIZON_RES` set) | 163 / 132 / 148 / 72 / 15 / 7 / **7** rows; **18** carried files match the jar (`slice10-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **197,883 B**, `cmp` identical, sha256 `3f72a2acaeed253f580e975d3fb6a7cc376bca57732c535b6e5e470e1b08a025` (`slice10-build.log`, `slice10-build-second.log`, `slice10-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.9 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 262 entries (`slice10-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`slice10-fits.log`, sha printed beside it) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`slice10-fits.log`) |
+| archive | `unzip -l mekanism.hmod` | 262 entries, no `Cargo.lock` (`slice10-entries.txt`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (262 entries, no packed `Cargo.lock`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 1,72,14 to say 'output empty x0', got '… output mekanism:crystal_lead x2'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+| launcher build | `launcher-game.sh build mekanism` (in a lease, after removing every `native-*` tag that carried this mod) | `Compiling mekanism (1 of 1)`, `native-0a875da-40fc7fa7ae4b` (`slice10-launcher-build.log`) |
+
+The in-game leg proves, per the parity rule: the fifteen blocks and **twenty** items are give-able
+and placeable, an unknown id is refused, the sixteen carried shaped recipes craft, the fifteen
+blocks' loot tables drop the block, every carried crushing (148), injecting (72), purifying (15),
+washing (7) and **crystallizing (7 of 7)** recipe still runs — and the new family: a Basic Chemical
+Tank of 1,000 `mekanism:clean_lead` beside a crystallizer charged to its whole **160,000 FE** buffer
+yields exactly **two** `mekanism:crystal_lead` at 0 FE with the neighbour at **600**; the sweep runs
+**all seven** slurries the washer makes (copper, gold, iron, lead, osmium, tin, uranium), each
+leaving `tank 0, energy 80000`; `SELFTEST=1` fails on that same lead assertion; the unmodded game
+still cannot give the blocks (`EXIT:1`) and the no-cable differential still passes. See
+[notes.md](notes.md) §"Slice 10 — the four missing crystals" for the transcript, the coverage table
+and what is deliberately not closed (the enricher leg for these four materials).
+
 ## 0.2.8 — the Chemical Crystallizer, slice 9 (2026-11-23)
 
 Validated on Linux against the campaign pin **Horizon

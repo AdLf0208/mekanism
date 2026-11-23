@@ -1,4 +1,4 @@
-# Mekanism for Horizon — slices 1–9
+# Mekanism for Horizon — slices 1–10
 
 One flat **SDK package** (`horizon-mod.toml`, `api = "0.2"`) for Mekanism
 10.7.19.85 (MIT), the exact ATM10 jar. The carried blocks, items, models,
@@ -33,9 +33,10 @@ here; the behaviour is `src/lib.rs` (one `impl mod_api::Hooks`) and
 - `mekanism:chemical_crystallizer` — **the washer's consumer**: 400 FE/t, 200
   ticks per operation (80,000 FE), a 160,000 FE buffer (exactly two operations)
   and a 10,000-unit tank that takes a clean slurry with a row and nothing else
-  (upstream's `containsRecipe` predicate), over the jar's `mekanism:crystallizing`
-  rows this port has crystals for — **200 units of a clean slurry make one**
-  `mekanism:crystal_{iron,gold,copper}`, and a hopper pulls the crystals out;
+  (upstream's `containsRecipe` predicate), over **all seven** `mekanism:crystallizing`
+  slurries the washer can make — **200 units of a clean slurry make one**
+  `mekanism:crystal_{copper,gold,iron,lead,osmium,tin,uranium}`, and a hopper
+  pulls the crystals out;
 - **the five basic factories** — `mekanism:basic_{smelting,enriching,crushing,injecting,purifying}_factory`
   — each running three processes of its recipe side by side over one buffer and,
   for the two gas factories, one shared tank (half the base machine's storage per

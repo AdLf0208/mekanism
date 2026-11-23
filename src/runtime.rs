@@ -3487,11 +3487,15 @@ pub mod crystallizing {
     // **operation** takes (it is consumed when the operation finishes, not
     // per tick), and a recipe whose crystal item this port does not
     // register is left out.
-    // Source recipes: 10. Rows: 3. Skipped: 7.
+    // Source recipes: 10. Rows: 7. Skipped: 3.
     static TABLE: &[Row] = &[
         ("mekanism:clean_copper", 200, "mekanism:crystal_copper", 1),
         ("mekanism:clean_gold", 200, "mekanism:crystal_gold", 1),
         ("mekanism:clean_iron", 200, "mekanism:crystal_iron", 1),
+        ("mekanism:clean_lead", 200, "mekanism:crystal_lead", 1),
+        ("mekanism:clean_osmium", 200, "mekanism:crystal_osmium", 1),
+        ("mekanism:clean_tin", 200, "mekanism:crystal_tin", 1),
+        ("mekanism:clean_uranium", 200, "mekanism:crystal_uranium", 1),
     ];
     // END GENERATED CRYSTALLIZING TABLE
 }
@@ -5903,16 +5907,17 @@ mod crystallizer_tests {
         assert_eq!(CRYSTALLIZER_TANK, 10_000, "MAX_CHEMICAL = 10 x BUCKET");
     }
 
-    /// The jar's three carried crystallizing rows: 200 units of a material's
-    /// clean slurry make one of its crystals, one operation each.
+    /// The jar's seven carried crystallizing rows: 200 units of a material's
+    /// clean slurry make one of its crystals, one operation each. These are
+    /// exactly the slurries the washer can make, so no washer row dead-ends.
     #[test]
     fn every_crystallizing_row_is_the_jar_s() {
         assert_eq!(
             crystallizing::ROW_COUNT,
-            3,
-            "iron, gold and copper: the crystals this port registers"
+            7,
+            "the seven slurries the washer makes, each with its crystal"
         );
-        for material in ["copper", "gold", "iron"] {
+        for material in ["copper", "gold", "iron", "lead", "osmium", "tin", "uranium"] {
             let slurry = format!("mekanism:clean_{material}");
             let crystal = format!("mekanism:crystal_{material}");
             let recipe =
@@ -5933,10 +5938,35 @@ mod crystallizer_tests {
             [
                 "mekanism:clean_copper",
                 "mekanism:clean_gold",
-                "mekanism:clean_iron"
+                "mekanism:clean_iron",
+                "mekanism:clean_lead",
+                "mekanism:clean_osmium",
+                "mekanism:clean_tin",
+                "mekanism:clean_uranium"
             ],
             "the draw asks for the table's own slurries, in its order"
         );
+    }
+
+    /// Slice 10: the washer's last four slurries have their crystals, so the
+    /// jar's crystallizing table leaves out only its three non-slurry rows
+    /// (lithium, brine and antimatter), whose output items this port has not.
+    #[test]
+    fn the_four_new_crystals_complete_every_slurry_the_washer_makes() {
+        for material in ["lead", "osmium", "tin", "uranium"] {
+            let slurry = format!("mekanism:clean_{material}");
+            let crystal = format!("mekanism:crystal_{material}");
+            let recipe = crystallizing::recipe_for(&slurry)
+                .unwrap_or_else(|| panic!("no row for {slurry}: the washer can make it"));
+            assert_eq!(recipe.chemical, slurry);
+            assert_eq!(recipe.amount, 200, "the jar's input amount");
+            assert_eq!(recipe.output, crystal);
+            assert_eq!(recipe.output_count, 1);
+            assert!(
+                crystallizing::accepts(&slurry),
+                "{slurry} is a crystallizing input, so the tank takes it"
+            );
+        }
     }
 
     /// The crystallizer's tank takes a chemical with a row and refuses the rest
@@ -6196,8 +6226,8 @@ mod crystallizer_tests {
         assert!(crystallizing::accepts("mekanism:clean_copper"));
         assert!(!crystallizing::accepts("mekanism:dirty_iron"));
         assert!(
-            !crystallizing::accepts("mekanism:clean_lead"),
-            "no crystal item"
+            crystallizing::accepts("mekanism:clean_lead"),
+            "slice 10 carries the lead crystal, so its row exists"
         );
         assert!(!crystallizing::accepts("mekanism:hydrogen"));
         assert!(!crystallizing::accepts("minecraft:water"));
@@ -6219,6 +6249,14 @@ mod crystallizer_tests {
             crystallizing::slurries_that_fit(&one_iron, 64).collect::<Vec<_>>(),
             vec!["mekanism:clean_iron"],
             "a slot holding crystal_iron takes clean_iron, and reports no other row"
+        );
+        // Slice 10's four rows sit after iron in the table, so a lead slot is
+        // the case that would starve if the room check were loop-wide again.
+        assert_eq!(
+            crystallizing::slurries_that_fit(&ItemAmount::new("mekanism:crystal_lead", 1), 64)
+                .collect::<Vec<_>>(),
+            vec!["mekanism:clean_lead"],
+            "a slot holding crystal_lead takes clean_lead, past the earlier rows"
         );
         assert_eq!(
             crystallizing::slurries_that_fit(&ItemAmount::default(), 64).count(),

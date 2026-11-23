@@ -374,3 +374,33 @@ Where the rewrite differs (and why):
   in and nothing is lost visually beyond the template's shape;
 - the shaped recipe uses vanilla stand-ins (obsidian, amethyst, redstone, iron block), the precedent
   of the fifteen earlier ones, because the real ingredients are not registered.
+
+## Slice 10 — the four missing crystals (upstream analysis)
+
+Read for this slice from the upstream **tag `v1.21.1-10.7.19.85`** (commit
+`a00109e4856fd38b9c5b3dd7f22ce4a59cd65a80`), analysis only — the Rust stays a clean-room rewrite and
+the jar's own data is the recipe source:
+
+| Area | Files |
+|---|---|
+| the four recipes | `data/mekanism/recipe/processing/{lead,osmium,tin,uranium}/crystal/from_slurry.json` |
+| the four items' art | `assets/mekanism/models/item/crystal_<m>.json`, `assets/mekanism/textures/item/crystal_<m>.png` |
+| the four names | `assets/mekanism/lang/en_us.json` (`item.mekanism.crystal_<m>`) |
+| the tags they belong to | `data/c/tags/item/crystals/<m>.json` (not carried: this port declares no `c:` item tags) |
+
+Numbers carried: `{"amount": 200, "chemical": "mekanism:clean_<m>"}` → `{"count": 1, "id":
+"mekanism:crystal_<m>"}` for each of the four, i.e. exactly slice 9's row shape. With them the jar's
+ten `mekanism:crystallizing` recipes split as seven carried slurry rows and three dropped non-slurry
+rows (`lithium` → `dust_lithium`, `brine` → `salt`, `antimatter` → `pellet_antimatter`), which is
+`gen_crystallizing.py`'s `10 / 7 / 3` header.
+
+Where the rewrite differs (and why):
+
+- the crystals are **plain items** (the `minecraft:gunpowder` template, stack 64) with the jar's own
+  textures/models — no `mekanism:crystal` component and no custom behaviour, the same deviation
+  slice 9 recorded for iron/gold/copper;
+- the port does not declare the `c:crystals/<m>` item tags the jar ships, so other mods cannot ask
+  for "any lead crystal" by tag here; a later slice would add them with the dusts;
+- the enricher leg (`crystal_<m>` → `shard_<m>`, and later `dust_<m>`) is **not** opened, because
+  `mekanism:shard_{lead,osmium,tin,uranium}` and `mekanism:dust_{lead,osmium,tin,uranium}` are not
+  registered; `gen_enriching.py` keeps dropping those rows (gap 1 after slice 10).

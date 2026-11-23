@@ -2721,3 +2721,201 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > for` at the pin and `fits` at `0b14f8a`; 124 tests, clippy `-D warnings` clean; in game `PASS` +
 > `EXIT:0`; the unmodded game `EXIT:1`, `SELFTEST=1` `EXIT:1` on the crystallizer's own assertion,
 > `NOCABLE=1` `PASS` + `EXIT:0`.
+
+## Slice 10 — the four missing crystals (0.2.9, 2026-11-23)
+
+### The scope authority, quoted
+
+The gap line is this port's own, "Gaps after slice 9" item 1 (and the slice-9 coverage row for the
+four items):
+
+> **Four slurries have no crystal**: the washer makes `clean_{lead,osmium,tin,uranium}` and this port
+> registers no `crystal_*` for them, so `gen_crystallizing.py` drops their four rows. Adding the four
+> items + textures completes the washer→crystallizer chain for every row (a one-slice job).
+
+**Chosen: the four crystals** (`mekanism:crystal_{lead,osmium,tin,uranium}`). It is not a new
+family — it is the slice-9 crystallizer at four more rows — so it needs **no new capability, hook,
+block or menu**: four item declarations, the jar's four item models and textures, and the
+regenerated table. It sits on the `deep` row exactly as slice 9 did (the machines-shaped feature is
+already shipped; this slice completes its data so no washer row dead-ends).
+
+### What the jar says (re-read from `v1.21.1-10.7.19.85`, `a00109e4`)
+
+| value | source | port |
+|---|---|---|
+| four more rows, `200` units → `1` crystal, `clean_<m>` → `crystal_<m>` for lead, osmium, tin, uranium | `data/mekanism/recipe/processing/{lead,osmium,tin,uranium}/crystal/from_slurry.json` | the regenerated `crystallizing::TABLE` (7 rows) |
+| the four items' art | `assets/mekanism/{textures/item,models/item}/crystal_{lead,osmium,tin,uranium}.*` | `tools/carry_crystallizer.py` (now 18 carried files) |
+| the four names | `item.mekanism.crystal_{lead,osmium,tin,uranium}` in the jar's `en_us.json` | `assets/mekanism/lang/en_us.json` |
+| the stack size | the same `minecraft:gunpowder` template as iron/gold/copper (64) | `data/mekanism/horizon/item/crystal_<m>.json` |
+
+`gen_crystallizing.py` now reports **10 source recipes, 7 rows, 3 skipped**: the rows it still leaves
+out are `lithium` → `dust_lithium`, `brine` → `salt` and `antimatter` → `pellet_antimatter`, whose
+output items this port does not register (gap 2 below).
+
+### The family in the port's three layers
+
+- **`src/runtime.rs`** — no new rule. The generated `crystallizing::TABLE` grows 3 → 7 rows, so
+  `ROW_COUNT`, `recipe_for`, `accepts`, `slurries` and `slurries_that_fit` all read the new rows;
+  the tests pin the four new materials, the table's order and the stall rule at a **late** row.
+- **`src/support.rs`** — unchanged: the crystallizer's tick, tank, draw loop, info line and
+  container are generic over the table, which is why the four rows work through the shipped glue.
+- **Content** — four `data/mekanism/horizon/item/crystal_<material>.json`, four carried item models
+  and textures, four lang keys and four creative-tab entries.
+
+### Red → green
+
+The tests were written first and ran red on the untouched table
+(`../_shared/evidence/mekanism/slice10-unit-red.log`), **121 passed, 4 failed**, e.g.:
+
+```
+---- runtime::crystallizer_tests::every_crystallizing_row_is_the_jar_s stdout ----
+thread 'runtime::crystallizer_tests::every_crystallizing_row_is_the_jar_s' panicked at src/runtime.rs:5911:9:
+assertion `left == right` failed: the seven slurries the washer makes, each with its crystal
+  left: 3
+ right: 7
+
+---- runtime::crystallizer_tests::the_four_new_crystals_complete_every_slurry_the_washer_makes stdout ----
+thread 'runtime::crystallizer_tests::the_four_new_crystals_complete_every_slurry_the_washer_makes' (90632) panicked at src/runtime.rs:5956:36:
+no row for mekanism:clean_lead: the washer can make it
+
+test result: FAILED. 121 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+Then green: **125 tests** (was 124; +1 rule test, and three existing tests extended).
+
+### Coverage — every family this slice ships
+
+Per the parity rule (AGENTS.md, 2026-11-20):
+
+| family | status | proof |
+|---|---|---|
+| `mekanism:crystal_{lead,osmium,tin,uranium}` as items: give-able, in the creative tab, named | **tested** | A1 now gives **20** items (`… twenty items …` in the PASS line) |
+| the four new crystallizing rows: input amount, output id and count, slurry consumed, one operation's FE | **tested** | O: `rows crystallized: 7 of 7` (`tools/crystal_sweep.py`), each row `(tank 0, energy 80000)` |
+| a lead tank's 1,000 units beside one charge: exactly two `crystal_lead`, neighbour 600, machine tank empty | **tested** | N0: `0/160000 FE, progress 0/200, input empty x0, output mekanism:crystal_lead x2`, `energy 0`, `holds mekanism:clean_lead 600/64000 (answered by mekanism)`, `holds nothing 0/10000` |
+| the stall rule at a late row (`crystal_lead` must ask for `clean_lead`, not the earlier rows) | **tested** | `a_slot_of_one_crystal_asks_for_that_materials_slurry_and_skips_the_rest` (unit) + N0 running **two** operations |
+| `mekanism:dust_lithium`, `mekanism:salt`, `mekanism:pellet_antimatter` | **not ported** | their output items are not registered; the tool prints the three drops |
+| the enricher leg for these four materials (`crystal_<m>` → `shard_<m>`, `dust_<m>`) | **not ported** | `mekanism:shard_{lead,osmium,tin,uranium}` and `dust_{lead,osmium,tin,uranium}` are not registered, so `gen_enriching.py` keeps dropping those rows (gap 2) |
+| everything slice 9 proved (blocks, recipes, loot, sweeps, factories, persistence) | **still green** | the same package leg: `PASS` + `EXIT:0`, 7/7 crystallizing rows, all six e2e logs green |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| the four rows + the late-row stall case, RED first | `cargo test --offline` on the untouched table | **121 passed, 4 failed** (`slice10-unit-red.log`) |
+| tests | `cargo test --offline` | **125 passed**, 0 failed (`slice10-test.log`, `sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`slice10-clippy.log`) |
+| format | `cargo fmt --check` (never `--all`) | clean (`slice10-clippy.log`) |
+| recipe tables | the seven `gen_*.py --check` + `carry_crystallizer.py --check` (`HORIZON_RES` set) | 163 / 132 / 148 / 72 / 15 / 7 / **7** rows; **18** carried files match the jar (`slice10-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **197,883 B**, `cmp` identical, sha256 `3f72a2ac…08a025` (`slice10-build.log`, `slice10-build-second.log`, `slice10-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.9 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 262 entries (`slice10-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`slice10-fits.log`, sha printed beside it) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something (`slice10-fits.log`) |
+| archive | `unzip -l mekanism.hmod` | 262 entries, no `Cargo.lock` (`slice10-entries.txt`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (262 entries, no packed `Cargo.lock`) |
+| launcher build | `launcher-game.sh build mekanism` (in a lease, after removing every `native-*` tag that carried this mod) | `Compiling mekanism (1 of 1)`, `native-0a875da-40fc7fa7ae4b` (`slice10-launcher-build.log`) |
+| in game | `build-slot.sh run --step e2e -- bash tools/e2e.sh` on the launcher build | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`) |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| fail-capable | `SELFTEST=1 tools/e2e.sh` | **`FAIL: expected /mekanism info at 1,72,14 to say 'output empty x0', got '… output mekanism:crystal_lead x2'` + `EXIT:1`** (`e2e-selftest.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=6 ok=6 missing-exit=0 bad-exit=0` |
+
+### In-game evidence (`--offscreen`, the launcher build)
+
+`../_shared/evidence/mekanism-e2e/e2e-package.log`, this slice's phases:
+
+```
+== N0: slice 10's four crystals — 1,000 units of clean_lead, one charge, two crystal_lead ==
+  chemical insert 1000 mekanism:clean_lead 0 72 14: chemical: inserted 1000 mekanism:clean_lead into mekanism:basic_chemical_tank (1000/64000)
+  info(1,72,14): mekanism:chemical_crystallizer: 0/160000 FE, progress 0/200, input empty x0, output mekanism:crystal_lead x2
+  energy(1,72,14): 0
+  chemical read 0 72 14: chemical: mekanism:basic_chemical_tank holds mekanism:clean_lead 600/64000 (answered by mekanism)
+  chemical read 1 72 14: chemical: mekanism:chemical_crystallizer holds nothing 0/10000 (answered by mekanism)
+…
+  mekanism:clean_copper x200 -> mekanism:crystal_copper x1 (tank 0, energy 80000)
+  mekanism:clean_gold x200 -> mekanism:crystal_gold x1 (tank 0, energy 80000)
+  mekanism:clean_iron x200 -> mekanism:crystal_iron x1 (tank 0, energy 80000)
+  mekanism:clean_lead x200 -> mekanism:crystal_lead x1 (tank 0, energy 80000)
+  mekanism:clean_osmium x200 -> mekanism:crystal_osmium x1 (tank 0, energy 80000)
+  mekanism:clean_tin x200 -> mekanism:crystal_tin x1 (tank 0, energy 80000)
+  mekanism:clean_uranium x200 -> mekanism:crystal_uranium x1 (tank 0, energy 80000)
+rows crystallized: 7 of 7
+… PASS: … EXIT:0
+```
+
+What the numbers prove:
+
+- the lead tank went 1,000 → **600** and two `crystal_lead` appeared for one 160,000 FE charge, so
+  the new row costs one operation's 80,000 FE and 200 units exactly as iron/gold/copper do, and the
+  buffer still holds exactly two operations;
+- the machine's own tank reads empty, so the drawn 200 units are spent at the operation's finish;
+- every one of the **seven** carried rows ran in a real crystallizer and left `tank 0, energy 80000`
+  — no washer recipe dead-ends any more;
+- the selftest flips **this** assertion (it expects `output empty x0` at 1,72,14 and gets
+  `crystal_lead x2`), so the newest family's check is the one proven able to fail;
+- the older legs are unchanged: the control game cannot give the blocks (`EXIT:1`), the differential
+  without the cable still passes, and every machine's FE/progress/tank survives save + relaunch.
+
+All **four** legs of this slice were run on the final launcher build
+`native-0a875da-40fc7fa7ae4b`, whose exported `horizon-native-mods/mekanism/` is `cmp`-identical to
+this tree (README, `src/runtime.rs`, `horizon-mod.toml`, the four item files, the lang file), so the
+`PASS`/`EXIT` verdicts belong to the package recorded below and not to an earlier build.
+
+### What the harness taught this slice
+
+- **`native-*` tags in the launcher's versions folder carry this mod even when another job built
+  it.** The folder held a stale 0.2.8 tag, and while this slice ran, concurrent jobs' builds (the
+  shared `e2e` instance compiles every installed mod) produced **three** further 0.2.9 tags carrying
+  this working tree. `built_tag` accepts any tag whose packaged manifest matches the port, so the e2e
+  could have run a binary nobody had watched compile. All mekanism-carrying tags were removed before
+  the final build, and the log's `Compiling mekanism (1 of 1)` plus `cmp` on the exported
+  `horizon-native-mods/mekanism/` (README, `src/runtime.rs`, `horizon-mod.toml`, the four item files,
+  the lang file — all identical to the tree) are the proof the four legs ran this slice's tree.
+- **A phase that adds no block still needs a free column.** N0 starts a tank at `0,72,14` and a
+  crystallizer at `1,72,14`; `z=10` already held slice 9's tank/crystallizer/hopper/chest chain and
+  `z=12` the dirty-slurry control, so the new pair took the next free row rather than reusing one.
+- The e2e is run from the **port** directory: the slot runner runs the command in the caller's cwd,
+  and `bash tools/e2e.sh` from the campaign root is `EXIT:127`.
+
+### Gaps after slice 10
+
+1. The **enricher leg** for the seven crystals: the jar's `crystal_<m>` → `shard_<m>` and `dust_<m>`
+   rows are still dropped because `mekanism:shard_{lead,osmium,tin,uranium}` and
+   `mekanism:dust_{lead,osmium,tin,uranium}` are not registered (for iron/gold/copper the shards
+   are, and the tool drops those three rows for the same reason). Registering the four shards and
+   four dusts would close the chain into the smelter.
+2. `mekanism:dust_lithium`, `mekanism:salt`, `mekanism:pellet_antimatter`: their output items are
+   not registered, so the jar's three non-slurry crystallizing rows stay dropped.
+3. The chemical-container and energy slots, the composite model, the `active` state and the GUI are
+   slice 9's recorded deviations and still stand.
+4. Everything else in *Gaps / deviations*, *Gaps after slice 8* and *Gaps after slice 9* still
+   stands.
+
+### `## Upstream defects fixed`
+
+None found in this slice: the jar's four rows are consistent with its own items, textures and lang
+keys, and the port's table regeneration reproduces them exactly.
+
+### Deviations this slice records
+
+- The four crystals are **plain items** on the gunpowder template with the jar's own textures — no
+  custom item behaviour and no `mekanism:crystal` component, exactly as iron/gold/copper.
+- The creative tab carries the four beside the existing three, in material order.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices,rust-port
+
+### Changelog (0.2.9) — supersedes 0.2.8
+
+> **0.2.9 — the four missing crystals.** The Chemical Crystallizer now runs **every** row the washer
+> can feed it: `mekanism:crystal_{lead,osmium,tin,uranium}` join iron, gold and copper, so all
+> **seven** `mekanism:crystallizing` slurries crystallize — 200 units of a clean slurry into one
+> crystal for 80,000 FE — and no washer recipe dead-ends. The four items are the jar's own textures
+> and models, named in lang and listed in the creative tab. Worked in game: a tank of 1,000
+> `mekanism:clean_lead` beside a crystallizer charged with 160,000 FE yields exactly **two**
+> `crystal_lead` with the neighbour at **600** and the buffer at 0; the sweep runs **7 of 7** rows
+> and every one leaves `tank 0, energy 80000`; `SELFTEST=1` fails on the lead phase's own assertion
+> (`output empty x0` vs `crystal_lead x2`); the unmodded game still cannot give the blocks and the
+> no-cable differential still passes; every earlier leg is unchanged. Package: **262 entries,
+> 197,883 B**, sha256 `3f72a2acaeed253f580e975d3fb6a7cc376bca57732c535b6e5e470e1b08a025`; `check`
+> exit 0; `fits` `made for` at the pin and `fits` at `0b14f8a`; 125 tests, clippy `-D warnings`
+> clean; in game `PASS` + `EXIT:0`, control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` + `EXIT:0`,
+> log gate 6/6.
