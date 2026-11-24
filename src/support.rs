@@ -611,16 +611,75 @@ pub(crate) fn separator_fluids() -> ModFluidTanks {
 }
 
 /// The condensentrator's fluid tanks: one 10,000 mB water tank a fill may reach
-/// from every face, but no drain may take from it — upstream's
-/// `BasicFluidTank.create(CAPACITY, …)` in the default fluid → gas mode. The
-/// machine spends the water itself when the operation finishes.
+/// from every face. It is also declared as a drainable output: in gas → fluid
+/// mode the machine makes water into this tank, which is the fluid half's output
+/// path (`horizon:fluids` extraction and `/mekanism info`). Upstream switches the
+/// tank's extract predicate with `mode`; a declaration cannot change per block
+/// entity, so the tank is both fillable and drainable on every face and the
+/// machine's own tick is the only producer (a recorded deviation).
 pub(crate) fn condensentrator_fluids() -> ModFluidTanks {
     let mut tanks = ModFluidTanks::default();
     tanks.tanks = vec![i32::try_from(CONDENSENTRATOR_TANK).unwrap_or(i32::MAX)];
     tanks.faces = std::array::from_fn(|_| vec![0]);
     tanks.inputs = vec![0];
-    tanks.outputs = Vec::new();
+    tanks.outputs = vec![0];
     tanks
+}
+
+/// The block entity key upstream writes the direction under:
+/// `SerializationConstants.MODE = "mode"` in `readSustainedData`/`writeSustainedData`
+/// (`TileEntityRotaryCondensentrator.java:236-245`, tag `a00109e4`). An NBT
+/// boolean is the byte 1 (`true`, fluid → gas) or 0 (`false`, gas → fluid).
+const CONDENSENTRATOR_MODE_KEY: &str = "mode";
+
+/// Read the direction from a saved compound. A fresh block entity has no key
+/// yet; this port's recorded default is fluid → gas (the acid chain's vapour),
+/// which is upstream's `true`.
+fn read_condensentrator_mode(saved: &Tag) -> CondensentratorMode {
+    match saved.get(CONDENSENTRATOR_MODE_KEY) {
+        Some(Tag::Byte(0)) => CondensentratorMode::Condensentrating,
+        _ => CondensentratorMode::Decondensentrating,
+    }
+}
+
+/// The patch `/mekanism mode` merges into the block entity: the same key and
+/// byte value upstream saves, so `/data get block … mode` reads it back.
+fn condensentrator_mode_patch(mode: CondensentratorMode) -> Compound {
+    let byte: i8 = match mode {
+        CondensentratorMode::Decondensentrating => 1,
+        CondensentratorMode::Condensentrating => 0,
+    };
+    Compound::from([(CONDENSENTRATOR_MODE_KEY.into(), Tag::Byte(byte))])
+}
+
+/// Upstream's `nextMode()` flips the boolean and calls `setChanged()`.
+fn next_condensentrator_mode(mode: CondensentratorMode) -> CondensentratorMode {
+    match mode {
+        CondensentratorMode::Decondensentrating => CondensentratorMode::Condensentrating,
+        CondensentratorMode::Condensentrating => CondensentratorMode::Decondensentrating,
+    }
+}
+
+/// The name `/mekanism info` and `/mekanism mode` report.
+fn condensentrator_mode_name(mode: CondensentratorMode) -> &'static str {
+    match mode {
+        CondensentratorMode::Decondensentrating => "decondensentrating",
+        CondensentratorMode::Condensentrating => "condensentrating",
+    }
+}
+
+/// The gas tank's insert gate, from the artefact's `getInitialChemicalTanks`:
+/// `canInsert = INTERNAL || !mode`, so foreign automation may insert only in
+/// gas → fluid mode, and only a chemical with a rotary row (`isValidGas`).
+fn may_insert_condensentrator_gas(mode: CondensentratorMode, id: &str) -> bool {
+    mode == CondensentratorMode::Condensentrating
+        && condensentrating::recipe_for_chemical(id).is_some()
+}
+
+/// The gas tank's extract gate: `canExtract = MANUAL || mode`, so external
+/// automation may take the gas out only while it is the output (fluid → gas).
+fn may_extract_condensentrator_gas(mode: CondensentratorMode) -> bool {
+    mode == CondensentratorMode::Decondensentrating
 }
 
 /// The smelter's and the chamber's container: three slots every face reaches,
@@ -1166,9 +1225,10 @@ pub(crate) fn condensentrator_info_text(
     machine: Machine,
     water: &FluidTank,
     gas: &Tank,
+    mode: CondensentratorMode,
 ) -> String {
     format!(
-        "{id}: {}/{} FE, progress {}/{}, water {}/{} mB, gas {} {}/{}",
+        "{id}: {}/{} FE, progress {}/{}, water {}/{} mB, gas {} {}/{}, mode {}",
         machine.energy,
         capacity,
         machine.progress,
@@ -1177,7 +1237,8 @@ pub(crate) fn condensentrator_info_text(
         CONDENSENTRATOR_TANK,
         tank_name(gas),
         gas.amount,
-        CONDENSENTRATOR_TANK
+        CONDENSENTRATOR_TANK,
+        condensentrator_mode_name(mode)
     )
 }
 
@@ -3123,6 +3184,7 @@ impl BlockEntityPart for CondensentratorPart {
 
     fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
         let mut saved = Tag::Compound(event.entity.nbt.clone());
+        let mode = read_condensentrator_mode(&saved);
         let mut machine = read_machine(&saved, CONDENSENTRATOR_CAPACITY);
         let mut water = read_washer_fluid(&saved);
         let mut gas = read_tank(&saved);
@@ -3131,11 +3193,18 @@ impl BlockEntityPart for CondensentratorPart {
             CONDENSENTRATOR_OPERATION,
             &mut water,
             &mut gas,
-            CondensentratorMode::Decondensentrating,
+            mode,
             &condensentrating::recipe_for_fluid,
             &condensentrating::recipe_for_chemical,
         );
-        let pushed = push_chemical(host, event.pos, &mut gas, CONDENSENTRATOR_TANK);
+        // Upstream ejects the *gas* only in fluid → gas mode. In gas → fluid mode
+        // the product is water and it stays in the machine's fluid tank, which
+        // `/mekanism info` reports and `horizon:fluids` can drain.
+        let pushed = if mode == CondensentratorMode::Decondensentrating {
+            push_chemical(host, event.pos, &mut gas, CONDENSENTRATOR_TANK)
+        } else {
+            0
+        };
         write_state(&mut saved, machine.energy, machine.progress);
         write_washer_fluid(&mut saved, &water);
         write_tank(&mut saved, &gas);
@@ -3175,6 +3244,14 @@ impl CondensentratorTanks {
             .unwrap_or_default()
     }
 
+    /// The direction saved on the block entity the capability answers for.
+    fn mode(&self, host: &mut dyn ServerHost) -> CondensentratorMode {
+        host.block_entity(self.side.level, self.side.pos)
+            .and_then(|entity| entity.data(&*host))
+            .map(|saved| read_condensentrator_mode(&Tag::Compound(saved)))
+            .unwrap_or(CondensentratorMode::Decondensentrating)
+    }
+
     fn store(&self, host: &mut dyn ServerHost, tank: &Tank) -> bool {
         let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
             return false;
@@ -3212,13 +3289,23 @@ impl ResourceHandler<Chemical> for CondensentratorTanks {
 
     fn insert(
         &self,
-        _: &mut dyn ServerHost,
+        host: &mut dyn ServerHost,
         _: &Transaction,
-        _: usize,
-        _: &Chemical,
-        _: u32,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
     ) -> u32 {
-        0 // the gas tank is an output in the mode this machine runs in
+        if index != 0 || !may_insert_condensentrator_gas(self.mode(host), chemical.as_str()) {
+            return 0; // the gas tank is an output in fluid → gas mode
+        }
+        let mut tank = self.held(host);
+        let went = insert_chemical(&mut tank, chemical.as_str(), amount, self.capacity)
+            .unwrap_or_default();
+        if went > 0 && self.store(host, &tank) {
+            went
+        } else {
+            0
+        }
     }
 
     fn extract(
@@ -3229,7 +3316,7 @@ impl ResourceHandler<Chemical> for CondensentratorTanks {
         chemical: &Chemical,
         amount: u32,
     ) -> u32 {
-        if index != 0 {
+        if index != 0 || !may_extract_condensentrator_gas(self.mode(host)) {
             return 0;
         }
         let mut tank = self.held(host);
@@ -3950,6 +4037,7 @@ pub(crate) fn info_line(host: &mut dyn ServerHost, pos: [i32; 3]) -> Option<Stri
             read_machine(&saved, capacity),
             &read_washer_fluid(&saved),
             &read_tank(&saved),
+            read_condensentrator_mode(&saved),
         ));
     }
     let input = slot_stack(
@@ -4014,6 +4102,34 @@ pub(crate) fn set_energy(host: &mut dyn ServerHost, pos: [i32; 3], amount: i32) 
     // `merge_data` is `/data merge block`: it loads the patch and marks the chunk
     // changed, which is the `setChanged` the retired bundle had to fake.
     entity.merge_data(host, patch).ok().map(|_| energy)
+}
+
+/// `/mekanism mode <pos>`: flip a rotary Condensentrator's direction, the
+/// harness's stand-in for upstream's Configurator right-click (`nextMode()`).
+/// It touches only this mod's block and writes the saved `mode` byte through
+/// `merge_data`, which also marks the chunk changed (`setChanged()` upstream).
+pub(crate) fn toggle_mode(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
+    let Some(level) = host.level(host.dimension()) else {
+        return "No rotary condensentrator there.".to_owned();
+    };
+    let Some(id) = level.block(&*host, pos).map(|block| block.id(&*host)) else {
+        return "No rotary condensentrator there.".to_owned();
+    };
+    if !is_condensentrator(&id) {
+        return "No rotary condensentrator there.".to_owned();
+    }
+    let Some(entity) = host.block_entity(level, pos) else {
+        return "No rotary condensentrator there.".to_owned();
+    };
+    let saved = Tag::Compound(entity.data(&*host).unwrap_or_default());
+    let next = next_condensentrator_mode(read_condensentrator_mode(&saved));
+    if entity
+        .merge_data(host, condensentrator_mode_patch(next))
+        .is_err()
+    {
+        return "No rotary condensentrator there.".to_owned();
+    }
+    format!("Mode set to {}.", condensentrator_mode_name(next))
 }
 
 #[cfg(test)]
@@ -4856,20 +4972,84 @@ mod separator_glue_tests {
 mod condensentrator_glue_tests {
     use super::*;
 
-    /// One 10,000 mB tank, fillable from every face, no drain — the same shape
-    /// the washer and the separator declare through `horizon:fluids`.
+    /// One 10,000 mB tank, fillable from every face. In gas → fluid mode it is
+    /// also drainable: upstream's fluid tank is an output when `mode = false`,
+    /// and that is the fluid half of the reverse direction's output path.
     #[test]
     fn the_condensentrator_declares_one_10_000_mb_water_tank_a_fill_may_reach() {
         let tanks = condensentrator_fluids();
         assert_eq!(tanks.tanks, vec![10_000]);
         assert!(tanks.faces.iter().all(|face| face == &vec![0]));
         assert_eq!(tanks.inputs, vec![0]);
-        assert!(tanks.outputs.is_empty());
+        assert_eq!(tanks.outputs, vec![0]);
         assert_eq!(
             machine_capacity(CONDENSENTRATOR),
             Some(CONDENSENTRATOR_CAPACITY)
         );
         assert_eq!(machine_ticks(CONDENSENTRATOR), Some(1));
+    }
+
+    /// Upstream saves the direction as the boolean `mode`
+    /// (`SerializationConstants.MODE`). The patch this port writes must be the
+    /// same key and value `/data get block` reads, and a fresh compound must
+    /// still mean fluid → gas so the 14 earlier e2e logs stay green.
+    #[test]
+    fn the_mode_saved_boolean_round_trips_upstream_s_true_and_false() {
+        let fresh = Tag::Compound(Compound::new());
+        assert_eq!(
+            read_condensentrator_mode(&fresh),
+            CondensentratorMode::Decondensentrating,
+            "a fresh block entity keeps the port's fluid -> gas default"
+        );
+        for (mode, byte) in [
+            (CondensentratorMode::Decondensentrating, 1i8),
+            (CondensentratorMode::Condensentrating, 0i8),
+        ] {
+            let saved = Tag::Compound(condensentrator_mode_patch(mode));
+            assert_eq!(saved.get("mode"), Some(&Tag::Byte(byte)));
+            assert_eq!(read_condensentrator_mode(&saved), mode);
+        }
+    }
+
+    /// `nextMode()` flips the boolean and calls `setChanged()`; the pure half of
+    /// that is a two-way toggle, nothing a third state could slip into.
+    #[test]
+    fn a_mode_toggle_flips_between_the_two_directions() {
+        assert_eq!(
+            next_condensentrator_mode(CondensentratorMode::Decondensentrating),
+            CondensentratorMode::Condensentrating
+        );
+        assert_eq!(
+            next_condensentrator_mode(CondensentratorMode::Condensentrating),
+            CondensentratorMode::Decondensentrating
+        );
+    }
+
+    /// The gas tank's gates, read from `TileEntityRotaryCondensentrator` at
+    /// `a00109e4`: a foreign insert is refused while the gas is an output
+    /// (fluid → gas) and accepted for a rowed chemical in gas → fluid mode;
+    /// external extraction is the mirror image.
+    #[test]
+    fn the_gas_handler_gates_follow_upstream_s_mode_boolean() {
+        let vapour = "mekanism:water_vapor";
+        assert!(!may_insert_condensentrator_gas(
+            CondensentratorMode::Decondensentrating,
+            vapour
+        ));
+        assert!(may_insert_condensentrator_gas(
+            CondensentratorMode::Condensentrating,
+            vapour
+        ));
+        assert!(!may_insert_condensentrator_gas(
+            CondensentratorMode::Condensentrating,
+            "mekanism:unobtainium"
+        ));
+        assert!(may_extract_condensentrator_gas(
+            CondensentratorMode::Decondensentrating
+        ));
+        assert!(!may_extract_condensentrator_gas(
+            CondensentratorMode::Condensentrating
+        ));
     }
 
     /// Its gas tank is saved under the same keys the neighbour handler reads,
@@ -4887,7 +5067,8 @@ mod condensentrator_glue_tests {
     }
 
     /// The exact line the in-game leg asserts: the FE, the one-tick progress,
-    /// the water and the gas tank's parsed id and amount.
+    /// the water and the gas tank's parsed id and amount, and the mode the
+    /// `/mekanism mode` toggle saved.
     #[test]
     fn the_condensentrator_info_line_is_the_one_the_e2e_asserts() {
         assert_eq!(
@@ -4900,9 +5081,10 @@ mod condensentrator_glue_tests {
                 },
                 &FluidTank::new("minecraft:water", 999),
                 &Tank::new("mekanism:water_vapor", 1),
+                CondensentratorMode::Condensentrating,
             ),
             "mekanism:rotary_condensentrator: 19950/20000 FE, progress 0/1, \
-             water 999/10000 mB, gas mekanism:water_vapor 1/10000"
+             water 999/10000 mB, gas mekanism:water_vapor 1/10000, mode condensentrating"
         );
     }
 }

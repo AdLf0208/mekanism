@@ -4967,3 +4967,186 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > `made for` at the pin and `fits` at `0b14f8a`; 157 tests, clippy `-D warnings` clean; bounded game
 > leg `PASS` + `EXIT:0` with exactly 50 FE and 1 mB spent and the neighbour tank holding exactly 1
 > water vapour, the dry control spending nothing, `SELFTEST=condensentrator` `EXIT:1`.
+
+## Slice 20 — the condensentrating (gas → fluid) half (0.2.18, 2026-11-24)
+
+### The scope authority, quoted
+
+This is the previous slice's own `## Next slice` (`notes.md`, end of slice 19), itself *Gaps after
+slice 19* item 2 and the jar's same `water_vapor` row, verbatim:
+
+> **Family:** complete the rotary Condensentrator's gas → fluid (condensentrating) half, from *Gaps
+> after slice 19* item 2 and the jar's same `water_vapor` row. The pure rule already passes
+> `a_charged_vapour_tank_decondensentrates_back_into_water`; what is missing is the machine shape that
+> drives it. It fits the `deep` tier as the same machine: add a mode toggle (`/mekanism mode`, saved
+> as upstream's `mode` boolean), let the chemical handler accept a gas insert in that mode, and give
+> the fluid tank an output path for the water it makes. **In-game assertion:** place a condensentrator
+> beside a tank, insert a known amount of `mekanism:water_vapor` into its gas tank, toggle to
+> condensentrating, charge exactly 50 FE, and assert its parsed `/mekanism info` shows the gas tank
+> down by 1 and `water +1/10000 mB`, with a no-gas control spending nothing and `SELFTEST` flipping
+> the water amount to `EXIT:1`.
+
+**Chosen: that half and nothing else.** It closes the machine's second direction without a new
+block, renderer, entity, dimension or capability: the same block entity, energy buffer, one
+`horizon:fluids` water tank and one `mekanism:chemical` gas tank, now with a persisted direction and
+a mode-gated pair of handlers. It fits the ledger's **content / deep** row in the machines shape
+proven throughout this port.
+
+### The surface gate, before any code
+
+No surface was missing, so the slice did not stop as `blocked(...)`:
+
+| surface | measured where |
+|---|---|
+| the `mode` boolean persists on the block entity | `Tag::Byte` under the saved key `mode`, written by `merge_data` exactly as `/mekanism energy` writes `energy` (`src/support.rs:set_energy`); the SDK's NBT `Tag::Byte` is the game's boolean (`horizon-core/src/nbt.rs`) |
+| a chemical insert in gas → fluid mode | `ResourceHandler<Chemical>::insert` on the declared `mekanism:chemical` handler (`src/chemical.rs`, slice 4), gated by the saved mode read through `BlockEntityRef::data` |
+| a fluid output from the water tank | `ModFluidTanks.outputs` (`horizon-mod-vocab/src/item/containers.rs:224`) — the tank's contents live in the `fluids` list of the entity's saved compound, so the game's own `horizon:fluids` reads and drains it |
+
+### The artefact rules, read before coding (tag `v1.21.1-10.7.19.85`, `a00109e4`)
+
+Analysis only, no Java translated. `TileEntityRotaryCondensentrator.java`:
+
+| value | source | port |
+|---|---|---|
+| `private boolean mode`, `true` = fluid → chemical | field comment and `getMode()` (`:78-83`) | `CondensentratorMode::{Decondensentrating,Condensentrating}` |
+| `nextMode()` flips it and calls `setChanged()` | `IHasMode` override (`:183-190`) | `/mekanism mode <pos>` flips the saved byte through `merge_data` |
+| saved under `SerializationConstants.MODE = "mode"` | `readSustainedData`/`writeSustainedData` (`:236-245`), `SerializationConstants.java` (`MODE = "mode"`) | saved `Tag::Byte(1)` for fluid → gas, `0` for gas → fluid; `/data get block … mode` reads it |
+| gas tank `canInsert = INTERNAL || !mode`, `canExtract = MANUAL || mode`; `isValidGas` needs a row | `getInitialChemicalTanks` (`:124-133`) | `may_insert_condensentrator_gas` / `may_extract_condensentrator_gas`, with `condensentrating::recipe_for_chemical` as `isValidGas` |
+| fluid tank `canInsert = INTERNAL || mode`, `canExtract = MANUAL || !mode` | `getInitialFluidTanks` (`:139-146`) | the tank is declared both fillable and drainable (a declaration cannot change per block entity — recorded deviation) |
+| gas is ejected only in fluid → gas mode | `ejectorComponent.setCanEject` (`:103-113`) | `push_chemical` is gated to `Decondensentrating`; the water made in the reverse mode stays in the tank |
+| both tanks `CAPACITY = 10 * BUCKET_VOLUME`, one operation = one tick | `:87`, `CachedRecipe.java:67` | 10,000 units/mB, 50 FE, unchanged from slice 19 |
+
+### Red → green
+
+The four new glue tests plus the changed info-line test were written first and ran red on the
+untouched tree (`../_shared/evidence/mekanism/slice20-unit-red.log`):
+
+```
+error[E0425]: cannot find function `read_condensentrator_mode` in this scope
+    --> src/support.rs:4884:13
+ ...
+error: could not compile `mekanism` (lib test) due to 11 previous errors
+```
+
+Then the mode helpers, the mode-aware tick, the two handler gates, the drainable tank declaration and
+the `/mekanism mode` command made the whole crate green: **160 tests** (was 157; +3 new glue tests),
+clippy `-D warnings` clean, `cargo fmt --check` clean.
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the saved `mode` boolean: default fluid → gas, toggled gas → fluid, survives `/data get block` | **tested** | unit `the_mode_saved_boolean_round_trips_upstream_s_true_and_false` / `a_mode_toggle_flips_between_the_two_directions`; S20 `info … mode decondensentrating` before, `Mode set to condensentrating.` and `data get block … mode: 0` after |
+| the gas handler's mode gate (insert refused in fluid → gas, accepted for a rowed chemical in gas → fluid) | **tested** | unit `the_gas_handler_gates_follow_upstream_s_mode_boolean`; S20 `chemical insert before toggle: … inserted 0 … (0/10000)` then `inserted 5 … (5/10000)` |
+| one gas unit → 1 mB water for exactly 50 FE, gas down 5 → 4, water 0 → 1 | **tested** | S20 `info(12,76,8): … 0/20000 FE, … water 1/10000 mB, gas mekanism:water_vapor 4/10000, mode condensentrating`, saved `amount: 4`, `fluids[0].Amount: 1` |
+| the fluid output path is readable through the game's capability | **tested** | S20 `fluid read (12,76,8): fluid: … holds minecraft:water 1/10000 (answered by the game)`; unit `the_condensentrator_declares_one_10_000_mb_water_tank_a_fill_may_reach` asserts `outputs == [0]` |
+| no gas → nothing spent or made (differential) | **tested** | the gasless control at `(16,76,8)`: `50/20000 FE, water 0/10000 mB, gas empty 0/10000`, saved amount 0 |
+| the assertion can fail | **tested** | `SELFTEST=condensentrating` → `FAIL: condensentrating: expected 'water 2/10000 mB' …` + `EXIT:1` (`e2e-cond-rev-selftest.log`) |
+| all earlier families (19 shaped recipes, 156 crushing, 163+7 smelting, 136 enriching, 79 injecting, 15 purifying, 7 washing, 7 crystallizing, 12 dissolution, factories, the four-phase acid chain, separator, slice-19 forward direction, persistence, capability) | **tested (unchanged)** | the full package leg's `PASS` + `EXIT:0` (`e2e-package.log`) prints every earlier sweep's verdict |
+| the 16 other rotary rows (`c:brine`, `c:steam`, …) | **not ported** | no fluid member in 26.3; `tools/gen_condensentrating.py --check` prints each skipped file |
+| upstream's ejector that would push the made water into a configured face | **not ported** | the tank is drainable through `horizon:fluids` instead; recorded deviation below |
+| side config, GUI, `active` state, upgrades | **not ported** | the recorded machine deviations; the barrel template's unused `open` state stands in |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| glue tests RED | `cargo test --offline condensentrator_glue_tests` on the untouched tree | **11 errors**, first `cannot find function read_condensentrator_mode` (`slice20-unit-red.log`) |
+| tests | `cargo test --offline` (forwarded, after the final build) | **160 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (forwarded) | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (forwarded) | clean (`slice20-fmt.log`) |
+| recipe tables / art / tags | the twelve `gen_*.py --check`, eight `carry_*.py --check`, `check-block-tags.py`, `check-recipe-types.py mekanism` | 163 / 136 / 156 / 79 / 15 / 7 / 7 / 12 / 1 / 2 / 1 / **1** rows; 11+18+6+50+5+14+52+**4** carried files; **24** blocks; `mekanism: ok` (`slice20-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **286,578 B**, `cmp` identical, sha256 `4a21b34897895797db27f8f15ae1d54174d3a33a01d35347fb8002938fec5c04` (`slice20-build.log`, `slice20-build-second.log`, `slice20-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.18 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **430 entries** (`slice20-check-and-fits.log`) |
+| fits, the pin | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 |
+| fits, a different build | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (286,578 B, 430 entries, no packed `Cargo.lock`, package matches the tree, 160 tests, clippy 0, R9 clean) (`slice20-verify-package.log`) |
+| launcher build | `launcher-game.sh build mekanism` (no `native-*` tag carried this manifest — checked, none needed removal) | `Compiling mekanism (1 of 1)`, `native-0a875da-51467aa1f12c` (`slice20-launcher-build.log`) |
+| bounded leg | `build-slot.sh run --step e2e -- bash tools/e2e-cond-rev.sh` | **`PASS` + `EXIT:0`** (`e2e-cond-rev.log`) |
+| bounded selftest | `SELFTEST=condensentrating` on the same leg | **`FAIL` + `EXIT:1`** (`e2e-cond-rev-selftest.log`) |
+| full package leg | `build-slot.sh run --step e2e -- bash tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-package.log`) — all 19 shaped recipes, every sweep and the four-phase acid chain green, unchanged |
+| unmodded-game control | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=16 ok=16 missing-exit=0 bad-exit=0` (`slice20-log-gate.log`) |
+
+### In-game proof (`tools/e2e-cond-rev.sh` + `tools/condensentrating.py`, `--offscreen`, `E2E_TMP`)
+
+The bounded leg's two phases, quoted verbatim from `../_shared/evidence/mekanism-e2e/e2e-cond-rev.log`:
+
+```
+== control: no gas, so a condensentrating machine spends nothing ==
+  mode(16, 76, 8): Mode set to condensentrating.
+  info(16, 76, 8): mekanism:rotary_condensentrator: 50/20000 FE, progress 0/1, water 0/10000 mB, gas empty 0/10000, mode condensentrating
+  control PASS: no gas, no water and no energy spent
+== S20: the gas → fluid row: 1 water vapour -> 1 mB water for exactly 50 FE ==
+  chemical insert before toggle: chemical: inserted 0 mekanism:water_vapor into mekanism:rotary_condensentrator (0/10000)
+  info(12, 76, 8) before toggle: mekanism:rotary_condensentrator: 0/20000 FE, progress 0/1, water 0/10000 mB, gas empty 0/10000, mode decondensentrating
+  mode(12, 76, 8): Mode set to condensentrating.
+  data get block (12, 76, 8) mode: 0
+  chemical insert 5 (12, 76, 8): chemical: inserted 5 mekanism:water_vapor into mekanism:rotary_condensentrator (5/10000)
+  info(12, 76, 8): mekanism:rotary_condensentrator: 0/20000 FE, progress 0/1, water 1/10000 mB, gas mekanism:water_vapor 4/10000, mode condensentrating
+  data get block (12, 76, 8) amount (gas): 4
+  data get block (12, 76, 8) fluids[0].Amount (water): 1
+  fluid read (12, 76, 8): fluid: mekanism:rotary_condensentrator holds minecraft:water 1/10000 (answered by the game)
+PASS: one condensentrating operation spent exactly 50 FE and one mekanism:water_vapor unit and made 1 mB of water, saved and readable through the fluid capability; the insert was refused before the mode toggle
+EXIT:0
+```
+
+What the numbers prove: the first insert moved **0** while the machine was in its default
+fluid → gas mode, so the handler's mode gate is the product; after the toggle the saved `mode` byte
+is **0** (upstream's `false`), and the same insert moved **5**; one operation's **50 FE** bought
+exactly one gas unit → 1 mB, with the gas tank reading **4/10000** and the water tank **1/10000**
+both in the parsed info line and in the saved `amount`/`fluids[0].Amount` ints. The gasless control
+at a different block entity kept all 50 FE and made neither water nor gas. `SELFTEST=condensentrating`
+flips the water expectation to 2 and fails verbatim with `EXIT:1`.
+
+### `## Upstream defects fixed`
+
+None found. The mode byte, the mode-gated insert/extract predicates, the one-tick 50 FE operation
+and the 1 unit ↔ 1 mB amounts are the artefact's own numbers, carried as read.
+
+### Deviations this slice records
+
+- **The initial mode is fluid → gas** (slice 19's recorded choice), which is upstream's `mode = true`
+  even though a Java field with no initializer would start `false`; it keeps the acid chain and the
+  14 earlier e2e logs working, and `/mekanism mode` reaches the other direction.
+- **The water tank is declared both fillable and drainable on every face.** Upstream switches the
+  extract predicate with `mode`; a `ModFluidTanks` declaration is static per block, so the mode is
+  enforced by which tank the machine's own tick writes, and a neighbour may insert or drain at any
+  time. The made water is **not** pushed out (upstream's ejector is not ported); it stays in the tank
+  and is read by `/mekanism info` and the game's `horizon:fluids` handler.
+- **`/mekanism mode` is the Configurator stand-in** (op 2), since this port draws no GUI and ships no
+  Configurator item; it writes the same saved `mode` key upstream's `nextMode()` does.
+- The modelled blockstate is still the barrel template's `facing` × `open`; the jar's `active` state
+  and the machine GUI remain unported.
+
+### `## Next slice`
+
+**Family:** the advanced/elite/ultimate energy cubes and cables, from `FINDINGS.md` *Next slices*
+item 4, verbatim:
+
+> **Tiers**: advanced/elite/ultimate energy cubes and cables (same code, different constants — a tier
+> table).
+
+It fits the `deep` tier as the same machines shape (one block entity, one buffer, only new constants
+and carried art — no new capability, entity or renderer), and it is the smallest remaining family
+whose every behaviour the pin can express. **In-game assertion:** place an Advanced Energy Cube at a
+known position, put an Advanced Universal Cable between it and an uncharged smelter, and assert the
+parsed `/mekanism info` reports the cube's **8,000,000 FE** capacity and the cable's **24,000 FE**
+buffer; charge the cube with exactly 24,000 FE and, after one tick, assert the smelter holds exactly
+24,000 FE while a basic-cable differential (same charge, 8,000 FE buffer) moves only 8,000 FE, and a
+no-cable control moves nothing.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices,rust-port
+
+### Changelog (0.2.18) — supersedes 0.2.17
+
+> **0.2.18 — the condensentrating (gas → fluid) half of the rotary Condensentrator.** `/mekanism mode`
+> flips a saved `mode` byte (upstream's `SerializationConstants.MODE`), the chemical handler refuses
+> a gas insert until that mode is set and then accepts a rowed chemical, and the water tank is a
+> drainable output that reports the water it makes. One unit of `mekanism:water_vapor` + 50 FE →
+> 1 mB of water in one tick, proven in game with a gasless control, the before-toggle refusal and a
+> `SELFTEST=condensentrating` flip. Package: **430 entries, 286,578 B**, sha256
+> `4a21b34897895797db27f8f15ae1d54174d3a33a01d35347fb8002938fec5c04`; `check` exit 0; `fits` `made
+> for` at the pin and `fits` at `0b14f8a`; 160 tests, clippy `-D warnings` clean; bounded game leg
+> `PASS` + `EXIT:0`, the unmodded game `EXIT:1`, `SELFTEST=condensentrating` `EXIT:1`, the full package
+> leg `PASS` + `EXIT:0`, and 16/16 e2e logs green under `--strict`.

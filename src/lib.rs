@@ -82,6 +82,11 @@ impl Hooks for Mod {
         event
             .commands
             .push(Command::new("mekanism progress <pos:block_pos>"));
+        // Slice 20: the rotary Condensentrator's mode toggle (upstream's
+        // Configurator right-click), saved as the block entity's `mode` boolean.
+        event
+            .commands
+            .push(Command::op("mekanism mode <pos:block_pos>", 2));
         // Slice 4's chemical capability: read it as a consumer through the key,
         // put a chemical in and take one out through it, and read the item's.
         event.commands.push(Command::new("mekanism chemical list"));
@@ -168,6 +173,7 @@ impl Hooks for Mod {
                     }
                     ["mekanism", "progress"] => support::progress_line(host, *pos)
                         .unwrap_or_else(|| "No block entity there.".to_owned()),
+                    ["mekanism", "mode"] => support::toggle_mode(host, *pos),
                     ["mekanism", "chemical", "read"] => support::chemical_readout(host, *pos),
                     ["mekanism", "chemical", "insert"] => {
                         let Some(CommandArgumentValue::Integer(amount)) =

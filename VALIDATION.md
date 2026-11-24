@@ -1,5 +1,73 @@
 # Validation
 
+## 0.2.18 — the condensentrating half, slice 20 (2026-11-24)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran through
+`ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`). The
+compile steps forwarded to `AdLf-PC`; the launcher build and the `--offscreen` game legs stayed
+local (the far box has no renderer or launcher). `sdk-test.log` and `sdk-clippy.log` were
+regenerated from the final 0.2.18 tree **after** the last forwarded step.
+
+The artefact's mode field and handler gates were read at tag `v1.21.1-10.7.19.85` (`a00109e4`)
+before any code: `private boolean mode` with `true` = fluid → chemical, `nextMode()` flipping it and
+calling `setChanged()`, the byte saved under `SerializationConstants.MODE = "mode"`, gas tank
+`canInsert = INTERNAL || !mode` / `canExtract = MANUAL || mode`, fluid tank `canInsert = INTERNAL ||
+mode` / `canExtract = MANUAL || !mode`, both tanks `CAPACITY = 10 * BUCKET_VOLUME`. No surface was
+missing, so the slice did not stop as `blocked(...)`.
+
+| Check | Command | Result |
+|---|---|---|
+| the missing glue path, RED first | `cargo test --offline condensentrator_glue_tests` on the untouched tree | **11 errors**, first `cannot find function read_condensentrator_mode` (`slice20-unit-red.log`) |
+| tests | `cargo test --offline` (forwarded, after the final build) | **160 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (forwarded) | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (forwarded) | clean (`slice20-fmt.log`) |
+| recipe tables / art / tags | twelve `gen_*.py --check`, eight `carry_*.py --check`, `check-block-tags.py`, `check-recipe-types.py mekanism` | 163 / 136 / 156 / 79 / 15 / 7 / 7 / 12 / 1 / 2 / 1 / 1 rows; 11+18+6+50+5+14+52+4 carried files; 24 blocks; `mekanism: ok` (`slice20-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **286,578 B**, `cmp` identical, sha256 `4a21b34897895797db27f8f15ae1d54174d3a33a01d35347fb8002938fec5c04` (`slice20-build.log`, `slice20-build-second.log`, `slice20-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.18 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 430 entries (`slice20-check-and-fits.log`) |
+| fits, the pin | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 |
+| fits, a different build | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (430 entries, no packed `Cargo.lock`, package matches the tree, 160 tests, clippy 0, R9 clean) (`slice20-verify-package.log`) |
+| launcher build | `launcher-game.sh build mekanism` (no `native-*` tag carried this manifest) | `Compiling mekanism (1 of 1)`, `native-0a875da-51467aa1f12c` (`slice20-launcher-build.log`) |
+| bounded leg | `build-slot.sh run --step e2e -- bash tools/e2e-cond-rev.sh` | **`PASS` + `EXIT:0`** (`e2e-cond-rev.log`) |
+| bounded selftest | `SELFTEST=condensentrating` on the same leg | **`FAIL: condensentrating: expected 'water 2/10000 mB' …` + `EXIT:1`** (`e2e-cond-rev-selftest.log`) |
+| full package leg | `build-slot.sh run --step e2e -- bash tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-package.log`): all 19 shaped recipes, 156 crushing / 163+7 smelting / 136 enriching / 79 injecting / 15 purifying / 7 washing / 7 crystallizing / 12 dissolution rows and the 4-phase acid chain green |
+| unmodded-game control | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=16 ok=16 missing-exit=0 bad-exit=0` (`slice20-log-gate.log`) |
+
+### In-game proof of the condensentrating half
+
+The bounded leg (`tools/e2e-cond-rev.sh`, the launcher-built game, `E2E_TMP` on the scratch volume)
+ended **`PASS` + `EXIT:0`**. Its gasless control used a different block entity at `(16,76,8)` and
+kept `50/20000 FE, water 0/10000 mB, gas empty 0/10000`. The main phase first inserted 5 units of
+`mekanism:water_vapor` through `mekanism:chemical` **before** the toggle and got `inserted 0` (the
+mode gate); after `/mekanism mode` the saved `mode` byte read `0`, the same insert moved 5, and one
+operation's 50 FE turned 1 unit into 1 mB, verbatim:
+
+```
+  chemical insert before toggle: chemical: inserted 0 mekanism:water_vapor into mekanism:rotary_condensentrator (0/10000)
+  chemical insert 5 (12, 76, 8): chemical: inserted 5 mekanism:water_vapor into mekanism:rotary_condensentrator (5/10000)
+  info(12, 76, 8): mekanism:rotary_condensentrator: 0/20000 FE, progress 0/1, water 1/10000 mB, gas mekanism:water_vapor 4/10000, mode condensentrating
+  data get block (12, 76, 8) amount: 4
+  data get block (12, 76, 8) fluids[0].Amount: 1
+  fluid read (12, 76, 8): fluid: mekanism:rotary_condensentrator holds minecraft:water 1/10000 (answered by the game)
+```
+
+`SELFTEST=condensentrating` flips the water expectation to 2 and the leg fails verbatim
+(`e2e-cond-rev-selftest.log`):
+
+```
+FAIL: condensentrating: expected 'water 2/10000 mB' in 'mekanism:rotary_condensentrator: 0/20000 FE, progress 0/1, water 1/10000 mB, gas mekanism:water_vapor 4/10000, mode condensentrating'
+EXIT:1
+```
+
+Harness facts kept: the mutating commands (mode toggle, gas insert, energy charge) are each sent
+**once** through a `mutate()` helper — a re-sent charge would have bought more than one operation;
+and the saved `mode`, gas `amount` and water `fluids[0].Amount` ints are asserted independently of
+the chat lines.
+
 ## 0.2.17 — the rotary Condensentrator, slice 19 (2026-11-24)
 
 Validated on Linux against the campaign pin **Horizon
