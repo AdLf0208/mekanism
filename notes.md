@@ -4768,3 +4768,202 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > tests, clippy `-D warnings` clean; bounded game leg `PASS` + `EXIT:0` with exactly 400 FE and 2
 > mB spent and the two neighbour tanks holding 2 hydrogen and 1 oxygen, the dry control spending
 > nothing, `SELFTEST=sep` `EXIT:1`.
+
+## Slice 19 — the rotary Condensentrator (0.2.17, 2026-11-24)
+
+### The scope authority, quoted
+
+This is the previous slice's own `## Next slice` (`notes.md`, end of slice 18),
+itself *Gaps after slice 17* item 1, verbatim:
+
+> **Family:** the rotary Condensentrator (water ↔ steam / water vapour), from *Gaps after slice 17*
+> item 1 — the only remaining hand-filled input of the acid chain once this slice makes oxygen. It
+> fits the `deep` tier as the same machines shape: a block entity, energy buffer, one
+> `horizon:fluids` water tank and one chemical tank, no entity, renderer or dimension. Read
+> `TileEntityRotaryCondensentrator`/`RotaryCondensentratorConfig` and the jar's
+> `condensentrating`/`decondensentrating` recipes first for its exact FE/t, buffer, tank capacity and
+> ticks; then check the same three surfaces (the fluid declaration, `mekanism:chemical`, and the
+> neighbour tank write) before coding. **In-game assertion:** place a condensentrator beside a tank
+> holding water, charge its buffer, and assert its parsed `/mekanism info` spends exactly the row's
+> FE while a neighbour tank gains exactly the declared vapour units (`chemical read … <n>/64000`);
+> an empty-water control spends nothing, and `SELFTEST=condensentrator` flips one amount and ends
+> `EXIT:1`.
+
+**Chosen: that machine and nothing else.** It closes the acid chain's last hand-filled gas: the
+infuser's oxygen now comes from the separator and its water vapour from this machine. It fits the
+ledger's **content / deep** row as the machine shape proven throughout this port: one block entity,
+an insert-only energy buffer, one game-owned fluid water tank, one `mekanism:chemical` gas tank and
+its own tick — no entity, renderer, dimension or new vanilla hook.
+
+### The surface check (done before any code)
+
+None was missing, so the slice did not stop as `blocked(...)`:
+
+| surface | measured where |
+|---|---|
+| `horizon:fluids` on a block entity, one fill-only tank | `support::washer_fluids` / `support::separator_fluids` (`src/support.rs:560`, `:575`); SDK `default_capabilities.rs:43` `block_fluids` |
+| `mekanism:chemical` published and read through `LevelRef::capability` | `src/chemical.rs:61`, slice 4 |
+| neighbour tank write, measured by `ResourceHandler::insert` | `support::push_chemical` (`src/support.rs:2129`), slice 17's acid push |
+| `ResourceHandler::extract` + a one-tank handler shape | `Support::SeparatorTanks`, `OxidizerTank` |
+
+### What the jar and the upstream source say (numbers with their files)
+
+Read at tag `v1.21.1-10.7.19.85` (commit `a00109e4`), analysis only, no Java translated:
+
+| value | source | port |
+|---|---|---|
+| **50 FE/t** | `UsageConfig.java:61`, `rotaryCondensentrator = CachedLongValue.definePositive(..., 50L)` | `CONDENSENTRATOR_USAGE = 50` |
+| **20,000 FE** buffer | `StorageConfig.java:70-71`, `rotaryCondensentrator = ...(20_000L, 1)` | `CONDENSENTRATOR_CAPACITY` |
+| **1 tick per operation** = 50 FE | `TileEntityRotaryCondensentrator` extends `TileEntityRecipeMachine` and never calls `setRequiredTicks`; `CachedRecipe.java:67` defaults to one | `CONDENSENTRATOR_TICKS = 1`, `CONDENSENTRATOR_OPERATION` |
+| **10,000 mB / 10,000 units, both tanks** | `TileEntityRotaryCondensentrator.java:87`, `CAPACITY = 10 * FluidType.BUCKET_VOLUME`, used for both `gasTank` and `fluidTank` | `CONDENSENTRATOR_TANK = 10_000` |
+| **1 mB water ↔ 1 unit water vapour** | jar `data/mekanism/recipe/rotary/water_vapor.json`: `chemical_input/chemical_output` `mekanism:water_vapor` ×1, `fluid_input`/`fluid_output` `minecraft:water` ×1 (amount 1 on every side) | `tools/gen_condensentrating.py` → `condensentrating::TABLE` (1 of 17 rows) |
+| the other 16 rows | jar `data/mekanism/recipe/rotary/{brine,steam,hydrogen,…}.json` name `c:` fluid tags with no member in 26.3 | skipped and printed by the generator |
+| mode (fluid → gas vs gas → fluid) | `TileEntityRotaryCondensentrator.java:95-100`, saved as the `mode` boolean (`:236-245`); `true` is fluid → gas | `CondensentratorMode` enum; the glue runs `Decondensentrating` (the acid chain's direction) |
+
+The brief's prose said "one water tank and one chemical tank" without a number; the artefact's
+`CAPACITY` is **10,000 for both**, which the port carries. Like the separator's 400 FE correction,
+this slice reads the source rather than a guessed figure.
+
+### Red → green
+
+The four family tests were written first and ran red on the untouched tree
+(`../_shared/evidence/mekanism/slice19-unit-red.log`):
+
+```
+error[E0425]: cannot find value `CONDENSENTRATOR_USAGE` in this scope
+    --> src/runtime.rs:7777:20
+ ...
+error[E0433]: cannot find module or crate `condensentrating` in this scope
+    --> src/runtime.rs:7783:22
+ ...
+error: could not compile `mekanism` (lib test) due to 45 previous errors
+```
+
+Then `tools/gen_condensentrating.py`, the constants, `process_condensentrate_tick`, the
+`CondensentratorPart`, its one-tank handler and its `/mekanism info` line made the whole crate
+green: **157 passed** (was 150; +4 `runtime::condensentrator_tests`, +3
+`support::condensentrator_glue_tests`).
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the block, its block entity, 20,000 FE buffer, one 10,000 mB water tank, one 10,000-unit gas tank | **tested** | `the_condensentrator_declares_one_10_000_mb_water_tank_a_fill_may_reach`; `S19`: `info(12,76,8): mekanism:rotary_condensentrator: 0/20000 FE, progress 0/1, water 999/10000 mB, gas empty 0/10000` |
+| the water_vapor row: 1 mB → 1 unit for 50 FE | **tested** | `S19`: buffer 50 → 0, water 1,000 → 999, neighbour `holds mekanism:water_vapor 1/64000` and saved `amount: 1`; unit test `one_operation_turns_one_mb_of_water_into_one_unit_of_water_vapour` |
+| no water → nothing, no FE spent (differential) | **tested** | the dry control at `(16,76,8)`: `50/20000 FE, water 0/10000 mB`, both neighbours `holds nothing 0/64000` |
+| no energy, a full/foreign gas tank, or a fluid with no row holds/resets | **tested** | unit test `a_condensentrator_holds_without_energy_room_or_a_row` |
+| the gas tank saves under the keys the neighbour handler reads | **tested** | `support::condensentrator_glue_tests::the_condensentrator_s_gas_tank_saves_and_reads_back` |
+| the block's model/textures, loot, `mineable/pickaxe`, crafted recipe | **tested** | `tools/carry_condensentrator.py --check` (4 files), `check-block-tags.py` (24 blocks), `check-recipe-types.py mekanism` (`mekanism: ok`), and the 19th craft + wrong-ingredient control in the full package leg |
+| the assertion can fail | **tested** | `SELFTEST=condensentrator` → `FAIL: neighbour vapour: expected [(mekanism:water_vapor, 2)], got [('mekanism:water_vapor', 1)]` + `EXIT:1` |
+| all earlier families (smelting, enriching, crushing, injecting, purifying, washing, crystallizing, factories, storage/nugget, dissolution, acid chain, separator, persistence, capability) | **tested (unchanged)** | the full package leg still prints every earlier sweep's PASS line |
+| the 16 other rotary rows (`c:brine`, `c:steam`, …) | **not ported** | no fluid member in 26.3; the generator prints each skipped file |
+| the gas → fluid half driven by the machine's tick | **not ported** | the pure rule and its unit test exist, but the glue has no mode toggle or fluid-output path; upstream needs ejectors/transmitters too |
+| upstream's ejectors, side config, GUI and `active` state | **not ported** | the recorded machine deviations; the barrel template's unused `open` state stands in |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| family tests RED | `cargo test --offline` on the untouched tree | **45 errors**, first `cannot find value CONDENSENTRATOR_USAGE` (`slice19-unit-red.log`) |
+| tests | `cargo test --offline` (forwarded, after the final build) | **157 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (forwarded) | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (forwarded) | clean (`sdk-fmt.log`) |
+| recipe tables / art / tags | the twelve `gen_*.py --check`, eight `carry_*.py --check`, `check-block-tags.py`, `check-recipe-types.py mekanism` | 163 / 136 / 156 / 79 / 15 / 7 / 7 / 12 / 1 / 2 / 1 / **1** rows; 11+18+6+50+5+14+52+**4** carried files; **24** blocks; `mekanism: ok` (`slice19-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **284,129 B**, `cmp` identical, sha256 `8b95b174bea90040327edce3690d04022d15b1e400be0075eb4adfe98d3ec4d2` (`slice19-build.log`, `slice19-build-second.log`, `slice19-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | `mekanism 0.2.17 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **430 entries** (`slice19-check-and-fits.log`) |
+| fits, the pin | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 |
+| fits, a different build | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (430 entries, no packed `Cargo.lock`, package matches the tree, 157 tests, clippy 0, R9 clean) |
+| launcher build | `launcher-game.sh build mekanism` (no stale `native-*` tag carried this manifest) | `Compiling mekanism (1 of 1)`, `native-0a875da-9747e27e6227` (`slice19-launcher-build.log`) |
+| bounded leg | `build-slot.sh run --step e2e -- bash tools/e2e-cond.sh` | **`PASS` + `EXIT:0`** (`e2e-cond.log`) |
+| bounded selftest | `SELFTEST=condensentrator` on the same leg | **`FAIL` + `EXIT:1`** (`e2e-cond-selftest.log`) |
+| full package leg | `build-slot.sh run --step e2e -- bash tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-package.log`): all 19 shaped recipes craft (the new condensentrator among them), all 156 crushing / 163+7 smelting / 136 enriching / 79 injecting / 15 purifying / 7 washing / 7 crystallizing / 12 dissolution rows and the 4-phase acid chain run, every earlier sweep unchanged |
+| unmodded-game control | `GAME=$CONTROL_GAME` on the full leg | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| full selftest | `SELFTEST=1` on the full leg | **`FAIL` (the dissolution sweep's flipped row) + `EXIT:1`** (`e2e-selftest.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=14 ok=14 missing-exit=0 bad-exit=0` (`slice19-log-gate.log`) |
+
+### In-game proof (`tools/e2e-cond.sh` + `tools/condensentrator.py`, `--offscreen`, `E2E_TMP`)
+
+The bounded leg's two phases, quoted verbatim from `../_shared/evidence/mekanism-e2e/e2e-cond.log`:
+
+```
+== control: an empty-water condensentrator spends nothing and makes no gas ==
+  info(16, 76, 8): mekanism:rotary_condensentrator: 50/20000 FE, progress 0/1, water 0/10000 mB, gas empty 0/10000
+  chemical read (15, 76, 8): chemical: mekanism:basic_chemical_tank holds nothing 0/64000 (answered by mekanism)
+  chemical read (17, 76, 8): chemical: mekanism:basic_chemical_tank holds nothing 0/64000 (answered by mekanism)
+  control PASS: no water, no gas and no energy spent
+== the water row: 1 mB -> 1 water vapour for exactly 50 FE ==
+  fluid insert 1000 (12, 76, 8): fluid: inserted 1000 minecraft:water into mekanism:rotary_condensentrator (1000/10000)
+  info(12, 76, 8): mekanism:rotary_condensentrator: 0/20000 FE, progress 0/1, water 999/10000 mB, gas empty 0/10000
+  chemical read (11, 76, 8): chemical: mekanism:basic_chemical_tank holds mekanism:water_vapor 1/64000 (answered by mekanism)
+  data get block (11, 76, 8) amount: 1
+  chemical read (13, 76, 8): chemical: mekanism:basic_chemical_tank holds nothing 0/64000 (answered by mekanism)
+PASS: one condensentrator operation spent exactly 50 FE and 1 mB of water, and a neighbour tank gained exactly 1 unit of water vapour; the dry control spent nothing
+EXIT:0
+```
+
+What the numbers prove: the game's own `/mekanism info` read the buffer at 0/20000 after exactly
+one 50 FE operation (the charge is one operation's worth, so the count cannot depend on timing), the
+`horizon:fluids` tank lost exactly 1 mB, and the neighbour `mekanism:chemical` handler gained exactly
+the jar's 1 unit of water vapour — both by its parsed readout and by the saved `amount` int. The dry
+control at a *different* block entity spent no FE and made no gas. `SELFTEST=condensentrator` flips
+the vapour expectation to 2 and fails verbatim with `EXIT:1`.
+
+### What the harness taught this slice
+
+1. **A neighbour that receives nothing is not a failed assertion.** The first leg put tanks on both
+   sides and treated the empty right-hand tank as a failure; the machine's single gas unit goes to
+   whichever neighbour the game's face order reaches first. The assertion now skips empty tanks and
+   checks the exact id and total across them.
+2. **The mutating command is sent once** (`mutate()`, one attempt), inherited from the separator's
+   and slice 4's defect — a re-sent charge would have run two operations.
+3. `verify-sdk-package.py` pulls the remote evidence directory back after every forwarded step, so
+   refreshed `sdk-test.log`/`sdk-clippy.log` are copied into evidence **after** the last lease, not
+   written during it.
+
+### `## Upstream defects fixed`
+
+None found. The 50 FE/t, 20,000 FE buffer, 10,000-unit tanks, one-tick operation and 1↔1 amounts
+are the jar's and the source's own numbers. The one deviation is the recorded push: upstream needs
+ejectors or transmitters to move the gas out, this port's machine pushes it to a neighbour through
+`mekanism:chemical`.
+
+### Deviations this slice records
+
+- **The crafted recipe uses vanilla stand-ins** (iron block for the electrolytic core, glass for
+  cheap glass, iron ingot/redstone for the circuit and tablet), the precedent of the earlier machine
+  recipes; the jar's `mekanism:mek_data` recipe needs items this port does not register.
+- **The gas is pushed to any neighbour**, not to configured left/right faces; which neighbour
+  receives it is the game's face order, so the assertion checks the id and total across both tanks.
+- **The machine runs in fluid → gas mode only.** The pure rule handles both directions and both are
+  unit-tested, but there is no mode toggle or fluid-output path in the glue: the acid chain only
+  needs water vapour, and upstream needs ejectors for the reverse.
+- **The model is the jar's own cutout model** and the blockstate is the barrel template's
+  `facing` × `open`, the other machines' recorded deviation.
+
+### `## Next slice`
+
+**Family:** complete the rotary Condensentrator's gas → fluid (condensentrating) half, from *Gaps
+after slice 19* item 2 and the jar's same `water_vapor` row. The pure rule already passes
+`a_charged_vapour_tank_decondensentrates_back_into_water`; what is missing is the machine shape that
+drives it. It fits the `deep` tier as the same machine: add a mode toggle (`/mekanism mode`, saved
+as upstream's `mode` boolean), let the chemical handler accept a gas insert in that mode, and give
+the fluid tank an output path for the water it makes. **In-game assertion:** place a condensentrator
+beside a tank, insert a known amount of `mekanism:water_vapor` into its gas tank, toggle to
+condensentrating, charge exactly 50 FE, and assert its parsed `/mekanism info` shows the gas tank
+down by 1 and `water +1/10000 mB`, with a no-gas control spending nothing and `SELFTEST` flipping
+the water amount to `EXIT:1`.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+### Changelog (0.2.17) — supersedes 0.2.16
+
+> **0.2.17 — the rotary Condensentrator.** The acid chain's last hand-filled gas is now made from
+> water: **50 FE/t**, one tick an operation, a **20,000 FE** buffer, one **10,000 mB**
+> `horizon:fluids` water tank and one **10,000-unit** `mekanism:chemical` gas tank (the jar's
+> `CAPACITY = 10 * BUCKET_VOLUME` for both). The jar's `water_vapor` row turns **1 mB of water into 1
+> unit of water vapour**, pushed to a neighbouring tank. Package: **430 entries, 284,129 B**, sha256
+> `8b95b174bea90040327edce3690d04022d15b1e400be0075eb4adfe98d3ec4d2`; `check` exit 0; `fits`
+> `made for` at the pin and `fits` at `0b14f8a`; 157 tests, clippy `-D warnings` clean; bounded game
+> leg `PASS` + `EXIT:0` with exactly 50 FE and 1 mB spent and the neighbour tank holding exactly 1
+> water vapour, the dry control spending nothing, `SELFTEST=condensentrator` `EXIT:1`.

@@ -22,6 +22,7 @@
   "block.mekanism.energized_smelter": "Energized Smelter",
   "block.mekanism.enrichment_chamber": "Enrichment Chamber",
   "block.mekanism.purification_chamber": "Purification Chamber",
+  "block.mekanism.rotary_condensentrator": "Rotary Condensentrator",
   "configuration.mekanism.storage.basic_crushing_factory.energy": "Basic Crushing Factory Energy Storage",
   "configuration.mekanism.storage.basic_crushing_factory.energy.tooltip": "Base energy storage in Joules of: Basic Crushing Factory",
   "configuration.mekanism.storage.basic_enriching_factory.energy": "Basic Enriching Factory Energy Storage",

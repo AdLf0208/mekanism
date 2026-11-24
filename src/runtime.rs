@@ -7759,3 +7759,340 @@ mod separator_tests {
         assert_eq!(machine.energy, SEPARATOR_CAPACITY);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Slice 19: the rotary Condensentrator — water <-> water vapour / steam
+// ---------------------------------------------------------------------------
+
+/// Usage **50 FE/t**: `UsageConfig.java:61` (`rotaryCondensentrator`, default
+/// `50L`), one of the base-tier machines' figures.
+pub const CONDENSENTRATOR_USAGE: i32 = 50;
+/// Storage **20,000 FE**: `StorageConfig.java:70-71` (`rotaryCondensentrator`,
+/// `20_000L, 1`).
+pub const CONDENSENTRATOR_CAPACITY: i32 = 20_000;
+/// One tick per operation: it extends `TileEntityRecipeMachine` directly and
+/// never calls `setRequiredTicks`, so `CachedRecipe.java:67` defaults to one.
+pub const CONDENSENTRATOR_TICKS: i32 = 1;
+pub const CONDENSENTRATOR_OPERATION: Operation = Operation {
+    ticks: CONDENSENTRATOR_TICKS,
+    usage: CONDENSENTRATOR_USAGE,
+};
+/// Both tanks: `TileEntityRotaryCondensentrator.CAPACITY = 10 * BUCKET_VOLUME`
+/// mB / units (`:87`).
+pub const CONDENSENTRATOR_TANK: u32 = 10_000;
+
+/// Which way the machine runs. Upstream's `mode` boolean (saved as
+/// `SerializationConstants.MODE`): `true` is fluid → chemical, `false` chemical
+/// → fluid (`TileEntityRotaryCondensentrator.java:95-100`). An enum keeps the two
+/// directions from being confused at the call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CondensentratorMode {
+    /// Fluid → gas (upstream `mode = true`): water in, water vapour out.
+    Decondensentrating,
+    /// Gas → fluid (upstream `mode = false`): water vapour in, water out.
+    Condensentrating,
+}
+
+/// One jar rotary row. The jar writes both halves in one record: a fluid input
+/// and a chemical output, and a chemical input and a fluid output, each `amount`
+/// units per operation (`data/mekanism/recipe/rotary/*.json`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RotaryRecipe {
+    pub fluid: &'static str,
+    pub fluid_amount: u32,
+    pub chemical: &'static str,
+    pub chemical_amount: u32,
+}
+
+/// The jar's `mekanism:rotary` rows over fluids this game has, generated into
+/// `src/runtime.rs` by `tools/gen_condensentrating.py`.
+pub mod condensentrating {
+    use super::RotaryRecipe;
+
+    pub const ROW_COUNT: usize = TABLE.len();
+
+    #[must_use]
+    pub fn recipe_for_fluid(fluid: &str) -> Option<RotaryRecipe> {
+        TABLE.iter().find(|row| row.0 == fluid).map(recipe)
+    }
+
+    #[must_use]
+    pub fn recipe_for_chemical(chemical: &str) -> Option<RotaryRecipe> {
+        TABLE.iter().find(|row| row.2 == chemical).map(recipe)
+    }
+
+    pub type Row = (&'static str, u32, &'static str, u32);
+
+    fn recipe(row: &Row) -> RotaryRecipe {
+        RotaryRecipe {
+            fluid: row.0,
+            fluid_amount: row.1,
+            chemical: row.2,
+            chemical_amount: row.3,
+        }
+    }
+
+    // BEGIN GENERATED CONDENSENTRATING TABLE (tools/gen_condensentrating.py)
+    // Generated from the jar's `mekanism:rotary` recipes by
+    // `tools/gen_condensentrating.py`; do not edit by hand. Each row is
+    // `(fluid, mB per operation, chemical, units per operation)`.
+    // Source recipes: 17. Rows: 1. Skipped: 16.
+    static TABLE: &[Row] = &[("minecraft:water", 1, "mekanism:water_vapor", 1)];
+    // END GENERATED CONDENSENTRATING TABLE
+}
+
+/// One tick of the rotary Condensentrator. In decondensentrating mode one mB of
+/// water becomes one unit of the row's gas; in condensentrating mode that unit
+/// becomes the water back. Both are one tick for 50 FE, and both are spent at
+/// the operation's finish, which here is the same tick (`RotaryCachedRecipe`
+/// calls `use`/`handleOutput` in `finishProcessing`).
+///
+/// No input, too little of it, no room for the whole output batch, or no energy
+/// holds the operation and spends nothing; a fluid/gas with no row resets it.
+pub fn process_condensentrate_tick(
+    machine: &mut Machine,
+    operation: Operation,
+    water: &mut FluidTank,
+    chemical: &mut Tank,
+    mode: CondensentratorMode,
+    fluid_lookup: &dyn Fn(&str) -> Option<RotaryRecipe>,
+    chemical_lookup: &dyn Fn(&str) -> Option<RotaryRecipe>,
+) -> Outcome {
+    match mode {
+        CondensentratorMode::Decondensentrating => {
+            let Some((fluid, held)) = water.held() else {
+                machine.progress = 0;
+                return Outcome::Idle(IdleReason::NoFluid);
+            };
+            let Some(recipe) = fluid_lookup(fluid) else {
+                machine.progress = 0;
+                return Outcome::Idle(IdleReason::NoRecipe);
+            };
+            if held < recipe.fluid_amount {
+                return Outcome::Idle(IdleReason::NoFluid);
+            }
+            if room_in_tank(
+                chemical,
+                recipe.chemical,
+                recipe.chemical_amount,
+                CONDENSENTRATOR_TANK,
+            ) < recipe.chemical_amount
+            {
+                return Outcome::Idle(IdleReason::NoOutputSpace);
+            }
+            if machine.energy < operation.usage {
+                return Outcome::Idle(IdleReason::NoEnergy);
+            }
+            machine.energy -= operation.usage;
+            machine.progress = 0;
+            water.spend(recipe.fluid_amount);
+            let _ = insert_chemical(
+                chemical,
+                recipe.chemical,
+                recipe.chemical_amount,
+                CONDENSENTRATOR_TANK,
+            );
+            Outcome::Produced
+        }
+        CondensentratorMode::Condensentrating => {
+            let Some((id, held)) = chemical.held() else {
+                machine.progress = 0;
+                return Outcome::Idle(IdleReason::NoChemical);
+            };
+            let Some(recipe) = chemical_lookup(id) else {
+                machine.progress = 0;
+                return Outcome::Idle(IdleReason::NoRecipe);
+            };
+            if held < recipe.chemical_amount {
+                return Outcome::Idle(IdleReason::NoChemical);
+            }
+            let room = match water.held() {
+                None => CONDENSENTRATOR_TANK,
+                Some((fluid, _)) if fluid == recipe.fluid => {
+                    CONDENSENTRATOR_TANK.saturating_sub(water.amount)
+                }
+                Some(_) => 0,
+            };
+            if room < recipe.fluid_amount {
+                return Outcome::Idle(IdleReason::NoOutputSpace);
+            }
+            if machine.energy < operation.usage {
+                return Outcome::Idle(IdleReason::NoEnergy);
+            }
+            machine.energy -= operation.usage;
+            machine.progress = 0;
+            let _ = extract_chemical(chemical, recipe.chemical, recipe.chemical_amount);
+            let _ = insert_fluid(
+                water,
+                recipe.fluid,
+                recipe.fluid_amount,
+                CONDENSENTRATOR_TANK,
+            );
+            Outcome::Produced
+        }
+    }
+}
+
+#[cfg(test)]
+mod condensentrator_tests {
+    use super::*;
+
+    /// The family's rule, from the jar and the upstream source: 50 FE/t, one
+    /// tick per operation, a 20,000 FE buffer, 10,000-unit tanks, and the jar's
+    /// one runnable rotary row converting 1 mB of water into 1 unit of water
+    /// vapour (and back) in that single tick.
+    #[test]
+    fn one_operation_turns_one_mb_of_water_into_one_unit_of_water_vapour() {
+        assert_eq!(CONDENSENTRATOR_USAGE, 50, "UsageConfig.java:61");
+        assert_eq!(CONDENSENTRATOR_CAPACITY, 20_000, "StorageConfig.java:70");
+        assert_eq!(
+            CONDENSENTRATOR_TANK, 10_000,
+            "CAPACITY = 10 * BUCKET_VOLUME"
+        );
+        assert_eq!(CONDENSENTRATOR_TICKS, 1, "CachedRecipe.java:67 default");
+        assert_eq!(CONDENSENTRATOR_OPERATION.ticks, 1);
+        assert_eq!(CONDENSENTRATOR_OPERATION.usage, 50);
+        let recipe = condensentrating::recipe_for_fluid(WATER).expect("the jar's water_vapor row");
+        assert_eq!(recipe.fluid, WATER);
+        assert_eq!(recipe.fluid_amount, 1);
+        assert_eq!(recipe.chemical, WATER_VAPOR);
+        assert_eq!(recipe.chemical_amount, 1);
+        assert_eq!(
+            condensentrating::ROW_COUNT,
+            1,
+            "c:steam has no fluid in this game"
+        );
+
+        let mut machine = Machine {
+            energy: CONDENSENTRATOR_CAPACITY,
+            progress: 0,
+        };
+        let mut water = FluidTank::new(WATER, 1_000);
+        let mut gas = Tank::default();
+        assert_eq!(
+            process_condensentrate_tick(
+                &mut machine,
+                CONDENSENTRATOR_OPERATION,
+                &mut water,
+                &mut gas,
+                CondensentratorMode::Decondensentrating,
+                &condensentrating::recipe_for_fluid,
+                &condensentrating::recipe_for_chemical,
+            ),
+            Outcome::Produced
+        );
+        assert_eq!(machine.energy, 19_950, "one 50 FE operation");
+        assert_eq!(water, FluidTank::new(WATER, 999), "1 mB was consumed");
+        assert_eq!(gas, Tank::new(WATER_VAPOR, 1));
+    }
+
+    /// The reverse half of the jar's rotary row: a charged vapour tank makes
+    /// water in one tick for the same 50 FE. The same amount rules hold.
+    #[test]
+    fn a_charged_vapour_tank_decondensentrates_back_into_water() {
+        let mut machine = Machine {
+            energy: CONDENSENTRATOR_CAPACITY,
+            progress: 0,
+        };
+        let mut water = FluidTank::default();
+        let mut gas = Tank::new(WATER_VAPOR, 5);
+        assert_eq!(
+            process_condensentrate_tick(
+                &mut machine,
+                CONDENSENTRATOR_OPERATION,
+                &mut water,
+                &mut gas,
+                CondensentratorMode::Condensentrating,
+                &condensentrating::recipe_for_fluid,
+                &condensentrating::recipe_for_chemical,
+            ),
+            Outcome::Produced
+        );
+        assert_eq!(machine.energy, 19_950);
+        assert_eq!(gas, Tank::new(WATER_VAPOR, 4));
+        assert_eq!(water, FluidTank::new(WATER, 1));
+    }
+
+    /// A dry tank spends nothing: this is the in-game control's rule, so it
+    /// cannot pass if the machine makes vapour out of nothing.
+    #[test]
+    fn a_dry_condensentrator_spends_nothing() {
+        let mut machine = Machine {
+            energy: CONDENSENTRATOR_CAPACITY,
+            progress: 0,
+        };
+        let mut water = FluidTank::default();
+        let mut gas = Tank::default();
+        assert_eq!(
+            process_condensentrate_tick(
+                &mut machine,
+                CONDENSENTRATOR_OPERATION,
+                &mut water,
+                &mut gas,
+                CondensentratorMode::Decondensentrating,
+                &condensentrating::recipe_for_fluid,
+                &condensentrating::recipe_for_chemical,
+            ),
+            Outcome::Idle(IdleReason::NoFluid)
+        );
+        assert_eq!(machine.energy, CONDENSENTRATOR_CAPACITY);
+        assert_eq!(gas, Tank::default());
+    }
+
+    /// No energy, a tank of another chemical, or no room holds and spends
+    /// nothing; a fluid with no row resets the progress.
+    #[test]
+    fn a_condensentrator_holds_without_energy_room_or_a_row() {
+        let mut machine = Machine {
+            energy: CONDENSENTRATOR_CAPACITY,
+            progress: 0,
+        };
+        let mut gas = Tank::default();
+        let mut watery = FluidTank::new(WATER, 1_000);
+        machine.energy = 49;
+        assert_eq!(
+            process_condensentrate_tick(
+                &mut machine,
+                CONDENSENTRATOR_OPERATION,
+                &mut watery,
+                &mut gas,
+                CondensentratorMode::Decondensentrating,
+                &condensentrating::recipe_for_fluid,
+                &condensentrating::recipe_for_chemical,
+            ),
+            Outcome::Idle(IdleReason::NoEnergy)
+        );
+        assert_eq!(watery.amount, 1_000);
+
+        machine.energy = CONDENSENTRATOR_CAPACITY;
+        let mut wrong_gas = Tank::new(OXYGEN, 5);
+        assert_eq!(
+            process_condensentrate_tick(
+                &mut machine,
+                CONDENSENTRATOR_OPERATION,
+                &mut watery,
+                &mut wrong_gas,
+                CondensentratorMode::Decondensentrating,
+                &condensentrating::recipe_for_fluid,
+                &condensentrating::recipe_for_chemical,
+            ),
+            Outcome::Idle(IdleReason::NoOutputSpace)
+        );
+        assert_eq!(machine.energy, CONDENSENTRATOR_CAPACITY);
+
+        let mut unknown = FluidTank::new("mekanism:brine", 1_000);
+        assert_eq!(
+            process_condensentrate_tick(
+                &mut machine,
+                CONDENSENTRATOR_OPERATION,
+                &mut unknown,
+                &mut gas,
+                CondensentratorMode::Decondensentrating,
+                &condensentrating::recipe_for_fluid,
+                &condensentrating::recipe_for_chemical,
+            ),
+            Outcome::Idle(IdleReason::NoRecipe)
+        );
+        assert_eq!(machine.progress, 0);
+    }
+}

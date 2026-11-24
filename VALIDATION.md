@@ -1,5 +1,69 @@
 # Validation
 
+## 0.2.17 — the rotary Condensentrator, slice 19 (2026-11-24)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran through
+`ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`). The
+compile steps forwarded to `AdLf-PC`; the launcher build and the `--offscreen` game legs stayed
+local (the far box has no renderer or launcher).
+
+Upstream numbers were read from tag `v1.21.1-10.7.19.85` (`a00109e4`): **50 FE/t**
+(`UsageConfig.java:61`), **20,000 FE** (`StorageConfig.java:70-71`), **10,000** for both tanks
+(`TileEntityRotaryCondensentrator.java:87`, `CAPACITY = 10 * BUCKET_VOLUME`), and **one tick per
+operation** (`CachedRecipe.java:67`'s default, the machine never calls `setRequiredTicks`). The jar's
+`recipe/rotary/water_vapor.json` row is 1 mB water ↔ 1 unit water vapour; the other 16 rotary rows
+name `c:` fluid tags with no member in 26.3 and are skipped by `tools/gen_condensentrating.py`.
+
+| Check | Command | Result |
+|---|---|---|
+| the family's tests, RED first | `cargo test --offline` on the untouched tree | **45 errors**, first `cannot find value CONDENSENTRATOR_USAGE` (`slice19-unit-red.log`) |
+| tests | `cargo test --offline` (forwarded, after the final build) | **157 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (forwarded) | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (forwarded) | clean (`sdk-fmt.log`) |
+| recipe tables / art / tags | the twelve `gen_*.py --check`, eight `carry_*.py --check`, `check-block-tags.py`, `check-recipe-types.py mekanism` | 163 / 136 / 156 / 79 / 15 / 7 / 7 / 12 / 1 / 2 / 1 / **1** rows; 11+18+6+50+5+14+52+**4** carried files; **24** blocks; `mekanism: ok` (`slice19-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **284,129 B**, `cmp` identical, sha256 `8b95b174bea90040327edce3690d04022d15b1e400be0075eb4adfe98d3ec4d2` (`slice19-build.log`, `slice19-build-second.log`, `slice19-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.17 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **430 entries** (`slice19-check-and-fits.log`) |
+| fits, the pin | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 |
+| fits, a different build | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (430 entries, no packed `Cargo.lock`, package matches the tree, 157 tests, clippy 0, R9 clean) |
+| launcher build | `launcher-game.sh build mekanism` | `Compiling mekanism (1 of 1)`, `native-0a875da-9747e27e6227` (`slice19-launcher-build.log`) |
+| bounded leg | `build-slot.sh run --step e2e -- bash tools/e2e-cond.sh` | **`PASS` + `EXIT:0`** (`e2e-cond.log`) |
+| bounded selftest | `SELFTEST=condensentrator` on the same leg | **`FAIL` + `EXIT:1`** (`e2e-cond-selftest.log`) |
+| full package leg | `build-slot.sh run --step e2e -- bash tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-package.log`): 19 shaped recipes (the new condensentrator among them), 156 crushing, 163+7 smelting, 136 enriching, 79 injecting, 15 purifying, 7 washing, 7 crystallizing, 12 dissolution rows and the 4-phase acid chain all green |
+| unmodded-game control | `GAME=$CONTROL_GAME` on the full leg | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| full selftest | `SELFTEST=1` on the full leg | **`FAIL` (the flipped dissolution row) + `EXIT:1`** (`e2e-selftest.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=14 ok=14 missing-exit=0 bad-exit=0` |
+
+### In-game proof of the condensentrator
+
+The bounded leg (`tools/e2e-cond.sh`, the launcher-built game, `E2E_TMP` on the scratch volume)
+ended **`PASS` + `EXIT:0`**. Its dry control used a separate block entity at `(16,76,8)` and kept
+`50/20000 FE, water 0/10000 mB` with both neighbour tanks empty. The main phase inserted 1,000 mB
+of water through `horizon:fluids`, charged one operation's 50 FE and read, verbatim:
+
+```
+  fluid insert 1000 (12, 76, 8): fluid: inserted 1000 minecraft:water into mekanism:rotary_condensentrator (1000/10000)
+  info(12, 76, 8): mekanism:rotary_condensentrator: 0/20000 FE, progress 0/1, water 999/10000 mB, gas empty 0/10000
+  chemical read (11, 76, 8): chemical: mekanism:basic_chemical_tank holds mekanism:water_vapor 1/64000 (answered by mekanism)
+  data get block (11, 76, 8) amount: 1
+```
+
+The buffer spent exactly 50 FE, the water tank exactly 1 mB, and the neighbour tank's parsed readout
+and saved `amount` are exactly the jar's 1 unit of water vapour. `SELFTEST=condensentrator` flips
+the expectation to 2 and the leg fails verbatim (`e2e-cond-selftest.log`):
+
+```
+FAIL: neighbour vapour: expected [(mekanism:water_vapor, 2)], got [('mekanism:water_vapor', 1)]
+EXIT:1
+```
+
+Harness defect found and fixed in this leg: an empty second neighbour was first treated as a failed
+assertion, although the machine's single gas unit goes to whichever neighbour the game's face order
+reaches first; the assertion now checks the exact id and total across both tanks.
+
 ## 0.2.16 — the Electrolytic Separator, slice 18 (2026-11-24)
 
 Validated on Linux against the campaign pin **Horizon

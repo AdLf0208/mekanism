@@ -374,6 +374,29 @@ def main() -> int:
         "mekanism:electrolytic_separator", 1, "minecraft:obsidian",
     )
 
+    # --- slice 19: the rotary Condensentrator ---------------------------
+    # The jar's recipe needs an electrolytic core, a basic circuit, an energy
+    # tablet, cheap glass and two fluid/chemical tanks, none of which this port
+    # registers. The shaped grid uses the same vanilla stand-ins as the other
+    # machines: iron block for the core, glass for the cheap glass, iron ingot
+    # and redstone for the rest. IGI / R#R / IGI.
+    check(
+        "rotary condensentrator: 4 iron + 2 glass + 2 redstone + iron block",
+        [
+            ("minecraft:iron_ingot", 4),
+            ("minecraft:glass", 2),
+            ("minecraft:redstone", 2),
+            ("minecraft:iron_block", 1),
+        ],
+        [
+            ("minecraft:iron_ingot", every(100, 102, 106, 108)),
+            ("minecraft:glass", every(101, 107)),
+            ("minecraft:redstone", every(103, 105)),
+            ("minecraft:iron_block", every(104)),
+        ],
+        "mekanism:rotary_condensentrator", 1, "minecraft:glass",
+    )
+
     # --- controls: a wrong ingredient leaves the result empty -------------
     empty_control(
         "smelter with a stick where the glass goes",
@@ -519,6 +542,21 @@ def main() -> int:
             ("minecraft:iron_ingot", every(101, 103, 105)),
             ("minecraft:stick", every(104)),
             ("minecraft:copper_block", every(107)),
+        ],
+    )
+    empty_control(
+        "rotary condensentrator with a stick where the glass goes",
+        [
+            ("minecraft:iron_ingot", 4),
+            ("minecraft:stick", 2),
+            ("minecraft:redstone", 2),
+            ("minecraft:iron_block", 1),
+        ],
+        [
+            ("minecraft:iron_ingot", every(100, 102, 106, 108)),
+            ("minecraft:stick", every(101, 107)),
+            ("minecraft:redstone", every(103, 105)),
+            ("minecraft:iron_block", every(104)),
         ],
     )
 
