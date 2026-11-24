@@ -21,18 +21,20 @@ use crate::runtime::{
     CUBE_CAPACITY, CUBE_RATE, CrystallizeRecipe, DISSOLUTION_CAPACITY, DISSOLUTION_OPERATION,
     DISSOLUTION_TANK, DISSOLUTION_TICKS, DROPPER_CAPACITY, EMPTY_CHEMICAL,
     ENRICHING_FACTORY_CAPACITY, FACTORY_PROCESSES, FACTORY_TICKS, FactoryProcess, FluidTank,
-    GasRecipe, INJECTING_FACTORY_CAPACITY, INJECTING_FACTORY_TANK, INJECTION_CAPACITY,
-    INJECTION_OPERATION, INJECTION_TANK, INJECTION_TICKS, IdleReason, ItemAmount, Machine,
-    MachineRecipe, Operation, Outcome, PURIFY_CAPACITY, PURIFY_OPERATION, PURIFY_TANK,
-    PURIFY_TICKS, PURIFYING_FACTORY_CAPACITY, PURIFYING_FACTORY_TANK, SLURRIES, SMELTER_CAPACITY,
-    SMELTER_OPERATION, SMELTER_TICKS, SMELTING_FACTORY_CAPACITY, TANK_CAPACITY, Tank,
-    WASHER_CAPACITY, WASHER_OPERATION, WASHER_SLURRY, WASHER_TICKS, WASHER_WATER, WATER,
-    clamp_energy, crushing, crystallizer_pull, crystallizing, dissolve_pull, dissolving,
-    dropper_move, energy_after_extract, energy_after_insert, enriching, extract_chemical,
-    factory_gas_want, gas_pull, injecting, insert_chemical, operations_per_tick,
-    process_crystal_tick, process_dissolve_tick, process_factory_tick, process_gas_factory_tick,
-    process_gas_tick, process_tick, process_wash_tick, purifying, room_for, room_in_tank, smelting,
-    washer_pull, washing,
+    GasRecipe, INFUSER_CAPACITY, INFUSER_OPERATION, INFUSER_TANK, INFUSER_TICKS,
+    INJECTING_FACTORY_CAPACITY, INJECTING_FACTORY_TANK, INJECTION_CAPACITY, INJECTION_OPERATION,
+    INJECTION_TANK, INJECTION_TICKS, IdleReason, ItemAmount, Machine, MachineRecipe,
+    OXIDIZER_CAPACITY, OXIDIZER_OPERATION, OXIDIZER_TANK, OXIDIZER_TICKS, Operation, Outcome,
+    PURIFY_CAPACITY, PURIFY_OPERATION, PURIFY_TANK, PURIFY_TICKS, PURIFYING_FACTORY_CAPACITY,
+    PURIFYING_FACTORY_TANK, SLURRIES, SMELTER_CAPACITY, SMELTER_OPERATION, SMELTER_TICKS,
+    SMELTING_FACTORY_CAPACITY, TANK_CAPACITY, Tank, WASHER_CAPACITY, WASHER_OPERATION,
+    WASHER_SLURRY, WASHER_TICKS, WASHER_WATER, WATER, clamp_energy, crushing, crystallizer_pull,
+    crystallizing, dissolve_pull, dissolving, dropper_move, energy_after_extract,
+    energy_after_insert, enriching, extract_chemical, factory_gas_want, gas_pull, infusing,
+    injecting, insert_chemical, operations_per_tick, oxidizing, process_crystal_tick,
+    process_dissolve_tick, process_factory_tick, process_gas_factory_tick, process_gas_tick,
+    process_infuse_tick, process_oxidize_tick, process_tick, process_wash_tick, purifying,
+    room_for, room_in_tank, smelting, washer_pull, washing,
 };
 
 /// The five blocks of slices 1-3.
@@ -74,6 +76,12 @@ pub(crate) const CRYSTALLIZER: &str = "mekanism:chemical_crystallizer";
 /// chain — an ore and sulfuric acid in, a dirty slurry out.
 pub(crate) const DISSOLUTION: &str = "mekanism:chemical_dissolution_chamber";
 
+/// Slice 17's machines: the head of the acid chain. The oxidizer makes SO2 from
+/// sulfur dust; the infuser turns SO2 + oxygen into SO3 and SO3 + water vapour
+/// into the sulfuric acid the dissolution chamber consumes.
+pub(crate) const OXIDIZER: &str = "mekanism:chemical_oxidizer";
+pub(crate) const INFUSER: &str = "mekanism:chemical_infuser";
+
 /// The block entity types, in this mod's namespace (`/mekanism` has no
 /// bearing on them). One type per block, as the retired bundle's
 /// `block_entity` hook named the block it was asked about.
@@ -93,6 +101,8 @@ const PURIFYING_FACTORY_TYPE: &str = "basic_purifying_factory";
 const WASHER_TYPE: &str = "chemical_washer";
 const CRYSTALLIZER_TYPE: &str = "chemical_crystallizer";
 const DISSOLUTION_TYPE: &str = "chemical_dissolution_chamber";
+const OXIDIZER_TYPE: &str = "chemical_oxidizer";
+const INFUSER_TYPE: &str = "chemical_infuser";
 
 /// A machine's menu slots: input, unused (the furnace menu's fuel slot) and
 /// output.
@@ -114,6 +124,9 @@ const CRYSTAL_SLOT: usize = 0;
 
 /// The dissolution chamber's one slot: the ore (or raw ore) it dissolves.
 const DISSOLVE_SLOT: usize = 0;
+
+/// The oxidizer's one slot: the sulfur dust it burns.
+const OXIDIZE_SLOT: usize = 0;
 
 /// The vanilla furnace menu's four data slots: flame (stored / capacity) then
 /// arrow (progress / required ticks).
@@ -465,6 +478,46 @@ pub(crate) fn declare(registrar: &mut dyn Registrar, context: &RegistrationConte
     if let Err(error) = registrar.block_entity_part(&kind, DissolutionPart) {
         context.refuse(&error.to_string());
     }
+    // Slice 17: the acid chain head. Both machines reuse the declarations the
+    // other machines use: a container (the oxidizer's one input slot), an
+    // insert-only energy buffer and one block entity type each. The oxidizer's
+    // chemical handler has ONE output-only tank it makes gas in; the infuser's
+    // has THREE — tank 0 and 1 its two insert-only gas inputs, tank 2 its
+    // extract-only centre output. The machines have no pipes upstream here, so
+    // the oxidizer pushes its product into a neighbour and the infuser pulls
+    // both inputs from its neighbours through `mekanism:chemical` (the gas
+    // machines' recorded deviation, applied symmetrically).
+    let key = registrar.block_key(OXIDIZER);
+    registrar.block_container(&key, oxidizer_container());
+    registrar.block_energy(&key, machine_battery(OXIDIZER_CAPACITY));
+    let kind = registrar
+        .block_entity_type(OXIDIZER_TYPE)
+        .blocks(&[OXIDIZER_TYPE])
+        .build();
+    registrar.block_entity_capability(&CHEMICAL, &kind, |_, at| {
+        Some(Box::new(OxidizerTank {
+            side: at,
+            capacity: OXIDIZER_TANK,
+        }) as Box<dyn ResourceHandler<Chemical>>)
+    });
+    if let Err(error) = registrar.block_entity_part(&kind, OxidizerPart) {
+        context.refuse(&error.to_string());
+    }
+    let key = registrar.block_key(INFUSER);
+    registrar.block_energy(&key, machine_battery(INFUSER_CAPACITY));
+    let kind = registrar
+        .block_entity_type(INFUSER_TYPE)
+        .blocks(&[INFUSER_TYPE])
+        .build();
+    registrar.block_entity_capability(&CHEMICAL, &kind, |_, at| {
+        Some(Box::new(InfuserTanks {
+            side: at,
+            capacity: INFUSER_TANK,
+        }) as Box<dyn ResourceHandler<Chemical>>)
+    });
+    if let Err(error) = registrar.block_entity_part(&kind, InfuserPart) {
+        context.refuse(&error.to_string());
+    }
 }
 
 /// The one fluid the washer's tank takes, kept as the registration-time key the
@@ -542,6 +595,19 @@ pub(crate) fn dissolution_container() -> ModContainer {
     }
 }
 
+/// The oxidizer's container: one slot, the sulfur dust it burns. Its output is
+/// the gas tank, so there is no output item slot; the drain and energy slots
+/// upstream declares are the recorded container-convenience deviation.
+pub(crate) fn oxidizer_container() -> ModContainer {
+    ModContainer {
+        slots: 1,
+        faces: std::array::from_fn(|_| vec![OXIDIZE_SLOT]),
+        inputs: vec![OXIDIZE_SLOT],
+        outputs: Vec::new(),
+        menu: None,
+    }
+}
+
 /// A machine's FE buffer: `capacity` that may be filled from any face and
 /// drained by none (upstream's machines take energy and give none).
 pub(crate) fn machine_battery(capacity: i32) -> ModEnergyBuffer {
@@ -592,6 +658,8 @@ pub(crate) fn machine_capacity(id: &str) -> Option<i32> {
         WASHER => Some(WASHER_CAPACITY),
         CRYSTALLIZER => Some(CRYSTALLIZER_CAPACITY),
         DISSOLUTION => Some(DISSOLUTION_CAPACITY),
+        OXIDIZER => Some(OXIDIZER_CAPACITY),
+        INFUSER => Some(INFUSER_CAPACITY),
         CUBE => Some(CUBE_CAPACITY),
         CABLE => Some(CABLE_CAPACITY),
         _ => None,
@@ -611,6 +679,8 @@ pub(crate) fn machine_ticks(id: &str) -> Option<i32> {
         WASHER => Some(WASHER_TICKS),
         CRYSTALLIZER => Some(CRYSTALLIZER_TICKS),
         DISSOLUTION => Some(DISSOLUTION_TICKS),
+        OXIDIZER => Some(OXIDIZER_TICKS),
+        INFUSER => Some(INFUSER_TICKS),
         _ => None,
     }
 }
@@ -631,6 +701,18 @@ pub(crate) fn is_crystallizer(id: &str) -> bool {
 /// line is its ore slot's and its two tanks'.
 pub(crate) fn is_dissolution(id: &str) -> bool {
     id == DISSOLUTION
+}
+
+/// Whether the Chemical Oxidizer stands at `id`: its `/mekanism info` line is
+/// its input slot's and its gas tank's.
+pub(crate) fn is_oxidizer(id: &str) -> bool {
+    id == OXIDIZER
+}
+
+/// Whether the Chemical Infuser stands at `id`: its `/mekanism info` line is its
+/// three tanks'.
+pub(crate) fn is_infuser(id: &str) -> bool {
+    id == INFUSER
 }
 
 /// Whether one of the five basic factories stands at `id`.
@@ -894,6 +976,57 @@ pub(crate) fn dissolution_info_text(
         tank_name(slurry),
         slurry.amount,
         DISSOLUTION_TANK
+    )
+}
+
+/// The `/mekanism info` report line for the Chemical Oxidizer: its buffer,
+/// progress, sulfur slot and the gas tank it makes.
+pub(crate) fn oxidizer_info_text(
+    id: &str,
+    capacity: i32,
+    machine: Machine,
+    input: &ItemAmount,
+    gas: &Tank,
+) -> String {
+    format!(
+        "{id}: {}/{} FE, progress {}/{}, input {} x{}, output {} {}/{}",
+        machine.energy,
+        capacity,
+        machine.progress,
+        OXIDIZER_TICKS,
+        stack_name(input),
+        input.count,
+        tank_name(gas),
+        gas.amount,
+        OXIDIZER_TANK
+    )
+}
+
+/// The `/mekanism info` report line for the Chemical Infuser: its buffer and
+/// all three tanks (left input, right input, centre output).
+pub(crate) fn infuser_info_text(
+    id: &str,
+    capacity: i32,
+    machine: Machine,
+    left: &Tank,
+    right: &Tank,
+    output: &Tank,
+) -> String {
+    format!(
+        "{id}: {}/{} FE, progress {}/{}, left {} {}/{}, right {} {}/{}, output {} {}/{}",
+        machine.energy,
+        capacity,
+        machine.progress,
+        INFUSER_TICKS,
+        tank_name(left),
+        left.amount,
+        INFUSER_TANK,
+        tank_name(right),
+        right.amount,
+        INFUSER_TANK,
+        tank_name(output),
+        output.amount,
+        INFUSER_TANK
     )
 }
 
@@ -1750,6 +1883,215 @@ fn dissolution_draw(
     pulled
 }
 
+/// The Chemical Oxidizer: one sulfur slot, one gas tank and a 20,000 FE
+/// operation. Its product is pushed to a neighbouring chemical handler on its
+/// tick, so the infuser beside it can take SO2 without a pipe.
+pub(crate) struct OxidizerPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for OxidizerPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for OxidizerPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        let single = event.entity.items.len() != 1;
+        if single {
+            event.entity.items.resize(1, None);
+        }
+        let mut saved = Tag::Compound(event.entity.nbt.clone());
+        let mut machine = read_machine(&saved, OXIDIZER_CAPACITY);
+        machine.progress = machine.progress.clamp(0, (OXIDIZER_TICKS - 1).max(0));
+        let mut gas = read_tank(&saved);
+        let mut input = slot_stack(&*host, event.entity.items[OXIDIZE_SLOT].as_ref());
+        let outcome = process_oxidize_tick(
+            &mut machine,
+            OXIDIZER_OPERATION,
+            &mut gas,
+            &mut input,
+            &oxidizing::recipe_for,
+        );
+        let pushed = push_chemical(host, event.pos, &mut gas, OXIDIZER_TANK);
+        write_state(&mut saved, machine.energy, machine.progress);
+        write_tank(&mut saved, &gas);
+        if let Tag::Compound(nbt) = saved {
+            event.entity.nbt = nbt;
+        }
+        set_slot(&*host, &mut event.entity.items, OXIDIZE_SLOT, &input);
+        let idle = matches!(
+            outcome,
+            Outcome::Idle(IdleReason::NoEnergy | IdleReason::NoOutputSpace | IdleReason::NoInput)
+        );
+        if idle && pushed == 0 && !single {
+            *event.reply = BlockEntityTickReply::Unchanged;
+        }
+    }
+}
+
+/// The Chemical Infuser: two input tanks and one centre output tank. A one-tick
+/// machine — each tick it pulls a whole row's two gases from its neighbours and
+/// spends 200 FE to make the row's output. Its centre product is pushed to a
+/// neighbouring handler, so the next infuser or the dissolution chamber beside
+/// it can take it through the same capability.
+pub(crate) struct InfuserPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for InfuserPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for InfuserPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        let mut saved = Tag::Compound(event.entity.nbt.clone());
+        let mut machine = read_machine(&saved, INFUSER_CAPACITY);
+        let mut left = read_prefixed_tank(&saved, "left");
+        let mut right = read_prefixed_tank(&saved, "right");
+        let mut output = read_prefixed_tank(&saved, "center");
+        let pulled = infuser_draw(&machine, &mut left, &mut right, &output, host, event.pos);
+        let outcome = process_infuse_tick(
+            &mut machine,
+            INFUSER_OPERATION,
+            &mut left,
+            &mut right,
+            &mut output,
+            &infusing::recipe_for,
+        );
+        // An intermediate (SO3) has a consumer beside this machine, which pulls
+        // it from the centre tank; only a final product (the acid) is pushed to
+        // a neighbour, so an emptied SO2 tank cannot silently become a sink.
+        let pushed = if output.held().is_some_and(|(id, _)| !infusing::is_input(id)) {
+            push_chemical(host, event.pos, &mut output, INFUSER_TANK)
+        } else {
+            0
+        };
+        write_state(&mut saved, machine.energy, machine.progress);
+        write_prefixed_tank(&mut saved, "left", &left);
+        write_prefixed_tank(&mut saved, "right", &right);
+        write_prefixed_tank(&mut saved, "center", &output);
+        if let Tag::Compound(nbt) = saved {
+            event.entity.nbt = nbt;
+        }
+        let idle = matches!(
+            outcome,
+            Outcome::Idle(
+                IdleReason::NoEnergy | IdleReason::NoChemical | IdleReason::NoOutputSpace
+            )
+        );
+        if idle && pulled == 0 && pushed == 0 {
+            *event.reply = BlockEntityTickReply::Unchanged;
+        }
+    }
+}
+
+/// Pull one row's gases into the infuser's side tanks, but only for a row it
+/// could actually finish this tick (energy and room for the product), and never
+/// a partial amount that would stall the machine. How much moved.
+fn infuser_draw(
+    machine: &Machine,
+    left: &mut Tank,
+    right: &mut Tank,
+    output: &Tank,
+    host: &mut dyn ServerHost,
+    pos: [i32; 3],
+) -> u32 {
+    if machine.energy < INFUSER_OPERATION.usage {
+        return 0;
+    }
+    for row in infusing::rows() {
+        let (left_chem, left_amount, right_chem, right_amount, product, amount) = *row;
+        if room_in_tank(output, product, amount, INFUSER_TANK) < amount {
+            continue;
+        }
+        if left.held().is_some_and(|(held, _)| held != left_chem)
+            || right.held().is_some_and(|(held, _)| held != right_chem)
+        {
+            continue;
+        }
+        let want_left = left_amount
+            .saturating_sub(left.amount)
+            .min(INFUSER_TANK.saturating_sub(left.amount));
+        let want_right = right_amount
+            .saturating_sub(right.amount)
+            .min(INFUSER_TANK.saturating_sub(right.amount));
+        if want_left == 0 && want_right == 0 {
+            continue;
+        }
+        let got_left = if want_left > 0 {
+            let came = pull_chemical(host, pos, left_chem, want_left);
+            let _ = insert_chemical(left, left_chem, came, INFUSER_TANK);
+            came
+        } else {
+            0
+        };
+        let got_right = if want_right > 0 {
+            let came = pull_chemical(host, pos, right_chem, want_right);
+            let _ = insert_chemical(right, right_chem, came, INFUSER_TANK);
+            came
+        } else {
+            0
+        };
+        if got_left + got_right > 0 {
+            return got_left + got_right;
+        }
+    }
+    0
+}
+
+/// Move this machine's product into a neighbouring chemical handler through
+/// [`CHEMICAL`] — upstream's ejector, the smallest shape that lets the acid
+/// chain run without pipes. The neighbour's own `insert` decides what it takes:
+/// a tank of another chemical, or an output-only tank, refuses it. How much
+/// actually left the tank.
+fn push_chemical(host: &mut dyn ServerHost, pos: [i32; 3], tank: &mut Tank, capacity: u32) -> u32 {
+    let Some((id, held)) = tank.held() else {
+        return 0;
+    };
+    let Some(chemical) = Chemical::new(id) else {
+        return 0;
+    };
+    let Some(level) = host.level(host.dimension()) else {
+        return 0;
+    };
+    let mut neighbours: Vec<Capability<dyn ResourceHandler<Chemical>>> = Vec::with_capacity(6);
+    for face in Direction::ALL {
+        let [dx, dy, dz] = face.normal();
+        let at = [pos[0] + dx, pos[1] + dy, pos[2] + dz];
+        if let Some(handler) = level.capability(host, &CHEMICAL, at, Some(face.opposite())) {
+            neighbours.push(handler);
+        }
+    }
+    if neighbours.is_empty() {
+        return 0;
+    }
+    let want = held.min(capacity);
+    let gave = host.transaction(move |host, tx| {
+        let mut gave = 0u32;
+        for handler in &neighbours {
+            if gave >= want {
+                break;
+            }
+            // Tanks that take input are index 0 (and index 1 on the infuser);
+            // output tanks refuse an insert. Try every tank that accepts one.
+            for index in 0..handler.size(host) {
+                if gave >= want {
+                    break;
+                }
+                gave = gave.saturating_add(handler.insert(host, tx, index, &chemical, want - gave));
+            }
+        }
+        Ok::<u32, ()>(gave)
+    });
+    let gave = gave.unwrap_or(0);
+    tank.spend(gave);
+    gave
+}
+
 /// The state one gas-machine tick works on, bundled so the top-up and the
 /// operation read the same view of it.
 struct GasTick<'a> {
@@ -2231,6 +2573,217 @@ impl ResourceHandler<Chemical> for DissolutionTanks {
             return 0;
         }
         if self.store(host, &acid, &slurry) {
+            came
+        } else {
+            0
+        }
+    }
+}
+
+/// The Chemical Oxidizer's one chemical tank: the gas it makes, extract only
+/// (upstream's `BasicChemicalTank.output`). The infuser beside it takes from it
+/// through this handler, and the saved compound is written back on each drain.
+pub(crate) struct OxidizerTank {
+    side: BlockSide,
+    capacity: u32,
+}
+
+impl OxidizerTank {
+    fn held(&self, host: &mut dyn ServerHost) -> Tank {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return Tank::default();
+        };
+        entity
+            .data(&*host)
+            .map(|saved| read_tank(&Tag::Compound(saved)))
+            .unwrap_or_default()
+    }
+
+    fn store(&self, host: &mut dyn ServerHost, tank: &Tank) -> bool {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return false;
+        };
+        let mut saved = Tag::Compound(Compound::new());
+        write_tank(&mut saved, tank);
+        let Tag::Compound(patch) = saved else {
+            return false;
+        };
+        entity
+            .merge_data(host, patch)
+            .ok()
+            .is_some_and(|loaded| loaded)
+    }
+}
+
+impl ResourceHandler<Chemical> for OxidizerTank {
+    fn size(&self, _: &mut dyn ServerHost) -> usize {
+        1
+    }
+
+    fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<Chemical> {
+        (index == 0)
+            .then(|| self.held(host))
+            .and_then(|tank| tank.held().and_then(|(id, _)| Chemical::new(id)))
+    }
+
+    fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32 {
+        if index == 0 {
+            self.held(host).amount
+        } else {
+            0
+        }
+    }
+
+    fn capacity(&self, _: &mut dyn ServerHost, index: usize, _: &Chemical) -> u32 {
+        if index == 0 { self.capacity } else { 0 }
+    }
+
+    fn insert(
+        &self,
+        _: &mut dyn ServerHost,
+        _: &Transaction,
+        _: usize,
+        _: &Chemical,
+        _: u32,
+    ) -> u32 {
+        0 // an output tank takes nothing from automation
+    }
+
+    fn extract(
+        &self,
+        host: &mut dyn ServerHost,
+        _: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index != 0 {
+            return 0;
+        }
+        let mut gas = self.held(host);
+        let came = extract_chemical(&mut gas, chemical.as_str(), amount);
+        if came == 0 {
+            return 0;
+        }
+        if self.store(host, &gas) { came } else { 0 }
+    }
+}
+
+/// The Chemical Infuser's three chemical tanks: index 0 and 1 the two gases it
+/// takes (insert only, upstream's `inputModern`), index 2 the centre tank whose
+/// product it makes (extract only, upstream's `output`). All three live in the
+/// entity's saved compound under `left_*`, `right_*` and `center_*`.
+pub(crate) struct InfuserTanks {
+    side: BlockSide,
+    capacity: u32,
+}
+
+impl InfuserTanks {
+    fn held(&self, host: &mut dyn ServerHost) -> (Tank, Tank, Tank) {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return (Tank::default(), Tank::default(), Tank::default());
+        };
+        let Some(saved) = entity.data(&*host) else {
+            return (Tank::default(), Tank::default(), Tank::default());
+        };
+        let saved = Tag::Compound(saved);
+        (
+            read_prefixed_tank(&saved, "left"),
+            read_prefixed_tank(&saved, "right"),
+            read_prefixed_tank(&saved, "center"),
+        )
+    }
+
+    fn store(&self, host: &mut dyn ServerHost, left: &Tank, right: &Tank, output: &Tank) -> bool {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return false;
+        };
+        let mut saved = Tag::Compound(Compound::new());
+        write_prefixed_tank(&mut saved, "left", left);
+        write_prefixed_tank(&mut saved, "right", right);
+        write_prefixed_tank(&mut saved, "center", output);
+        let Tag::Compound(patch) = saved else {
+            return false;
+        };
+        entity
+            .merge_data(host, patch)
+            .ok()
+            .is_some_and(|loaded| loaded)
+    }
+}
+
+impl ResourceHandler<Chemical> for InfuserTanks {
+    fn size(&self, _: &mut dyn ServerHost) -> usize {
+        3
+    }
+
+    fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<Chemical> {
+        let (left, right, output) = self.held(host);
+        let tank = match index {
+            0 => left,
+            1 => right,
+            2 => output,
+            _ => return None,
+        };
+        tank.held().and_then(|(id, _)| Chemical::new(id))
+    }
+
+    fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32 {
+        let (left, right, output) = self.held(host);
+        match index {
+            0 => left.amount,
+            1 => right.amount,
+            2 => output.amount,
+            _ => 0,
+        }
+    }
+
+    fn capacity(&self, _: &mut dyn ServerHost, index: usize, _: &Chemical) -> u32 {
+        if index < 3 { self.capacity } else { 0 }
+    }
+
+    /// A fill goes into one of the two input tanks, never the centre output.
+    fn insert(
+        &self,
+        host: &mut dyn ServerHost,
+        _: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index > 1 || !infusing::is_input(chemical.as_str()) {
+            return 0;
+        }
+        let (mut left, mut right, output) = self.held(host);
+        let target = if index == 0 { &mut left } else { &mut right };
+        let went =
+            insert_chemical(target, chemical.as_str(), amount, self.capacity).unwrap_or_default();
+        if went > 0 && self.store(host, &left, &right, &output) {
+            went
+        } else {
+            0
+        }
+    }
+
+    /// A drain takes the product from the centre tank only: the two side tanks
+    /// are automation's to fill, not to empty.
+    fn extract(
+        &self,
+        host: &mut dyn ServerHost,
+        _: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        if index != 2 {
+            return 0;
+        }
+        let (left, right, mut output) = self.held(host);
+        let came = extract_chemical(&mut output, chemical.as_str(), amount);
+        if came == 0 {
+            return 0;
+        }
+        if self.store(host, &left, &right, &output) {
             came
         } else {
             0
@@ -2899,6 +3452,33 @@ pub(crate) fn info_line(host: &mut dyn ServerHost, pos: [i32; 3]) -> Option<Stri
             &read_prefixed_tank(&saved, "acid"),
             &read_prefixed_tank(&saved, "output"),
             &input,
+        ));
+    }
+    if is_oxidizer(&id) {
+        let input = slot_stack(
+            &*host,
+            entity
+                .item_slot(&*host, OXIDIZE_SLOT as u32)
+                .ok()
+                .flatten()
+                .as_ref(),
+        );
+        return Some(oxidizer_info_text(
+            &id,
+            capacity,
+            read_machine(&saved, capacity),
+            &input,
+            &read_tank(&saved),
+        ));
+    }
+    if is_infuser(&id) {
+        return Some(infuser_info_text(
+            &id,
+            capacity,
+            read_machine(&saved, capacity),
+            &read_prefixed_tank(&saved, "left"),
+            &read_prefixed_tank(&saved, "right"),
+            &read_prefixed_tank(&saved, "center"),
         ));
     }
     let input = slot_stack(

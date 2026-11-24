@@ -7010,3 +7010,488 @@ mod dissolution_tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Slice 17: the acid chain head — the Chemical Oxidizer and the Chemical Infuser
+// ---------------------------------------------------------------------------
+
+/// Sulfur dust oxidizes into this gas (`oxidizing/sulfur_dioxide.json`).
+pub const SULFUR_DIOXIDE: &str = "mekanism:sulfur_dioxide";
+/// SO2 and oxygen infuse into this gas (`chemical_infusing/sulfur_trioxide.json`).
+pub const SULFUR_TRIOXIDE: &str = "mekanism:sulfur_trioxide";
+/// The oxygen the first infusing row takes.
+pub const OXYGEN: &str = "mekanism:oxygen";
+/// The water vapour the second infusing row takes (or steam, its tag's member).
+pub const WATER_VAPOR: &str = "mekanism:water_vapor";
+
+/// Oxidizer usage in FE/t (`UsageConfig.java:67`, `chemicalOxidizer = 200L`).
+pub const OXIDIZER_USAGE: i32 = 200;
+/// Oxidizer buffer in FE (`StorageConfig.java:85-86`, `chemicalOxidizer = 80_000L, 1`).
+pub const OXIDIZER_CAPACITY: i32 = 80_000;
+/// `TileEntityChemicalOxidizer.BASE_TICKS_REQUIRED = 5 * TICKS_PER_SECOND` = 100.
+pub const OXIDIZER_TICKS: i32 = 100;
+/// One oxidizer operation: 100 ticks x 200 FE = 20,000 FE.
+pub const OXIDIZER_OPERATION: Operation = Operation {
+    ticks: OXIDIZER_TICKS,
+    usage: OXIDIZER_USAGE,
+};
+/// `TileEntityChemicalOxidizer.MAX_GAS = 10 * BUCKET_VOLUME` = 10,000 units.
+pub const OXIDIZER_TANK: u32 = 10_000;
+
+/// Infuser usage in FE/t (`UsageConfig.java:68`, `chemicalInfuser = 200L`).
+pub const INFUSER_USAGE: i32 = 200;
+/// Infuser buffer in FE (`StorageConfig.java:87-88`, `chemicalInfuser = 80_000L, 1`).
+pub const INFUSER_CAPACITY: i32 = 80_000;
+/// The infuser never calls `setRequiredTicks`, so `CachedRecipe`'s default is
+/// one tick per operation: each tick consumes a whole row for 200 FE.
+pub const INFUSER_TICKS: i32 = 1;
+pub const INFUSER_OPERATION: Operation = Operation {
+    ticks: INFUSER_TICKS,
+    usage: INFUSER_USAGE,
+};
+/// `TileEntityChemicalInfuser.MAX_GAS = 10 * BUCKET_VOLUME`, per tank: two
+/// inputs and the centre output.
+pub const INFUSER_TANK: u32 = 10_000;
+
+/// One oxidizing recipe, as `OneInputCachedRecipe.itemToChemical` runs it: the
+/// item consumed at the operation's finish and the gas produced there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OxidizeRecipe {
+    pub input: u32,
+    pub output: &'static str,
+    pub output_amount: u32,
+}
+
+/// The jar's `mekanism:oxidizing` rows over items this port registers, generated
+/// into `src/runtime.rs` by `tools/gen_oxidizing.py`.
+pub mod oxidizing {
+    use super::OxidizeRecipe;
+
+    pub const ROW_COUNT: usize = TABLE.len();
+
+    #[must_use]
+    pub fn recipe_for(item: &str) -> Option<OxidizeRecipe> {
+        TABLE.iter().find(|row| row.0 == item).map(recipe)
+    }
+
+    #[must_use]
+    pub fn rows() -> &'static [Row] {
+        TABLE
+    }
+
+    pub type Row = (&'static str, u32, &'static str, u32);
+
+    fn recipe(row: &Row) -> OxidizeRecipe {
+        OxidizeRecipe {
+            input: row.1,
+            output: row.2,
+            output_amount: row.3,
+        }
+    }
+
+    // BEGIN GENERATED OXIDIZING TABLE (tools/gen_oxidizing.py)
+    // Generated from the jar's `mekanism:oxidizing` recipes by
+    // `tools/gen_oxidizing.py`; do not edit by hand. Each row is
+    // `(input item, items per operation, output chemical, output amount)`.
+    // The gas is made at the operation's finish, not per tick.
+    // Source recipes: 25. Rows: 1. Skipped: 24.
+    static TABLE: &[Row] = &[("mekanism:dust_sulfur", 1, "mekanism:sulfur_dioxide", 100)];
+    // END GENERATED OXIDIZING TABLE
+}
+
+/// One tick of the Chemical Oxidizer: an item in the slot, energy in the buffer.
+/// The gas is added to its output tank when the operation finishes, not per tick
+/// (upstream's `OneInputCachedRecipe.itemToChemical` uses the default
+/// `finishProcessing`); a wrong item resets, no energy or no room holds.
+pub fn process_oxidize_tick(
+    machine: &mut Machine,
+    operation: Operation,
+    output: &mut Tank,
+    input: &mut ItemAmount,
+    lookup: &dyn Fn(&str) -> Option<OxidizeRecipe>,
+) -> Outcome {
+    if input.is_empty() {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoInput);
+    }
+    let Some(recipe) = lookup(&input.item) else {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoRecipe);
+    };
+    if input.count < recipe.input.max(1) {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NotEnoughInput);
+    }
+    if room_in_tank(output, recipe.output, recipe.output_amount, OXIDIZER_TANK)
+        < recipe.output_amount
+    {
+        return Outcome::Idle(IdleReason::NoOutputSpace);
+    }
+    if machine.energy < operation.usage {
+        return Outcome::Idle(IdleReason::NoEnergy);
+    }
+    machine.energy -= operation.usage;
+    machine.progress += 1;
+    if machine.progress < operation.ticks {
+        return Outcome::Working;
+    }
+    machine.progress = 0;
+    input.count -= recipe.input.max(1);
+    insert_chemical(output, recipe.output, recipe.output_amount, OXIDIZER_TANK)
+        .expect("a generated oxidizing row names a registered chemical");
+    Outcome::Produced
+}
+
+/// One infusing recipe: two gases in and one out, each amount per operation
+/// (the infuser finishes a whole row in a single tick).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InfuseRecipe {
+    pub left: &'static str,
+    pub left_amount: u32,
+    pub right: &'static str,
+    pub right_amount: u32,
+    pub output: &'static str,
+    pub output_amount: u32,
+}
+
+/// The jar's `mekanism:chemical_infusing` acid-chain rows, generated into
+/// `src/runtime.rs` by `tools/gen_infusing.py`.
+pub mod infusing {
+    use super::InfuseRecipe;
+
+    pub const ROW_COUNT: usize = TABLE.len();
+
+    /// A recipe for these two chemicals in either side order, as upstream's
+    /// `ChemicalChemicalToChemicalCachedRecipe` swaps the sides when a pair is
+    /// reversed. The recipe keeps the jar's own left/right amounts.
+    #[must_use]
+    pub fn recipe_for(left: &str, right: &str) -> Option<InfuseRecipe> {
+        TABLE
+            .iter()
+            .find(|row| (row.0 == left && row.2 == right) || (row.0 == right && row.2 == left))
+            .map(|row| InfuseRecipe {
+                left: row.0,
+                left_amount: row.1,
+                right: row.2,
+                right_amount: row.3,
+                output: row.4,
+                output_amount: row.5,
+            })
+    }
+
+    #[must_use]
+    pub fn rows() -> &'static [Row] {
+        TABLE
+    }
+
+    /// Whether `chemical` is an input to any row: SO2 and oxygen make SO3, SO3
+    /// and water vapour make the acid. An infuser's input tanks take only these;
+    /// a product (SO3 or sulfuric acid) is never accepted back as an input.
+    #[must_use]
+    pub fn is_input(chemical: &str) -> bool {
+        TABLE
+            .iter()
+            .any(|row| row.0 == chemical || row.2 == chemical)
+    }
+
+    pub type Row = (&'static str, u32, &'static str, u32, &'static str, u32);
+
+    // BEGIN GENERATED INFUSING TABLE (tools/gen_infusing.py)
+    // Generated from the jar's `mekanism:chemical_infusing` recipes by
+    // `tools/gen_infusing.py`; do not edit by hand. Each row is
+    // `(left chemical, left amount, right chemical, right amount,
+    // output chemical, output amount)`, one operation a tick.
+    // Source recipes: 4. Rows: 2. Skipped: 2.
+    static TABLE: &[Row] = &[
+        (
+            "mekanism:oxygen",
+            1,
+            "mekanism:sulfur_dioxide",
+            2,
+            "mekanism:sulfur_trioxide",
+            2,
+        ),
+        (
+            "mekanism:sulfur_trioxide",
+            1,
+            "mekanism:water_vapor",
+            1,
+            "mekanism:sulfuric_acid",
+            1,
+        ),
+    ];
+    // END GENERATED INFUSING TABLE
+}
+
+/// One tick of the Chemical Infuser: two gases in its side tanks and room in
+/// its centre tank become one row's output, in a single tick for 200 FE
+/// (`ChemicalChemicalToChemicalCachedRecipe.finishProcessing` consumes both
+/// inputs at the finish, which here is this tick).
+///
+/// A short input with a matching pair holds the progress and spends nothing;
+/// a pair with no row resets it; no room holds it.
+pub fn process_infuse_tick(
+    machine: &mut Machine,
+    operation: Operation,
+    left: &mut Tank,
+    right: &mut Tank,
+    output: &mut Tank,
+    lookup: &dyn Fn(&str, &str) -> Option<InfuseRecipe>,
+) -> Outcome {
+    let left_id = left.held().map_or("", |(id, _)| id);
+    let right_id = right.held().map_or("", |(id, _)| id);
+    let Some(recipe) = lookup(left_id, right_id) else {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoRecipe);
+    };
+    // The lookup accepts either order; give the jar's left amount to whichever
+    // tank actually holds the jar's left chemical.
+    let (actual_left, actual_right) = if left_id == recipe.left {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    if actual_left.amount < recipe.left_amount || actual_right.amount < recipe.right_amount {
+        return Outcome::Idle(IdleReason::NoChemical);
+    }
+    if room_in_tank(output, recipe.output, recipe.output_amount, INFUSER_TANK)
+        < recipe.output_amount
+    {
+        return Outcome::Idle(IdleReason::NoOutputSpace);
+    }
+    if machine.energy < operation.usage {
+        return Outcome::Idle(IdleReason::NoEnergy);
+    }
+    machine.energy -= operation.usage;
+    machine.progress = 0;
+    actual_left.spend(recipe.left_amount);
+    actual_right.spend(recipe.right_amount);
+    insert_chemical(output, recipe.output, recipe.output_amount, INFUSER_TANK)
+        .expect("a generated infusing row names a registered chemical");
+    Outcome::Produced
+}
+
+#[cfg(test)]
+mod acid_tests {
+    use super::*;
+
+    /// The family rule: one sulfur dust in a charged oxidizer becomes exactly
+    /// 100 units of SO2 for 100 ticks x 200 FE, and the input is consumed only
+    /// when the operation finishes.
+    #[test]
+    fn one_sulfur_dust_oxidizes_into_100_so2_for_20000_fe() {
+        let recipe = oxidizing::recipe_for("mekanism:dust_sulfur").expect("the jar's sulfur row");
+        assert_eq!(recipe.input, 1);
+        assert_eq!(recipe.output, SULFUR_DIOXIDE);
+        assert_eq!(recipe.output_amount, 100);
+        assert_eq!(OXIDIZER_OPERATION.ticks, 100);
+        assert_eq!(OXIDIZER_OPERATION.usage, 200);
+        assert_eq!(OXIDIZER_CAPACITY, 80_000);
+        assert_eq!(OXIDIZER_TANK, 10_000);
+
+        let mut machine = Machine {
+            energy: OXIDIZER_CAPACITY,
+            progress: 0,
+        };
+        let mut input = ItemAmount::new("mekanism:dust_sulfur", 1);
+        let mut gas = Tank::default();
+        let mut last = Outcome::Working;
+        for _ in 0..OXIDIZER_OPERATION.ticks {
+            last = process_oxidize_tick(
+                &mut machine,
+                OXIDIZER_OPERATION,
+                &mut gas,
+                &mut input,
+                &oxidizing::recipe_for,
+            );
+        }
+        assert_eq!(last, Outcome::Produced);
+        assert_eq!(machine.energy, 60_000, "100 ticks x 200 FE");
+        assert_eq!(machine.progress, 0);
+        assert!(input.is_empty(), "the dust is consumed at the finish");
+        assert_eq!(gas, Tank::new(SULFUR_DIOXIDE, 100));
+    }
+
+    /// No energy holds the progress, an item with no row resets it, and a tank
+    /// with no room for the whole batch holds it without spending energy.
+    #[test]
+    fn an_oxidizer_holds_without_energy_or_room_and_resets_without_a_recipe() {
+        let mut machine = Machine {
+            energy: 0,
+            progress: 40,
+        };
+        let mut input = ItemAmount::new("mekanism:dust_sulfur", 1);
+        let mut gas = Tank::default();
+        assert_eq!(
+            process_oxidize_tick(
+                &mut machine,
+                OXIDIZER_OPERATION,
+                &mut gas,
+                &mut input,
+                &oxidizing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoEnergy)
+        );
+        assert_eq!(machine.progress, 40, "no energy holds the progress");
+        machine.energy = 20_000;
+        machine.progress = 7;
+        let mut dirt = ItemAmount::new("minecraft:dirt", 1);
+        assert_eq!(
+            process_oxidize_tick(
+                &mut machine,
+                OXIDIZER_OPERATION,
+                &mut gas,
+                &mut dirt,
+                &oxidizing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoRecipe)
+        );
+        assert_eq!(machine.progress, 0, "no recipe resets the progress");
+        machine.progress = 99;
+        let mut nearly_full = Tank::new(SULFUR_DIOXIDE, OXIDIZER_TANK - 1);
+        assert_eq!(
+            process_oxidize_tick(
+                &mut machine,
+                OXIDIZER_OPERATION,
+                &mut nearly_full,
+                &mut input,
+                &oxidizing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoOutputSpace),
+            "the whole 100-unit batch must fit"
+        );
+        assert_eq!(machine.progress, 99, "no room holds the progress");
+        assert_eq!(machine.energy, 20_000, "no room spends no energy");
+    }
+
+    /// The infuser is a one-tick machine: each tick consumes a whole row's two
+    /// gases and produces the output, for 200 FE. SO2 + O2 -> SO3 first.
+    #[test]
+    fn one_tick_infuses_so2_and_oxygen_into_so3() {
+        let recipe = infusing::recipe_for(OXYGEN, SULFUR_DIOXIDE).expect("the SO3 row");
+        assert_eq!(recipe.left, OXYGEN);
+        assert_eq!(recipe.left_amount, 1);
+        assert_eq!(recipe.right, SULFUR_DIOXIDE);
+        assert_eq!(recipe.right_amount, 2);
+        assert_eq!(recipe.output, SULFUR_TRIOXIDE);
+        assert_eq!(recipe.output_amount, 2);
+        assert_eq!(INFUSER_OPERATION.ticks, 1);
+        assert_eq!(INFUSER_OPERATION.usage, 200);
+        assert_eq!(INFUSER_CAPACITY, 80_000);
+        assert_eq!(INFUSER_TANK, 10_000);
+
+        let mut machine = Machine {
+            energy: INFUSER_CAPACITY,
+            progress: 0,
+        };
+        let mut left = Tank::new(OXYGEN, 10);
+        let mut right = Tank::new(SULFUR_DIOXIDE, 20);
+        let mut out = Tank::default();
+        assert_eq!(
+            process_infuse_tick(
+                &mut machine,
+                INFUSER_OPERATION,
+                &mut left,
+                &mut right,
+                &mut out,
+                &infusing::recipe_for,
+            ),
+            Outcome::Produced
+        );
+        assert_eq!(machine.energy, 79_800);
+        assert_eq!(left, Tank::new(OXYGEN, 9));
+        assert_eq!(right, Tank::new(SULFUR_DIOXIDE, 18));
+        assert_eq!(out, Tank::new(SULFUR_TRIOXIDE, 2));
+    }
+
+    /// The second infusing row is the acid: one SO3 and one water vapour make
+    /// one sulfuric acid each tick. The product is what the dissolution chamber
+    /// beside the infuser consumes, closing the chain.
+    #[test]
+    fn one_tick_infuses_so3_and_vapour_into_sulfuric_acid() {
+        let recipe = infusing::recipe_for(SULFUR_TRIOXIDE, WATER_VAPOR).expect("the acid row");
+        assert_eq!(recipe.output, SULFURIC_ACID);
+        assert_eq!(recipe.output_amount, 1);
+        assert_eq!(recipe.left_amount, 1);
+        assert_eq!(recipe.right_amount, 1);
+
+        let mut machine = Machine {
+            energy: INFUSER_CAPACITY,
+            progress: 0,
+        };
+        let mut left = Tank::new(SULFUR_TRIOXIDE, 4);
+        let mut right = Tank::new(WATER_VAPOR, 4);
+        let mut out = Tank::default();
+        for _ in 0..4 {
+            assert_eq!(
+                process_infuse_tick(
+                    &mut machine,
+                    INFUSER_OPERATION,
+                    &mut left,
+                    &mut right,
+                    &mut out,
+                    &infusing::recipe_for,
+                ),
+                Outcome::Produced
+            );
+        }
+        assert_eq!(machine.energy, 80_000 - 4 * 200);
+        assert!(left.held().is_none());
+        assert!(right.held().is_none());
+        assert_eq!(out, Tank::new(SULFURIC_ACID, 4));
+        assert_eq!(infusing::ROW_COUNT, 2, "the jar's two acid-chain rows");
+    }
+
+    /// No row for a pair, a short input or no output room spends nothing.
+    #[test]
+    fn an_infuser_spends_nothing_without_a_pair_or_room() {
+        let mut machine = Machine {
+            energy: 80_000,
+            progress: 0,
+        };
+        let mut left = Tank::new(OXYGEN, 1);
+        let mut right = Tank::new(SULFUR_DIOXIDE, 1);
+        let mut out = Tank::default();
+        assert_eq!(
+            process_infuse_tick(
+                &mut machine,
+                INFUSER_OPERATION,
+                &mut left,
+                &mut right,
+                &mut out,
+                &infusing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoChemical),
+            "one SO2 is short of the row's two"
+        );
+        assert_eq!(machine.energy, 80_000, "a short pair spends no energy");
+        assert_eq!(left, Tank::new(OXYGEN, 1), "a short pair takes nothing");
+        let mut wrong = Tank::new("mekanism:hydrogen", 5);
+        assert_eq!(
+            process_infuse_tick(
+                &mut machine,
+                INFUSER_OPERATION,
+                &mut left,
+                &mut wrong,
+                &mut out,
+                &infusing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoRecipe)
+        );
+        // With a whole pair available, a full centre tank holds the operation.
+        let mut right_full = Tank::new(SULFUR_DIOXIDE, 2);
+        let mut full = Tank::new(SULFUR_TRIOXIDE, INFUSER_TANK);
+        assert_eq!(
+            process_infuse_tick(
+                &mut machine,
+                INFUSER_OPERATION,
+                &mut left,
+                &mut right_full,
+                &mut full,
+                &infusing::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoOutputSpace)
+        );
+        assert_eq!(machine.energy, 80_000);
+    }
+}

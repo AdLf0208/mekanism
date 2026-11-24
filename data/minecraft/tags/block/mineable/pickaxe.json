@@ -16,6 +16,8 @@
     "mekanism:chemical_washer",
     "mekanism:chemical_crystallizer",
     "mekanism:chemical_dissolution_chamber",
+    "mekanism:chemical_oxidizer",
+    "mekanism:chemical_infuser",
     "mekanism:block_lead",
     "mekanism:block_osmium",
     "mekanism:block_tin",

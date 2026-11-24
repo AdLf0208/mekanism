@@ -450,3 +450,15 @@ Where the rewrite differs (and why):
   deviation every item in this port records, with `tools/carry_shards.py` carrying their art
   reproducibly;
 - the 12 ore/raw injecting rows for lead, osmium, tin and uranium stay out: 26.3 has no such ore.
+
+## Slice 16 — the 12-row dissolution sweep (0.2.15, 2026-11-24)
+
+No upstream analysis: this slice closes the parity gap the dissolution-chamber slice (15) recorded,
+`notes.md` *Gaps after slice 15* item 1. The jar's twelve carried dissolution rows — the three
+vanilla ores in stone and deepslate form, the three raw ores at three items each, and the three raw
+blocks at two acid units a tick — are now each run in a real chamber through `tools/dissolve_sweep.py`,
+asserting the item count, the per-tick acid, the declared slurry and amount, the 40,000 FE an
+operation and the source tank's exact acid loss. The upstream numbers were already read and pinned
+in slice 15 (`TileEntityChemicalDissolutionChamber.java`, `UsageConfig.java:66`,
+`StorageConfig.java:82-83` and the jar's `from_ore`/`from_raw_ore`/`from_raw_block.json`); nothing
+in them changed.

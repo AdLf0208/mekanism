@@ -1,0 +1,50 @@
+{
+  "variants": {
+    "facing=down,open=false": {
+      "model": "mekanism:block/chemical_infuser",
+      "x": 90
+    },
+    "facing=down,open=true": {
+      "model": "mekanism:block/chemical_infuser",
+      "x": 90
+    },
+    "facing=east,open=false": {
+      "model": "mekanism:block/chemical_infuser",
+      "y": 90
+    },
+    "facing=east,open=true": {
+      "model": "mekanism:block/chemical_infuser",
+      "y": 90
+    },
+    "facing=north,open=false": {
+      "model": "mekanism:block/chemical_infuser"
+    },
+    "facing=north,open=true": {
+      "model": "mekanism:block/chemical_infuser"
+    },
+    "facing=south,open=false": {
+      "model": "mekanism:block/chemical_infuser",
+      "y": 180
+    },
+    "facing=south,open=true": {
+      "model": "mekanism:block/chemical_infuser",
+      "y": 180
+    },
+    "facing=up,open=false": {
+      "model": "mekanism:block/chemical_infuser",
+      "x": -90
+    },
+    "facing=up,open=true": {
+      "model": "mekanism:block/chemical_infuser",
+      "x": -90
+    },
+    "facing=west,open=false": {
+      "model": "mekanism:block/chemical_infuser",
+      "y": -90
+    },
+    "facing=west,open=true": {
+      "model": "mekanism:block/chemical_infuser",
+      "y": -90
+    }
+  }
+}

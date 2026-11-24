@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "C": "minecraft:redstone",
+    "T": "mekanism:basic_chemical_tank",
+    "X": "minecraft:iron_block"
+  },
+  "pattern": [
+    "CTC",
+    "TXT",
+    "CTC"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:chemical_infuser"
+  }
+}

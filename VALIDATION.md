@@ -1,5 +1,159 @@
 # Validation
 
+## 0.2.15 — the acid chain head, slice 17 (2026-11-24)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran through
+`ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`). The
+compile steps forwarded to `AdLf-PC`; the `--offscreen` game legs and the launcher build stayed
+local (the far box has no renderer or launcher). This version number was already declared by the
+evidence-only slice-16 sweep, which was never published; this slice is the real behaviour change.
+
+The family's rules were written first and watched fail with 68 compile errors
+(`slice17-unit-red.log`), then the two jar-driven generators and the runtime rules made all five
+tests pass. Upstream numbers: **200 FE/t**, **80,000 FE**, **100 ticks / 20,000 FE** and a
+**10,000-unit gas tank** for the oxidizer (`UsageConfig.java:67`, `StorageConfig.java:85-86`,
+`TileEntityChemicalOxidizer.BASE_TICKS_REQUIRED`/`MAX_GAS`); **200 FE/t**, **80,000 FE**,
+**one tick per operation** and three **10,000-unit** tanks for the infuser (`UsageConfig.java:68`,
+`StorageConfig.java:87-88`, `TileEntityChemicalInfuser.MAX_GAS`, `CachedRecipe.java`'s default
+`requiredTicks = 1`). The two carried rows come from the jar's
+`data/mekanism/recipe/chemical_infusing/{sulfur_trioxide,sulfuric_acid}.json`.
+
+| Check | Command | Result |
+|---|---|---|
+| the family's tests, RED first | `cargo test --offline acid_tests` | **68 errors**, first `cannot find value SULFUR_DIOXIDE` (`slice17-unit-red.log`) |
+| tests | `cargo test --offline` (forwarded) | **145 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (forwarded) | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (forwarded) | clean (`sdk-fmt.log`) |
+| recipe tables / art / tags | the ten `gen_*.py --check`, six `carry_*.py --check`, `check-block-tags.py`, `check-recipe-types.py mekanism` | 163 / 136 / 156 / 79 / 15 / 7 / 7 / 12 / **1** / **2** rows; 6+18+14+50+52+**11** carried files; **22** blocks; `mekanism: ok` |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **269,801 B**, `cmp` identical, sha256 `d192d1529d48ec184ea1b244e3a612043841e7c89799ad4980e6c0fac704f25f` (`sdk-build.log`, `sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.15 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **415 entries** (`sdk-check-and-fits.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 (`sdk-check-and-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (415 entries, no packed `Cargo.lock`, package matches the tree, 145 tests, clippy 0, R9 clean) |
+| launcher build | `launcher-game.sh build mekanism` after removing the stale `native-*` tag (checked twice) | `Compiling mekanism (1 of 1)`, `native-0a875da-94ee0f0bd3f0` (`slice17-launcher-build.log`) |
+
+### In-game proof of the chain
+
+The bounded leg (`tools/e2e-acid.sh`, the launcher-built game, `E2E_TMP` on the scratch volume)
+ended **`PASS` + `EXIT:0`** (`e2e-acid.log`). Its four phases gave, verbatim:
+
+- **A:** `mekanism:chemical_oxidizer: 60000/80000 FE, progress 0/100, input empty x0, output empty
+  0/10000` and `chemical: mekanism:basic_chemical_tank holds mekanism:sulfur_dioxide 100/64000
+  (answered by mekanism)` — one dust consumed, exactly 20,000 FE spent, 100 SO2 in the neighbour.
+- **B:** `mekanism:chemical_infuser: 70000/80000 FE, progress 0/1, left mekanism:oxygen 1/10000,
+  right empty 0/10000, output mekanism:sulfur_trioxide 100/10000`; the SO2 source 100 → 0 and the
+  oxygen source 1,000 → 949 (50 operations spend 50 oxygen, one is held in the machine's tank).
+- **C:** the second infuser at `60000/80000 FE` with `output empty 0/10000` and the neighbour
+  `chemical: mekanism:basic_chemical_tank holds mekanism:sulfuric_acid 100/64000 (answered by
+  mekanism)`; the vapour source 1,000 → 899 (100 spent, one held).
+- **D:** the locally made acid 100 → 0 while
+  `mekanism:chemical_dissolution_chamber: 120000/160000 FE, progress 0/100, input empty x0, acid
+  empty 0/10000, output mekanism:dirty_iron 1000/10000`.
+
+The full package leg (`e2e-package.log`) also passes with `EXIT:0`: all earlier families stay green
+and phase W prints the same four acid phases. The unmodded game cannot give the blocks
+(`e2e-control.log`, `FAIL: give mekanism:energized_smelter failed` + `EXIT:1`); the no-cable
+differential passes (`e2e-nocable.log`, `PASS` + `EXIT:0`); the log gate is
+`logs=9 ok=9 missing-exit=0 bad-exit=0`. The sulfurless control (`--control`) left a charged oxidizer
+at `80000/80000 FE, input minecraft:dirt x1` with 0 units in its neighbour. `SELFTEST=acid` flips only this family's acid
+assertion and the leg **fails verbatim** (`e2e-acid-selftest.log`):
+
+```
+FAIL: acid tank: expected mekanism:sulfuric_acid 999/64000 in 'chemical: mekanism:basic_chemical_tank holds mekanism:sulfuric_acid 100/64000 (answered by mekanism)'
+EXIT:1
+```
+
+## 0.2.15 — the 12-row dissolution sweep, slice 16 (2026-11-24)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran
+through `ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no
+`--target-dir`). Compile steps (`test`, `lint`, `fmt`, `check`, `build`) **forwarded to
+`AdLf-PC`** (`build-slot: forwarding … to the remote runner`); the `--offscreen` game legs
+stayed local, as the runner's renderer guard requires.
+
+This slice changes no Rust and no content: its product edit is the version string in
+`horizon-mod.toml` and `Cargo.toml`. The deliverable is the in-game proof that **every**
+carried dissolution row runs in a real chamber, not just the iron-ore headline of 0.2.14.
+The assertion was written first in the new `tools/dissolve_sweep.py`, with a pre-spend
+`/mekanism info` read that reports a row whose item id does not resolve instead of
+skipping it, and a dirt no-row control.
+
+| Check | Command | Result |
+|---|---|---|
+| tests | `cargo test --offline` (forwarded) | **140 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (forwarded) | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (forwarded) | clean (`sdk-fmt.log`) |
+| recipe tables / art / tags | eight `gen_*.py --check`, five `carry_*.py --check`, `check-block-tags.py`, `check-recipe-types.py mekanism` (forwarded) | 163 / 136 / 156 / 79 / 15 / 7 / 7 / **12** rows; 6+18+14+50+52 carried files; 20 blocks; `mekanism: ok` (`slice16-checks.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` (forwarded) | **252,978 B**, `cmp` identical, sha256 `00dad1ba440a51a5a2a3d356b310d6859c5e2ae3c20470c925728506b1c40c96` (`sdk-build.log`, `sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` (forwarded) | exit 0, `mekanism 0.2.15 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 397 entries (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` (forwarded) | `0a875da  made for`, exit 0 (`sdk-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` (forwarded) | `0b14f8a  fits`, exit 0 (`sdk-fits.log`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (397 entries, no packed `Cargo.lock`, package matches the tree, 140 tests, clippy 0, R9 clean) |
+
+### In-game proof of the twelve rows
+
+The full game leg (`launcher-game.sh build` then `build-slot.sh run --step e2e --
+bash tools/e2e.sh`, `--offscreen`, `E2E_TMP` on the scratch volume) ended **`PASS` +
+`EXIT:0`** (`e2e-package.log`). Its phase V3 gives every row its own tank +
+chamber pair at y=74, z=4, inserts 1,000 units of sulfuric acid, charges the
+160,000 FE buffer and waits 100+ ticks. The parsed `/mekanism info` and the
+source tank's saved amount were, verbatim from that log:
+
+| input (count) | acid/tick | `/mekanism info` (input, output, FE) | source tank |
+|---|---|---|---|
+| `minecraft:copper_ore` (1) | 1 | `input empty x0, output mekanism:dirty_copper 1000/10000, 120000/160000 FE` | 900 |
+| `minecraft:deepslate_copper_ore` (1) | 1 | `input empty x0, output mekanism:dirty_copper 1000/10000, 120000/160000 FE` | 900 |
+| `minecraft:deepslate_gold_ore` (1) | 1 | `input empty x0, output mekanism:dirty_gold 1000/10000, 120000/160000 FE` | 900 |
+| `minecraft:deepslate_iron_ore` (1) | 1 | `input empty x0, output mekanism:dirty_iron 1000/10000, 120000/160000 FE` | 900 |
+| `minecraft:gold_ore` (1) | 1 | `input empty x0, output mekanism:dirty_gold 1000/10000, 120000/160000 FE` | 900 |
+| `minecraft:iron_ore` (1) | 1 | `input empty x0, output mekanism:dirty_iron 1000/10000, 120000/160000 FE` | 900 |
+| `minecraft:raw_copper` (3) | 1 | `input empty x0, output mekanism:dirty_copper 2000/10000, 120000/160000 FE` | 900 |
+| `minecraft:raw_copper_block` (1) | 2 | `input empty x0, output mekanism:dirty_copper 6000/10000, 120000/160000 FE` | 800 |
+| `minecraft:raw_gold` (3) | 1 | `input empty x0, output mekanism:dirty_gold 2000/10000, 120000/160000 FE` | 900 |
+| `minecraft:raw_gold_block` (1) | 2 | `input empty x0, output mekanism:dirty_gold 6000/10000, 120000/160000 FE` | 800 |
+| `minecraft:raw_iron` (3) | 1 | `input empty x0, output mekanism:dirty_iron 2000/10000, 120000/160000 FE` | 900 |
+| `minecraft:raw_iron_block` (1) | 2 | `input empty x0, output mekanism:dirty_iron 6000/10000, 120000/160000 FE` | 800 |
+
+`rows dissolved: 12 of 12`, `sweep PASS`. Every row's output chemical and amount
+also matched the block entity's saved `output_chemical`/`output_amount`. The
+dirt control held `input minecraft:dirt x1` at `160000/160000 FE` with its
+source tank still at 1,000 (`control PASS`). All slices 1–15 families in the
+same leg stayed green (156 crushing, 163 + 7 smelting, 136 enriching, 79
+injecting, 15 purifying, 7 washing, 7 crystallizing, factories, chain,
+persistence, capability).
+
+The other legs: unmodded game `FAIL: give mekanism:energized_smelter failed` +
+`EXIT:1` (`e2e-control.log`); `NOCABLE=1` `PASS` + `EXIT:0` (`e2e-nocable.log`).
+The fail-capable run used the bounded `tools/e2e-sweep.sh` leg because the full
+script's older timing assertions tripped under a loaded slot queue before V3;
+with `SELFTEST=1` the deepslate-iron row's expected output was flipped to
+another real slurry and the leg **failed verbatim** (`e2e-selftest.log`):
+
+```
+FAIL: minecraft:deepslate_iron_ore: expected 'output mekanism:dirty_copper 1000/10000', got 'mekanism:chemical_dissolution_chamber: 120000/160000 FE, progress 0/100, input empty x0, acid empty 0/10000, output mekanism:dirty_iron 1000/10000'
+EXIT:1
+```
+
+The bounded default leg (`e2e-sweep.log`) also printed `rows dissolved: 12 of
+12` and `PASS` + `EXIT:0`. Log gate:
+`python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` →
+`logs=7  ok=7  missing-exit=0  bad-exit=0`.
+
+Harness facts recorded: (1) the sweep first filled each tank with only the
+operation's acid and asserted a 1,000-based remainder — the game caught the
+mismatch and the tool now fills to 1,000; (2) a pre-spend `/mekanism info` read
+reports a row whose item id does not resolve instead of skipping it; (3) under a
+long loaded leg the game can throttle a `[CHAT] chemical:` reply, so V1's
+insert/read now assert the tank's saved `amount` (with a retry only when it is
+still 0) rather than the chat line; (4) `chem_once`/`fluid_once` no longer return
+a stale line after a timeout.
+
 ## 0.2.14 — the Chemical Dissolution Chamber, slice 15 (2026-11-23)
 
 Validated on Linux against the campaign pin **Horizon

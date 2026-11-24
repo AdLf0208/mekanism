@@ -1,11 +1,11 @@
-# Package receipt — mekanism 0.2.14
+# Package receipt — mekanism 0.2.15
 
 | field | value |
 |---|---|
-| version | `0.2.14` |
+| version | `0.2.15` |
 | file | `mekanism.hmod` |
-| bytes | 252,981 |
-| sha256 | `2a755a80b3945bb98db9fa8cd3ed9638401509c1722b427f353cab3b46d870d3` |
+| bytes | 269,801 |
+| sha256 | `d192d1529d48ec184ea1b244e3a612043841e7c89799ad4980e6c0fac704f25f` |
 | source | this tag — the tree here is the source that produced the archive |
 | game | 26.3 |
 | horizon | `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` |

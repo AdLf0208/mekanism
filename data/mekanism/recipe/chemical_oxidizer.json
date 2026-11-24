@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "C": "minecraft:redstone",
+    "I": "minecraft:obsidian",
+    "T": "mekanism:basic_chemical_tank",
+    "X": "minecraft:iron_block"
+  },
+  "pattern": [
+    "ITI",
+    "CXC",
+    "ITI"
+  ],
+  "result": {
+    "count": 1,
+    "id": "mekanism:chemical_oxidizer"
+  }
+}

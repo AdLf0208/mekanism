@@ -4264,3 +4264,311 @@ Skills: superpowers/using-superpowers,writing-plans,test-driven-development,syst
 > `2a755a80b3945bb98db9fa8cd3ed9638401509c1722b427f353cab3b46d870d3`; `check` exit 0; `fits` `made
 > for` at the pin and `fits` at `0b14f8a`; 140 tests, clippy `-D warnings` clean; in game `PASS` +
 > `EXIT:0`, control `EXIT:1`, selftest `EXIT:1`, nocable `PASS` + `EXIT:0`, log gate 6/6.
+
+## Slice 16 — the 12-row dissolution sweep (0.2.15, 2026-11-24)
+
+### The scope authority, quoted
+
+This is the parity debt the last slice recorded, verbatim from *Gaps after slice 15* item 1:
+
+> **The 12-row dissolution sweep.** Only the iron-ore row is proven in game; the other eleven rows
+> (deepslate copper/gold/iron, the three raw ores at 3 items, the three raw blocks at 2 acid a tick)
+> are carried and pinned by the unit test, but a real-machine sweep is the parity debt this slice's
+> brief deferred ("add only this family's phase … do not add a second full sweep").
+
+**Chosen: that sweep, and nothing else.** It closes the last parity gap of the dissolution family
+without a new code shape: it uses the sweep-tool pattern of `tools/crush_sweep.py` and
+`tools/wash_sweep.py` over `gen_dissolving.py --rows`, one tank + chamber pair per row. It stays in
+the ledger's **`deep`** tier as the machine-shape proof of the slice-15 chamber (no renderer, entity
+or GUI), and it is one sweep of the 12 carried rows — not a second full sweep of any other family.
+
+### The slice in the port's layers
+
+- **`tools/dissolve_sweep.py`** (new): for each row, place a tank and insert `100 × acid_per_tick`
+  sulfuric acid through `mekanism:chemical`; place the chamber, insert the row's item count, and
+  assert its parsed `/mekanism info` **sees the input before charging** (an id that does not resolve
+  is reported by name, never skipped); charge 160,000 FE, wait 120 ticks, then assert the parsed
+  info says `input empty x0`, `output <slurry> <amount>/10000` and `120000/160000 FE`, and that the
+  source tank holds `1000 − 100 × acid_per_tick`. The output chemical and amount are cross-read
+  from the block entity's saved data. `SELFTEST` flips the deepslate-iron row's expected output;
+  `--control` runs the dirt no-row case.
+- **`tools/e2e.sh`** phase V3 runs the control and the 12-row sweep in the same game leg, with the
+  rows read from the generator the Rust table is built from.
+- **No Rust and no content change.** The product edits are the version strings in
+  `horizon-mod.toml` and `Cargo.toml`; the sweep is harness/evidence, not shipped code.
+
+### Red → green
+
+TDD's assertion came first: the sweep tool's four per-row checks and its dirt control were written
+before any game leg, with the pre-spend input resolution check guarding against a row that silently
+fails to resolve. The fail-capable red is the counterfactual — `SELFTEST=1` flips the deepslate-iron
+row's expected output to another real slurry (`mekanism:dirty_copper`), so the run must fail on the
+`dirty_iron` the chamber really made. Verbatim red (`../_shared/evidence/mekanism-e2e/e2e-selftest.log`):
+
+```
+FAIL: minecraft:deepslate_iron_ore: expected 'output mekanism:dirty_copper 1000/10000', got 'mekanism:chemical_dissolution_chamber: 120000/160000 FE, progress 0/100, input empty x0, acid empty 0/10000, output mekanism:dirty_iron 1000/10000'
+EXIT:1
+```
+
+The 12 observed rows are the table in `VALIDATION.md` §0.2.15 and the green transcript in
+`e2e-package.log`.
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| **all 12 carried dissolution rows** (6 ore, 3 raw ore at 3 items, 3 raw block at 2 acid/tick) | **tested** | V3 `rows dissolved: 12 of 12`, each with its input consumed, output id and amount, 40,000 FE spent and the source tank short exactly its acid (`sweep PASS`) |
+| the dirt no-row control | **tested** | V3 `control PASS`: `input minecraft:dirt x1`, `160000/160000 FE`, source tank unchanged at 1000 |
+| the deepslate-iron row's assertion can fail | **tested** | `SELFTEST=1` flips its expected output and the leg fails on the real `dirty_iron`, `EXIT:1` |
+| the other families (crushing, smelting, enriching, injecting, purifying, washing, crystallizing, factories, storage/nugget recipes, chain, persistence, capability) | **tested (unchanged)** | the same package leg still prints every earlier sweep's PASS line |
+| acid production (Chemical Oxidizer/Infuser, acid item/bucket) | **not ported** | unchanged gap 2: the chamber consumes a registered acid id filled through the harness |
+
+### The ladder
+
+| Step | Command (through the slot runner) | Result |
+|---|---|---|
+| tests | `cargo test --offline` (forwarded) | **140 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (forwarded) | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (forwarded) | clean (`sdk-fmt.log`) |
+| recipe tables + carries + tags | the eight `gen_*.py --check` (smelting with `--resources`), five `carry_*.py --check`, `check-block-tags.py`, `check-recipe-types.py mekanism` | 163 / 136 / 156 / 79 / 15 / 7 / 7 / 12 rows; 6+18+14+50+52 carried files; 20 blocks; `mekanism: ok` (`slice16-checks.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` (forwarded) | **252,978 B**, `cmp` identical, sha256 `00dad1ba440a51a5a2a3d356b310d6859c5e2ae3c20470c925728506b1c40c96` (`sdk-build.log`, `sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` (forwarded) | `mekanism 0.2.15 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, 397 entries (`sdk-check.log`) |
+| fits, the pin | `cargo horizon-mod fits … --build 0a875da` (forwarded) | `0a875da  made for`, exit 0 (`sdk-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits … --build 0b14f8a` (forwarded) | `0b14f8a  fits`, exit 0 (`sdk-fits.log`) |
+
+E2E rows are filled from the final game leg in `VALIDATION.md` §0.2.15.
+
+### Harness facts this slice added
+
+- The first sweep run filled each source tank with only the **operation's** acid (100, or 200 for a
+  raw block) but asserted the orchestrator's `1000 − 100 × acid_per_tick` remainder. The game reported
+  `source tank 0, expected 900` for all twelve rows even though every chamber made its correct slurry:
+  the tank must start at **1,000**, as slice 15's V1 does. The tool now inserts 1,000 and the same leg
+  passed with 900 / 800 observed.
+- A pre-spend `/mekanism info` read checks `input <item> x<count>` before energy is charged, so a row
+  whose item id does not resolve is reported by name (`row silently failed to resolve`) rather than
+  counted as a pass.
+- On two full legs the game throttled the `[CHAT] chemical:` answer to V1's acid insert past the
+  reply window while the insert itself landed (proved by a bounded probe: saved `amount: 1000` and the
+  correct reply line). V1 now asserts the tank's saved `amount` with a retry only while it is still 0,
+  and `chem_once`/`fluid_once` no longer return a stale line after a timeout.
+- The full script's older timing assertions tripped twice under a loaded slot queue before phase V3
+  (an enriching-sweep block read, a smelter's progress still at 91/200, a dropped ctl socket). The new
+  family was therefore also proven in its own bounded leg, `tools/e2e-sweep.sh`, which launches the
+  same game and runs only the control + 12 rows.
+
+### Gaps after slice 16
+
+1. The acid chain (slice 15's gap 2) is unchanged: `mekanism:sulfuric_acid` is a registered id the
+   chamber consumes, but nothing in the port makes it (Chemical Oxidizer/Infuser, acid item/bucket
+   unported).
+2. Upstream's convenience slots and GUI, `active` state, side config, upgrades, ejector and the
+   composite model's translucent glass remain the earlier slices' recorded deviations.
+3. The remaining Mekanism machines and the earlier slices' gaps stand as recorded.
+
+### `## Upstream defects fixed`
+
+None found. The sweep added evidence only; the jar's 12 rows and the port's generated table agree.
+
+Skills: superpowers/using-superpowers,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+### Changelog (0.2.15) — supersedes 0.2.14
+
+> **0.2.15 — the 12-row dissolution sweep.** No Rust or content change: the product is 0.2.14's
+> chamber and carried table, and the only product edit is the version string in the two manifests.
+> The parity debt is closed in game: every one of the jar's twelve dissolution rows runs in a real
+> chamber with its declared item count and per-tick acid, the input consumed, exactly 40,000 FE
+> spent, the declared slurry and amount in the output tank, and the source tank short exactly the
+> operation's acid; a dirt no-row control keeps its slot, spends nothing and draws no acid, and
+> `SELFTEST=1` fails on the deepslate-iron row's real output. Package: **397 entries, 252,978 B**,
+> sha256 `00dad1ba…0c96`; `check` exit 0; `fits` `made for` at the pin and `fits` at `0b14f8a`;
+> 140 tests, clippy `-D warnings` clean; full game leg `PASS` + `EXIT:0`, control `EXIT:1`, bounded
+> selftest `EXIT:1` on the deepslate flip, nocable `PASS` + `EXIT:0`, bounded sweep `PASS` + `EXIT:0`,
+> log gate 7/7.
+
+## Slice 17 — the acid chain head (0.2.15, 2026-11-24)
+
+### The scope authority, quoted
+
+This is gap 1 of *Gaps after slice 16*, itself slice 15's gap 2, verbatim:
+
+> **The acid chain.** `mekanism:sulfuric_acid` is a registered id and this machine consumes it,
+> but nothing in the port *makes* it: upstream's Chemical Oxidizer (sulfur → sulfur dioxide) and
+> Chemical Infuser are unported, and the chemical has no item/bucket form, so the e2e fills a tank
+> through `/mekanism chemical insert`.
+
+**Chosen: the Chemical Oxidizer and the Chemical Infuser's two acid rows, and nothing else.** They
+are the head of the chain the dissolution chamber already consumes, and they fit the ledger's
+**deep** tier as the machine shape already proven in this port: a block entity with its own saved
+state, an insert-only energy buffer, a chemical-capability handler, and its energy/chemistry
+balance in its own tick — no entity, renderer, dimension or new vanilla hook. The surface the job
+needs was verified in the source before any code: `mekanism:chemical` is a published
+`CapabilityKey` (`src/chemical.rs:61`), the Basic Chemical Tank is 64,000 units
+(`runtime::TANK_CAPACITY`, `src/runtime.rs:2063`), and the gas machines' neighbour-pull pattern is
+in `support::pull_chemical`. None was missing, so this slice did not stop as `blocked(...)`.
+
+### What the jar and the upstream source say (numbers with their files)
+
+| value | source | port |
+|---|---|---|
+| oxidizer **200 FE/t** | `UsageConfig.java:67`, `chemicalOxidizer = 200L` | `OXIDIZER_USAGE = 200` |
+| oxidizer **80,000 FE** | `StorageConfig.java:85-86`, `chemicalOxidizer = 80_000L, 1` | `OXIDIZER_CAPACITY = 80_000` |
+| oxidizer **100 ticks** = 20,000 FE | `TileEntityChemicalOxidizer.BASE_TICKS_REQUIRED = 5 * TICKS_PER_SECOND` | `OXIDIZER_OPERATION = {100, 200}` |
+| oxidizer **10,000-unit** gas tank | `TileEntityChemicalOxidizer.MAX_GAS = 10 * FluidType.BUCKET_VOLUME` | `OXIDIZER_TANK = 10_000` |
+| sulfur row: 1 `c:dusts/sulfur` → **100 SO2** | jar `data/mekanism/recipe/oxidizing/sulfur_dioxide.json` | `gen_oxidizing.py` → `oxidizing::TABLE` (1 of 25 rows) |
+| infuser **200 FE/t** | `UsageConfig.java:68`, `chemicalInfuser = 200L` | `INFUSER_USAGE = 200` |
+| infuser **80,000 FE** | `StorageConfig.java:87-88`, `chemicalInfuser = 80_000L, 1` | `INFUSER_CAPACITY = 80_000` |
+| infuser **one tick** per operation | `TileEntityChemicalInfuser` never calls `setRequiredTicks`; `CachedRecipe.java` defaults to 1 | `INFUSER_OPERATION = {1, 200}` |
+| infuser **three 10,000-unit** tanks | `TileEntityChemicalInfuser.MAX_GAS = 10 * BUCKET_VOLUME` (left, right, centre) | `INFUSER_TANK = 10_000` ×3 |
+| 1 O2 + 2 SO2 → 2 SO3 | jar `data/mekanism/recipe/chemical_infusing/sulfur_trioxide.json` | `gen_infusing.py` → row 1 |
+| 1 SO3 + 1 water vapour → 1 H2SO4 | jar `data/mekanism/recipe/chemical_infusing/sulfuric_acid.json` | `gen_infusing.py` → row 2 |
+
+The jar's other two infusing rows (`hydrogen_chloride`, the uranium `sulfuric_acid.json` that makes
+`uranium_hexafluoride`) and its other 24 oxidizing rows name items or have no consumer in this
+slice; they are dropped and printed by the generators rather than carried as dead data.
+
+### Red → green
+
+The five family tests were written first and ran red on the missing API
+(`../_shared/evidence/mekanism/slice17-unit-red.log`):
+
+```
+error[E0425]: cannot find value `SULFUR_DIOXIDE` in this scope
+...
+error: could not compile `mekanism` (lib test) due to 68 previous errors
+```
+
+Then the two generators filled the tables and the runtime rules, the two Parts and their three
+capability handlers made the whole crate green: **145 passed** (was 140; +5 `runtime::acid_tests`).
+
+### The ladder
+
+| Step | Command | Result |
+|---|---|---|
+| family tests RED | `cargo test --offline acid_tests` | **68 errors** (`slice17-unit-red.log`) |
+| tests | `cargo test --offline` | **145 passed**, 0 failed (`sdk-test.log`) |
+| lints | `cargo clippy --all-targets -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` | clean (`sdk-fmt.log`) |
+| recipe tables / art / tags | the ten `gen_*.py --check`, six `carry_*.py --check`, `check-block-tags.py`, `check-recipe-types.py mekanism` | 163 / 136 / 156 / 79 / 15 / 7 / 7 / 12 / **1** / **2** rows; 6+18+14+50+52+**11** carried files; **22** blocks; `mekanism: ok` |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **269,801 B**, `cmp` identical, sha256 `d192d1529d48ec184ea1b244e3a612043841e7c89799ad4980e6c0fac704f25f` (`sdk-build.log`, `sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | `mekanism 0.2.15 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **415 entries** (`sdk-check-and-fits.log`) |
+| fits, the pin | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 (`sdk-check-and-fits.log`) |
+| fits, a different build | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (415 entries, no packed `Cargo.lock`, package matches the tree, 145 tests, clippy 0, R9 clean) |
+| launcher build | `launcher-game.sh build mekanism` after removing the stale `native-*` tag (checked twice) | `Compiling mekanism (1 of 1)`, `native-0a875da-94ee0f0bd3f0` (`slice17-launcher-build.log`) |
+| full package leg | `build-slot.sh run --step e2e -- bash tools/e2e.sh` | **`PASS` + `EXIT:0`** (`../_shared/evidence/mekanism-e2e/e2e-package.log`), every earlier sweep and phase W green |
+| unmodded game | `GAME=$CONTROL_GAME CONTROL=0 tools/e2e.sh` | **`FAIL: give mekanism:energized_smelter failed` + `EXIT:1`** (`e2e-control.log`) |
+| differential | `NOCABLE=1 tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-nocable.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=9  ok=9  missing-exit=0  bad-exit=0` |
+
+### In-game proof (`tools/acid_chain.py`, `--offscreen`, `E2E_TMP` on the scratch volume)
+
+The bounded leg's four phases, quoted verbatim from `../_shared/evidence/mekanism-e2e/e2e-acid.log`:
+
+```
+== A: one sulfur dust oxidizes into 100 SO2 for 20,000 FE ==
+  info(12, 76, 8): mekanism:chemical_oxidizer: 60000/80000 FE, progress 0/100, input empty x0, output empty 0/10000
+  chemical read (12, 77, 8): chemical: mekanism:basic_chemical_tank holds mekanism:sulfur_dioxide 100/64000 (answered by mekanism)
+== B: SO2 + oxygen infuses into SO3 for 200 FE a tick ==
+  info(12, 78, 8): mekanism:chemical_infuser: 70000/80000 FE, progress 0/1, left mekanism:oxygen 1/10000, right empty 0/10000, output mekanism:sulfur_trioxide 100/10000
+  data get block (12, 77, 8) amount: 0
+== C: SO3 + water vapour infuses into sulfuric acid ==
+  chemical read (11, 79, 8): chemical: mekanism:basic_chemical_tank holds mekanism:sulfuric_acid 100/64000 (answered by mekanism)
+  data get block (11, 79, 8) amount: 100
+  data get block (13, 79, 8) amount: 899
+== D: the locally made acid dissolves an iron ore into dirty iron ==
+  info(10, 79, 8): mekanism:chemical_dissolution_chamber: 120000/160000 FE, progress 0/100, input empty x0, acid empty 0/10000, output mekanism:dirty_iron 1000/10000
+  data get block (11, 79, 8) amount: 0
+PASS: sulfur dust oxidized to SO2, SO2 and oxygen infused to SO3, SO3 and water vapour infused to locally made sulfuric acid, and that acid dissolved an iron ore into 1000 units of dirty iron; the sulfurless control made no gas and spent no FE
+EXIT:0
+```
+
+What the numbers prove: one dust spent exactly 20,000 FE (80,000 → 60,000) and put exactly 100 SO2
+in the neighbour's 64,000-unit tank; the first infuser spent 50 × 200 FE and 100 SO2 (the source
+tank 100 → 0) plus 51 oxygen (50 spent, one held in its own tank) to make 100 SO3; the second spent
+100 × 200 FE and 100 vapour (one more held) to make 100 locally sourced acid in another 64,000
+tank; and that acid — not a harness insert — fell 100 → 0 while the chamber spent 40,000 FE and
+made 1,000 units of dirty iron. A dirt in an otherwise identical charged oxidizer made no gas and
+spent no FE. `SELFTEST=acid` flips the acid tank's expected amount to 999 and the leg fails verbatim
+(`e2e-acid-selftest.log`):
+
+```
+FAIL: acid tank: expected mekanism:sulfuric_acid 999/64000 in 'chemical: mekanism:basic_chemical_tank holds mekanism:sulfuric_acid 100/64000 (answered by mekanism)'
+EXIT:1
+```
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the Chemical Oxidizer's block, 20,000 FE operation, 80,000 FE buffer, 10,000-unit gas tank | **tested** | A: `60000/80000 FE`, dust consumed, neighbour `sulfur_dioxide 100/64000` |
+| one sulfur dust → 100 SO2 for 20,000 FE | **tested** | A, unit test `one_sulfur_dust_oxidizes_into_100_so2_for_20000_fe` |
+| no sulfur (dirt) → nothing, no FE spent | **tested** | the control leg: `80000/80000 FE, input minecraft:dirt x1`, neighbour 0 |
+| the Chemical Infuser's block, 1-tick operation, 80,000 FE buffer, three 10,000-unit tanks | **tested** | B + C: `70000/80000`, `60000/80000`, parsed tanks |
+| O2 + 2 SO2 → 2 SO3 at 200 FE/t | **tested** | B: 100 SO2 spent, 100 SO3 made, 50 × 200 FE |
+| SO3 + vapour → sulfuric acid at 200 FE/t | **tested** | C: 100 vapour spent, 100 acid in the neighbour's 64,000 tank |
+| locally made acid runs the dissolution chamber | **tested** | D: acid 100 → 0, `120000/160000 FE`, `dirty_iron 1000/10000` |
+| the two crafted blocks, their loot tables, `mineable/pickaxe`, sulfur dust item/carry | **tested** | `carry_acid.py --check`, `check-block-tags.py` (22 blocks), recipe-types gate |
+| the acid assertion can fail | **tested** | `SELFTEST=acid` → `FAIL: acid tank … 999/64000` + `EXIT:1` |
+| all earlier families (crushing, smelting, enriching, injecting, purifying, washing, crystallizing, factories, storage/nugget, dissolution sweep, chain, persistence, capability) | **tested (unchanged)** | the full package leg still prints every earlier sweep's PASS line |
+| the other 24 oxidizing rows and 2 infusing rows | **not ported** | items/chemicals with no producer or consumer in this slice; generators print each skipped row |
+| the acid item/bucket form and the Electrolytic Separator that could make O2 and vapour locally | **not ported** | gap 1 below |
+
+### `## Upstream defects fixed`
+
+None found. The jar's sulfur row, the two infusing rows and the infuser's one-tick default are
+consistent with its own chemical register; the port's only change of shape is the recorded
+neighbour-push for the final acid (upstream needs configured ejectors or pipes, which this port does
+not ship) and the rule that an intermediate (SO3) stays in the centre tank for the next infuser to
+pull rather than being pushed into an emptied SO2 tank.
+
+### Deviations this slice records
+
+- **The oxidizer pushes its product to a neighbour; the infuser pulls both inputs.** Upstream uses
+  ejectors/transmitters for both; this port ships no pipes, so the producer pushes and the consumer
+  pulls through `mekanism:chemical`, as the gas machines and the washer already do.
+- **Only a final product is pushed.** The acid has no other consumer beside the infuser and must be
+  pushed into a tank; SO3 is an input to the second row and therefore stays in the centre tank for
+  the neighbour to pull, and infuser input tanks refuse a chemical no row consumes.
+- **The two machine models are the jar's own cutout models** and the blockstates are the barrel
+  template's `facing` × `open`, the other machines' recorded deviation.
+- **The two crafting recipes use vanilla stand-ins** (obsidian/redstone/iron block, the port's own
+  basic chemical tank) for the tags this port does not register.
+
+### Gaps after slice 17
+
+1. **The chain's inputs are still harness-filled.** Oxygen and water vapour go into tanks through
+   `/mekanism chemical insert`; no machine in the port makes them. Upstream's Electrolytic Separator
+   (water → hydrogen + oxygen) and the rotary Condensentrator (water ↔ steam / water vapour) are the
+   next honest machines, and would let the acid chain run without any hand-inserted gas.
+2. The other 24 oxidizing rows and the hydrogen-chloride / uranium-hexafluoride infusing rows are
+   still unported (no producer or consumer in this slice).
+3. Upstream's convenience slots and GUI, `active` state, side config, upgrades, ejector and the
+   remaining machines stand as the earlier slices' gaps.
+
+### `## Next slice`
+
+**Family:** the Electrolytic Separator (the water → hydrogen + oxygen machine), from *Gaps after
+slice 17* item 1. It fits the `deep` tier as another machines-shaped feature: a block entity, its
+energy balance, a `horizon:fluids` water tank like the washer's, and two chemical output tanks — no
+renderer, entity or dimension. **In-game assertion:** place a separator beside a Basic Chemical
+Tank holding 1,000 mB of water through `horizon:fluids`, charge its buffer, and assert its parsed
+`/mekanism info` spends exactly `2 × usage` FE while two neighbour tanks gain exactly the row's
+hydrogen and oxygen amounts (`chemical read … <n>/64000`), with an empty-water control spending
+nothing.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+### Changelog (0.2.15) — real behaviour slice, supersedes the evidence-only 0.2.15 sweep
+
+> **0.2.15 — the acid chain head.** The evidence-only dissolution sweep kept this version number
+> because it was never published; this slice is the real behaviour change that earns it. The
+> Chemical Oxidizer (200 FE/t, 100 ticks and 20,000 FE, an 80,000 FE buffer and a 10,000-unit gas
+> tank) turns one sulfur dust into 100 units of SO2; the Chemical Infuser (200 FE/t, one tick an
+> operation, an 80,000 FE buffer and three 10,000-unit tanks) runs the jar's two acid rows — O2 +
+> 2 SO2 → 2 SO3 and SO3 + water vapour → sulfuric acid — with the final acid pushed through
+> `mekanism:chemical` into a neighbouring tank, so the dissolution chamber now runs on locally made
+> acid. Package: **415 entries, 269,801 B**, sha256 `d192d152…704f25f`; `check` exit 0; `fits`
+> `made for` at the pin and `fits` at `0b14f8a`; 145 tests, clippy `-D warnings` clean; bounded
+> game leg `PASS` + `EXIT:0`, sulfurless control makes nothing, `SELFTEST=acid` `EXIT:1` on the
+> flipped acid amount.
