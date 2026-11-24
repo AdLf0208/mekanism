@@ -26,15 +26,17 @@ use crate::runtime::{
     INJECTION_TANK, INJECTION_TICKS, IdleReason, ItemAmount, Machine, MachineRecipe,
     OXIDIZER_CAPACITY, OXIDIZER_OPERATION, OXIDIZER_TANK, OXIDIZER_TICKS, Operation, Outcome,
     PURIFY_CAPACITY, PURIFY_OPERATION, PURIFY_TANK, PURIFY_TICKS, PURIFYING_FACTORY_CAPACITY,
-    PURIFYING_FACTORY_TANK, SLURRIES, SMELTER_CAPACITY, SMELTER_OPERATION, SMELTER_TICKS,
-    SMELTING_FACTORY_CAPACITY, TANK_CAPACITY, Tank, WASHER_CAPACITY, WASHER_OPERATION,
-    WASHER_SLURRY, WASHER_TICKS, WASHER_WATER, WATER, clamp_energy, crushing, crystallizer_pull,
-    crystallizing, dissolve_pull, dissolving, dropper_move, energy_after_extract,
-    energy_after_insert, enriching, extract_chemical, factory_gas_want, gas_pull, infusing,
-    injecting, insert_chemical, operations_per_tick, oxidizing, process_crystal_tick,
-    process_dissolve_tick, process_factory_tick, process_gas_factory_tick, process_gas_tick,
-    process_infuse_tick, process_oxidize_tick, process_tick, process_wash_tick, purifying,
-    room_for, room_in_tank, smelting, washer_pull, washing,
+    PURIFYING_FACTORY_TANK, SEPARATOR_CAPACITY, SEPARATOR_FLUID, SEPARATOR_GAS,
+    SEPARATOR_OPERATION, SEPARATOR_TICKS, SLURRIES, SMELTER_CAPACITY, SMELTER_OPERATION,
+    SMELTER_TICKS, SMELTING_FACTORY_CAPACITY, TANK_CAPACITY, Tank, WASHER_CAPACITY,
+    WASHER_OPERATION, WASHER_SLURRY, WASHER_TICKS, WASHER_WATER, WATER, clamp_energy, crushing,
+    crystallizer_pull, crystallizing, dissolve_pull, dissolving, dropper_move,
+    energy_after_extract, energy_after_insert, enriching, extract_chemical, factory_gas_want,
+    gas_pull, infusing, injecting, insert_chemical, operations_per_tick, oxidizing,
+    process_crystal_tick, process_dissolve_tick, process_factory_tick, process_gas_factory_tick,
+    process_gas_tick, process_infuse_tick, process_oxidize_tick, process_separate_tick,
+    process_tick, process_wash_tick, purifying, room_for, room_in_tank, separating, smelting,
+    washer_pull, washing,
 };
 
 /// The five blocks of slices 1-3.
@@ -82,6 +84,11 @@ pub(crate) const DISSOLUTION: &str = "mekanism:chemical_dissolution_chamber";
 pub(crate) const OXIDIZER: &str = "mekanism:chemical_oxidizer";
 pub(crate) const INFUSER: &str = "mekanism:chemical_infuser";
 
+/// Slice 18's machine: the Electrolytic Separator, the tail of the acid chain's
+/// feed — water in, hydrogen and oxygen out, so the infuser's two gas inputs no
+/// longer need a hand-inserted chemical.
+pub(crate) const SEPARATOR: &str = "mekanism:electrolytic_separator";
+
 /// The block entity types, in this mod's namespace (`/mekanism` has no
 /// bearing on them). One type per block, as the retired bundle's
 /// `block_entity` hook named the block it was asked about.
@@ -103,6 +110,7 @@ const CRYSTALLIZER_TYPE: &str = "chemical_crystallizer";
 const DISSOLUTION_TYPE: &str = "chemical_dissolution_chamber";
 const OXIDIZER_TYPE: &str = "chemical_oxidizer";
 const INFUSER_TYPE: &str = "chemical_infuser";
+const SEPARATOR_TYPE: &str = "electrolytic_separator";
 
 /// A machine's menu slots: input, unused (the furnace menu's fuel slot) and
 /// output.
@@ -518,6 +526,28 @@ pub(crate) fn declare(registrar: &mut dyn Registrar, context: &RegistrationConte
     if let Err(error) = registrar.block_entity_part(&kind, InfuserPart) {
         context.refuse(&error.to_string());
     }
+    // Slice 18: the Electrolytic Separator. The acid chain's last hand-filled
+    // inputs are water and oxygen: this machine makes both from water, with the
+    // washer's fluid declaration (one 24,000 mB water tank, fill only) and two
+    // 2,400-unit chemical output tanks beside its 160,000 FE insert-only buffer.
+    // Like the oxidizer it pushes its products to neighbours through
+    // `mekanism:chemical` — this port ships no ejectors or pipes.
+    let key = registrar.block_key(SEPARATOR);
+    registrar.block_energy(&key, machine_battery(SEPARATOR_CAPACITY));
+    registrar.block_fluids(&key, separator_fluids());
+    let kind = registrar
+        .block_entity_type(SEPARATOR_TYPE)
+        .blocks(&[SEPARATOR_TYPE])
+        .build();
+    registrar.block_entity_capability(&CHEMICAL, &kind, |_, at| {
+        Some(Box::new(SeparatorTanks {
+            side: at,
+            capacity: SEPARATOR_GAS,
+        }) as Box<dyn ResourceHandler<Chemical>>)
+    });
+    if let Err(error) = registrar.block_entity_part(&kind, SeparatorPart) {
+        context.refuse(&error.to_string());
+    }
 }
 
 /// The one fluid the washer's tank takes, kept as the registration-time key the
@@ -532,6 +562,19 @@ pub(crate) fn washer_fluids() -> ModFluidTanks {
     // cannot be built outside the SDK's crate, so it is filled one field at a time.
     let mut tanks = ModFluidTanks::default();
     tanks.tanks = vec![i32::try_from(WASHER_WATER).unwrap_or(i32::MAX)];
+    tanks.faces = std::array::from_fn(|_| vec![0]);
+    tanks.inputs = vec![0];
+    tanks.outputs = Vec::new();
+    tanks
+}
+
+/// The separator's fluid tanks, as `block_fluids` declares them: one 24,000 mB
+/// water tank of upstream's `BasicFluidTank.input(MAX_FLUID, …)` shape — a fill
+/// may reach it from every face, but no drain may take from it. The machine
+/// spends its water itself when an operation finishes.
+pub(crate) fn separator_fluids() -> ModFluidTanks {
+    let mut tanks = ModFluidTanks::default();
+    tanks.tanks = vec![i32::try_from(SEPARATOR_FLUID).unwrap_or(i32::MAX)];
     tanks.faces = std::array::from_fn(|_| vec![0]);
     tanks.inputs = vec![0];
     tanks.outputs = Vec::new();
@@ -660,6 +703,7 @@ pub(crate) fn machine_capacity(id: &str) -> Option<i32> {
         DISSOLUTION => Some(DISSOLUTION_CAPACITY),
         OXIDIZER => Some(OXIDIZER_CAPACITY),
         INFUSER => Some(INFUSER_CAPACITY),
+        SEPARATOR => Some(SEPARATOR_CAPACITY),
         CUBE => Some(CUBE_CAPACITY),
         CABLE => Some(CABLE_CAPACITY),
         _ => None,
@@ -681,6 +725,7 @@ pub(crate) fn machine_ticks(id: &str) -> Option<i32> {
         DISSOLUTION => Some(DISSOLUTION_TICKS),
         OXIDIZER => Some(OXIDIZER_TICKS),
         INFUSER => Some(INFUSER_TICKS),
+        SEPARATOR => Some(SEPARATOR_TICKS),
         _ => None,
     }
 }
@@ -713,6 +758,12 @@ pub(crate) fn is_oxidizer(id: &str) -> bool {
 /// three tanks'.
 pub(crate) fn is_infuser(id: &str) -> bool {
     id == INFUSER
+}
+
+/// Whether the Electrolytic Separator stands at `id`: its `/mekanism info` line
+/// reports its water and two gas tanks rather than a slot machine's.
+pub(crate) fn is_separator(id: &str) -> bool {
+    id == SEPARATOR
 }
 
 /// Whether one of the five basic factories stands at `id`.
@@ -1027,6 +1078,33 @@ pub(crate) fn infuser_info_text(
         tank_name(output),
         output.amount,
         INFUSER_TANK
+    )
+}
+
+/// The `/mekanism info` report line for the Electrolytic Separator: its buffer,
+/// its one-tick progress, its water tank and its two gas output tanks.
+pub(crate) fn separator_info_text(
+    id: &str,
+    capacity: i32,
+    machine: Machine,
+    water: &FluidTank,
+    left: &Tank,
+    right: &Tank,
+) -> String {
+    format!(
+        "{id}: {}/{} FE, progress {}/{}, water {}/{} mB, left {} {}/{}, right {} {}/{}",
+        machine.energy,
+        capacity,
+        machine.progress,
+        SEPARATOR_TICKS,
+        water.amount,
+        SEPARATOR_FLUID,
+        tank_name(left),
+        left.amount,
+        SEPARATOR_GAS,
+        tank_name(right),
+        right.amount,
+        SEPARATOR_GAS
     )
 }
 
@@ -2791,6 +2869,170 @@ impl ResourceHandler<Chemical> for InfuserTanks {
     }
 }
 
+/// The Electrolytic Separator: one water tank and two gas output tanks, its own
+/// 160,000 FE buffer and a one-tick operation. Each tick it spends 2 mB of water
+/// for the row's hydrogen and oxygen, then pushes both gases to neighbours
+/// through [`CHEMICAL`] (upstream's ejectors, which this port does not have).
+pub(crate) struct SeparatorPart;
+
+#[mod_api::horizon_part]
+impl BlockPart for SeparatorPart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for SeparatorPart {
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        let mut saved = Tag::Compound(event.entity.nbt.clone());
+        let mut machine = read_machine(&saved, SEPARATOR_CAPACITY);
+        let mut water = read_washer_fluid(&saved);
+        let (mut left, mut right) = read_separator_tanks(&saved);
+        let outcome = process_separate_tick(
+            &mut machine,
+            SEPARATOR_OPERATION,
+            &mut water,
+            &mut left,
+            &mut right,
+            &separating::recipe_for,
+        );
+        let pushed = push_chemical(host, event.pos, &mut left, SEPARATOR_GAS)
+            + push_chemical(host, event.pos, &mut right, SEPARATOR_GAS);
+        write_state(&mut saved, machine.energy, machine.progress);
+        write_washer_fluid(&mut saved, &water);
+        write_separator_tanks(&mut saved, &left, &right);
+        if let Tag::Compound(nbt) = saved {
+            event.entity.nbt = nbt;
+        }
+        let idle = matches!(
+            outcome,
+            Outcome::Idle(
+                IdleReason::NoEnergy
+                    | IdleReason::NoFluid
+                    | IdleReason::NoRecipe
+                    | IdleReason::NoOutputSpace
+            )
+        );
+        if idle && pushed == 0 {
+            *event.reply = BlockEntityTickReply::Unchanged;
+        }
+    }
+}
+
+/// The separator's two gas tanks, as its saved compound holds them: `left_*`
+/// the hydrogen it makes and `right_*` the oxygen.
+#[must_use]
+pub(crate) fn read_separator_tanks(saved: &Tag) -> (Tank, Tank) {
+    (
+        read_prefixed_tank(saved, "left"),
+        read_prefixed_tank(saved, "right"),
+    )
+}
+
+/// Write both of the separator's gas tanks into its saved compound.
+pub(crate) fn write_separator_tanks(saved: &mut Tag, left: &Tank, right: &Tank) {
+    write_prefixed_tank(saved, "left", left);
+    write_prefixed_tank(saved, "right", right);
+}
+
+/// The separator's two chemical tanks, both output-only (upstream's
+/// `BasicChemicalTank.output`): a foreign insert is refused, and a neighbour
+/// takes the gas the machine has just made through `mekanism:chemical`.
+pub(crate) struct SeparatorTanks {
+    side: BlockSide,
+    capacity: u32,
+}
+
+impl SeparatorTanks {
+    fn held(&self, host: &mut dyn ServerHost) -> (Tank, Tank) {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return (Tank::default(), Tank::default());
+        };
+        entity
+            .data(&*host)
+            .map(|saved| read_separator_tanks(&Tag::Compound(saved)))
+            .unwrap_or_default()
+    }
+
+    fn store(&self, host: &mut dyn ServerHost, left: &Tank, right: &Tank) -> bool {
+        let Some(entity) = host.block_entity(self.side.level, self.side.pos) else {
+            return false;
+        };
+        let mut saved = Tag::Compound(Compound::new());
+        write_separator_tanks(&mut saved, left, right);
+        let Tag::Compound(patch) = saved else {
+            return false;
+        };
+        entity
+            .merge_data(host, patch)
+            .ok()
+            .is_some_and(|loaded| loaded)
+    }
+}
+
+impl ResourceHandler<Chemical> for SeparatorTanks {
+    fn size(&self, _: &mut dyn ServerHost) -> usize {
+        2
+    }
+
+    fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<Chemical> {
+        let (left, right) = self.held(host);
+        let tank = match index {
+            0 => left,
+            1 => right,
+            _ => return None,
+        };
+        tank.held().and_then(|(id, _)| Chemical::new(id))
+    }
+
+    fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32 {
+        let (left, right) = self.held(host);
+        match index {
+            0 => left.amount,
+            1 => right.amount,
+            _ => 0,
+        }
+    }
+
+    fn capacity(&self, _: &mut dyn ServerHost, index: usize, _: &Chemical) -> u32 {
+        if index < 2 { self.capacity } else { 0 }
+    }
+
+    fn insert(
+        &self,
+        _: &mut dyn ServerHost,
+        _: &Transaction,
+        _: usize,
+        _: &Chemical,
+        _: u32,
+    ) -> u32 {
+        0 // both output tanks take nothing from automation
+    }
+
+    fn extract(
+        &self,
+        host: &mut dyn ServerHost,
+        _: &Transaction,
+        index: usize,
+        chemical: &Chemical,
+        amount: u32,
+    ) -> u32 {
+        let (mut left, mut right) = self.held(host);
+        let target = match index {
+            0 => &mut left,
+            1 => &mut right,
+            _ => return 0,
+        };
+        let came = extract_chemical(target, chemical.as_str(), amount);
+        if came > 0 && self.store(host, &left, &right) {
+            came
+        } else {
+            0
+        }
+    }
+}
+
 /// The chemical capability for one block entity: its one tank, kept in the
 /// entity's saved compound (`chemical` + `amount`), as the SDK's `test:chemical`
 /// fixture keeps a tank.
@@ -3479,6 +3721,17 @@ pub(crate) fn info_line(host: &mut dyn ServerHost, pos: [i32; 3]) -> Option<Stri
             &read_prefixed_tank(&saved, "left"),
             &read_prefixed_tank(&saved, "right"),
             &read_prefixed_tank(&saved, "center"),
+        ));
+    }
+    if is_separator(&id) {
+        let (left, right) = read_separator_tanks(&saved);
+        return Some(separator_info_text(
+            &id,
+            capacity,
+            read_machine(&saved, capacity),
+            &read_washer_fluid(&saved),
+            &left,
+            &right,
         ));
     }
     let input = slot_stack(
@@ -4314,6 +4567,69 @@ mod crystallizer_support_tests {
             saved.get("output_amount"),
             Some(&Tag::Int(1_000)),
             "the saved amount is the int `/data get block` reads"
+        );
+    }
+}
+
+#[cfg(test)]
+mod separator_glue_tests {
+    use super::*;
+
+    /// The separator declares exactly one 24,000 mB water tank a fill from any
+    /// face may reach, as upstream's `BasicFluidTank.input(MAX_FLUID, …)`.
+    #[test]
+    fn the_separator_declares_one_24_000_mb_water_tank_a_fill_may_reach() {
+        let tanks = separator_fluids();
+        assert_eq!(tanks.tanks, vec![24_000]);
+        assert!(tanks.faces.iter().all(|face| face == &vec![0]));
+        assert_eq!(tanks.inputs, vec![0]);
+        assert!(tanks.outputs.is_empty());
+    }
+
+    /// Its two gas tanks are saved under the same prefixed keys the neighbour
+    /// handler reads, so a tank written by the tick and one written by a
+    /// capability call are the same state.
+    #[test]
+    fn the_separator_s_two_gas_tanks_save_and_read_back() {
+        let mut saved = Tag::Compound(Compound::new());
+        write_separator_tanks(
+            &mut saved,
+            &Tank::new("mekanism:hydrogen", 2),
+            &Tank::new("mekanism:oxygen", 1),
+        );
+        assert_eq!(
+            read_separator_tanks(&saved),
+            (
+                Tank::new("mekanism:hydrogen", 2),
+                Tank::new("mekanism:oxygen", 1)
+            )
+        );
+        assert_eq!(
+            saved.get("left_amount"),
+            Some(&Tag::Int(2)),
+            "the saved amount is the int `/data get block` reads"
+        );
+    }
+
+    /// The exact line the in-game leg asserts: the FE, the one-tick progress,
+    /// the water and both gases, named by what they hold.
+    #[test]
+    fn the_separator_info_line_is_the_one_the_e2e_asserts() {
+        assert_eq!(
+            separator_info_text(
+                "mekanism:electrolytic_separator",
+                160_000,
+                Machine {
+                    energy: 159_600,
+                    progress: 0
+                },
+                &FluidTank::new("minecraft:water", 998),
+                &Tank::new("mekanism:hydrogen", 2),
+                &Tank::new("mekanism:oxygen", 1),
+            ),
+            "mekanism:electrolytic_separator: 159600/160000 FE, progress 0/1, \
+             water 998/24000 mB, left mekanism:hydrogen 2/2400, \
+             right mekanism:oxygen 1/2400"
         );
     }
 }

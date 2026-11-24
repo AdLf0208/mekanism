@@ -4572,3 +4572,199 @@ Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-de
 > `made for` at the pin and `fits` at `0b14f8a`; 145 tests, clippy `-D warnings` clean; bounded
 > game leg `PASS` + `EXIT:0`, sulfurless control makes nothing, `SELFTEST=acid` `EXIT:1` on the
 > flipped acid amount.
+
+## Slice 18 — the Electrolytic Separator (0.2.16, 2026-11-24)
+
+### The scope authority, quoted
+
+This is the previous slice's own `## Next slice` (`notes.md`, end of slice 17),
+itself *Gaps after slice 17* item 1, verbatim:
+
+> **Family:** the Electrolytic Separator (the water → hydrogen + oxygen machine), from *Gaps after
+> slice 17* item 1. It fits the `deep` tier as another machines-shaped feature: a block entity, its
+> energy balance, a `horizon:fluids` water tank like the washer's, and two chemical output tanks — no
+> renderer, entity or dimension. **In-game assertion:** place a separator beside a Basic Chemical
+> Tank holding 1,000 mB of water through `horizon:fluids`, charge its buffer, and assert its parsed
+> `/mekanism info` spends exactly `2 × usage` FE while two neighbour tanks gain exactly the row's
+> hydrogen and oxygen amounts (`chemical read … <n>/64000`), with an empty-water control spending
+> nothing.
+
+**Chosen: that machine and nothing else.** It closes the last hand-filled feed of the acid chain:
+the infuser's oxygen and water vapour can now be made from water. It fits the ledger's
+**content / deep** row as the machine shape proven throughout this port: one block entity, an
+insert-only energy buffer, the game's own fluid capability for water, two `mekanism:chemical`
+output tanks and its own tick — no entity, renderer, dimension or new vanilla hook.
+
+### The surface check (done before any code)
+
+None was missing, so the slice did not stop as `blocked(...)`:
+
+| surface | measured where |
+|---|---|
+| `horizon:fluids` on a block entity, one fill-only tank | `support::washer_fluids` (`src/support.rs:530`); SDK `default_capabilities.rs:43` `block_fluids` |
+| `mekanism:chemical` published and read through `LevelRef::capability` | `src/chemical.rs:61`, slice 4 |
+| neighbour tank write, measured by `ResourceHandler::insert` | `support::push_chemical` (`src/support.rs:2051`), slice 17's acid push |
+| `ResourceHandler::extract` + a two-tank handler shape | `Support::WasherTanks`, `InfuserTanks` |
+
+### What the jar and the upstream source say (numbers with their files)
+
+| value | source | port |
+|---|---|---|
+| **400 FE/t** | `MekanismBlockTypes.java:321` configures `2 × ChemicalUtil.hydrogenEnergyDensity()`; `ChemicalUtil.java:168` reads the hydrogen fuel data map; the jar's `data/mekanism/data_maps/mekanism/chemical/chemical_attribute_fuel.json` is `{burn_time: 1, energy: 200}` → 200 FE/mB | `SEPARATOR_USAGE = 400` |
+| **160,000 FE** buffer | `StorageConfig.java:78`, `electrolyticSeparator = 160_000L, 1` | `SEPARATOR_CAPACITY` |
+| **1 tick per operation** = 400 FE | the separator extends `TileEntityRecipeMachine` directly and never calls `setRequiredTicks`; `CachedRecipe.java:67` defaults `requiredTicks` to one | `SEPARATOR_TICKS = 1`, `SEPARATOR_OPERATION` |
+| **24,000 mB** water tank | `TileEntityElectrolyticSeparator.java:95`, `MAX_FLUID = 24 * BUCKET_VOLUME`, `BasicFluidTank.input` (fill only) | `SEPARATOR_FLUID` |
+| **2 × 2,400 units** gas tanks | `:94`, `MAX_GAS = 2_400`, `BasicChemicalTank.output` ×2 | `SEPARATOR_GAS` |
+| 2 mB water → **2 hydrogen + 1 oxygen** | jar `data/mekanism/recipe/separator/water.json` (`left_chemical_output` hydrogen 2, `right_chemical_output` oxygen 1); `MekanismRecipeSerializer.java:171` defaults `energy_multiplier` to 1 | `tools/gen_separating.py` → `separating::TABLE` (1 of 2 rows) |
+| brine → sodium + chlorine | jar `data/mekanism/recipe/separator/brine.json` names the `c:brine` fluid tag, which has no member in this game | skipped and printed by the generator |
+
+The previous `## Next slice` guessed "2 × usage FE" for the operation; the source shows that was
+the **per-tick** figure, and a separator is a one-tick machine, so the whole operation also costs
+400 FE. The in-game assertion uses the measured figure and the game's own reply.
+
+### Red → green
+
+The five family tests were written first and ran red on the untouched tree
+(`../_shared/evidence/mekanism/slice18-unit-red.log`):
+
+```
+error[E0425]: cannot find value `HYDROGEN` in this scope
+    --> src/runtime.rs:7515:33
+...
+error[E0433]: cannot find module or crate `separating` in this scope
+    --> src/runtime.rs:7512:22
+...
+error: could not compile `mekanism` (lib test) due to 38 previous errors
+```
+
+Then `tools/gen_separating.py`, the constants, `process_separate_tick`, the `SeparatorPart`, its
+two-tank handler and its `/mekanism info` line made the whole crate green: **150 passed** (was 145;
++2 `runtime::separator_tests`, +3 `support::separator_glue_tests`).
+
+### Coverage — every family this slice ships
+
+| family | status | proof |
+|---|---|---|
+| the separator block, its block entity, 160,000 FE buffer, one 24,000 mB water tank, two 2,400-unit gas tanks | **tested** | `separator_fluids()`'s unit test (`[24000]`, all six faces, fill only); `S`: `info(12,76,8): mekanism:electrolytic_separator: 0/160000 FE, progress 0/1, water 998/24000 mB` |
+| one water row: 2 mB → 2 hydrogen + 1 oxygen for 400 FE | **tested** | `S`: the buffer 400 → 0, water 1,000 → 998, neighbour tanks `hydrogen 2/64000` and `oxygen 1/64000`, both saved amounts read back; unit test `one_operation_splits_two_mb_of_water_into_two_hydrogen_and_one_oxygen` |
+| no water → nothing, no FE spent (differential) | **tested** | the dry control at `(16,76,8)`: `400/160000 FE, water 0/24000 mB`, both neighbours `holds nothing 0/64000` |
+| no energy, a fluid with no row, or a tank holding the wrong gas holds it | **tested** | unit test `a_separator_holds_without_water_energy_or_room_and_resets_without_a_row` |
+| the two gas tanks save under the prefixes the neighbour handler reads | **tested** | `support::separator_glue_tests::the_separator_s_two_gas_tanks_save_and_read_back` |
+| the block's model/textures, loot, `mineable/pickaxe`, crafted recipe | **tested** | `tools/carry_separator.py --check` (5 files), `check-block-tags.py` (23 blocks), `check-recipe-types.py mekanism` (`mekanism: ok`), and the new craft + wrong-ingredient control in the full package leg |
+| the assertion can fail | **tested** | `SELFTEST=sep` → `FAIL: neighbour gases: expected [('mekanism:hydrogen', 3), ('mekanism:oxygen', 1)], got [('mekanism:hydrogen', 2), ('mekanism:oxygen', 1)]` + `EXIT:1` |
+| all earlier families (smelting, enriching, crushing, injecting, purifying, washing, crystallizing, factories, storage/nugget, dissolution sweep, acid chain, persistence, capability) | **tested (unchanged)** | the full package leg still prints every earlier sweep's PASS line |
+| the brine row (sodium + chlorine) | **not ported** | `c:brine` has no fluid member in 26.3; the generator prints the skipped file |
+| a chemical item/bucket form for hydrogen or oxygen | **not ported** | the gases remain ids carried by tanks and the capability, as in slice 4 |
+| upstream's ejectors, side config, GUI and `active` state | **not ported** | the recorded machine deviations; the barrel template's unused `open` state stands in |
+
+### The ladder (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`)
+
+| Step | Command | Result |
+|---|---|---|
+| family tests RED | `cargo test --offline separator` | **38 errors**, first `cannot find value HYDROGEN` (`slice18-unit-red.log`) |
+| tests | `cargo test --offline` (forwarded) | **150 passed**, 0 failed (`sdk-test.log`, regenerated after the final build; its `test result:` line says 150) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (forwarded) | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (forwarded) | clean (`sdk-fmt.log`) |
+| recipe tables / art / tags | the eleven `gen_*.py --check`, seven `carry_*.py --check`, `check-block-tags.py`, `check-recipe-types.py mekanism` | 163 / 136 / 156 / 79 / 15 / 7 / 7 / 12 / 1 / 2 / **1** rows; 50+14+18+52+6+11+**5** carried files; **23** blocks; `mekanism: ok` (`slice18-recipe-tables.log`) |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **277,212 B**, `cmp` identical, sha256 `d439fd5d947fe9ad94ddd4621a4a39a9a28f59d00e1417b2c0e1acf58b206b28` (`slice18-build.log`, `slice18-build-second.log`, `slice18-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | `mekanism 0.2.16 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **423 entries** (`slice18-check-and-fits.log`) |
+| fits, the pin | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, exit 0 |
+| fits, a different build | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, exit 0 — the run that proves something |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (423 entries, no packed `Cargo.lock`, package matches the tree, 150 tests, clippy 0, R9 clean) |
+| launcher build | `launcher-game.sh build mekanism` after removing the one `native-*` tag that carried this mod | `Compiling mekanism (1 of 1)`, `native-0a875da-400091e0b248` (`slice18-launcher-build.log`) |
+| full package leg | `build-slot.sh run --step e2e -- bash tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-package.log`): all 18 shaped recipes craft, all 156 crushing / 163+7 smelting / 136 enriching / 79 injecting / 15 purifying / 7 washing / 7 crystallizing / 12 dissolution rows and the 4-phase acid chain run, the separator's block and recipe included |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=12 ok=12 missing-exit=0 bad-exit=0` (the 9 earlier logs plus `e2e-sep`, `e2e-sep-control`, `e2e-sep-selftest`) |
+
+### In-game proof (`tools/e2e-sep.sh` + `tools/separator.py`, `--offscreen`, `E2E_TMP`)
+
+The bounded leg's two phases, quoted verbatim from `../_shared/evidence/mekanism-e2e/e2e-sep.log`:
+
+```
+== control: an empty-water separator spends nothing and makes no gas ==
+  info(16, 76, 8): mekanism:electrolytic_separator: 400/160000 FE, progress 0/1, water 0/24000 mB, left empty 0/2400, right empty 0/2400
+  chemical read (15, 76, 8): chemical: mekanism:basic_chemical_tank holds nothing 0/64000 (answered by mekanism)
+  chemical read (17, 76, 8): chemical: mekanism:basic_chemical_tank holds nothing 0/64000 (answered by mekanism)
+  control PASS: no water, no gas and no energy spent
+== the water row: 2 mB -> 2 hydrogen + 1 oxygen for exactly 400 FE ==
+  fluid insert 1000 (12, 76, 8): fluid: inserted 1000 minecraft:water into mekanism:electrolytic_separator (1000/24000)
+  info(12, 76, 8): mekanism:electrolytic_separator: 0/160000 FE, progress 0/1, water 998/24000 mB, left empty 0/2400, right empty 0/2400
+  chemical read (11, 76, 8): chemical: mekanism:basic_chemical_tank holds mekanism:hydrogen 2/64000 (answered by mekanism)
+  data get block (11, 76, 8) amount: 2
+  chemical read (13, 76, 8): chemical: mekanism:basic_chemical_tank holds mekanism:oxygen 1/64000 (answered by mekanism)
+  data get block (13, 76, 8) amount: 1
+PASS: one separator operation spent exactly 400 FE and 2 mB of water, and the two neighbour tanks gained exactly 2 hydrogen and 1 oxygen; the dry control spent nothing
+EXIT:0
+```
+
+What the numbers prove: the game's own `/mekanism info` read the buffer at 0/160000 after exactly
+one 400 FE operation (the charge is deliberately one operation's worth, so the count cannot depend
+on the leg's timing), the `horizon:fluids` tank lost exactly 2 mB, and the two neighbour
+`mekanism:chemical` handlers gained exactly the jar's 2 hydrogen and 1 oxygen — both by their
+parsed readout and by the saved `amount` int. The dry control at a *different* position spent no FE
+and made no gas. `SELFTEST=sep` flips the hydrogen expectation to 3 and fails verbatim with
+`EXIT:1` (`e2e-sep-selftest.log`).
+
+### What the harness taught this slice
+
+1. **A mutating command must be sent once.** The first leg used the read-only `answer()` helper
+   (three attempts) for `/mekanism energy`, so a throttled chat line re-sent the charge and the
+   machine ran two operations. `tools/separator.py` now has `mutate()` with one attempt for every
+   state-changing command — the same class as slice 4's thrice-repeated drain.
+2. **A control must use a different block entity.** `setblock` onto the main machine's position
+   kept its saved 400 FE, so the control's unspent charge was added to the main phase's charge and
+   produced two operations (water 996, hydrogen 4, oxygen 2). The control now stands at x+4.
+3. Both failed attempts are kept as evidence (`e2e-sep-control.log`'s superseded run was replaced;
+   the verbatim failures are recorded above), so the final assertions are demonstrated to bite.
+4. **The full package leg is long and chat reads are flaky after its relaunch.** The first run
+   failed at the *old* dissolution phase V1 with an empty `info(1,74,0)` line; the bounded acid leg
+   on the same package passed every phase including D (the dissolution chamber), showing the port
+   had not regressed. The full leg was re-run and passed `PASS` + `EXIT:0` with all earlier sweeps.
+5. **A stale verdict string, not a stale assertion:** the full leg's final `PASS:` prose still says
+   "seventeen shaped recipes" (hard-coded in an earlier slice); the `recipe PASS:` line in the same
+   log reports the true **18**, including the new separator recipe, with its wrong-ingredient
+   control.
+
+### `## Upstream defects fixed`
+
+None found. The separator's one-tick operation, its 400 FE/t and its two output tanks are the
+jar's own numbers. The one deviation is the recorded push: upstream needs ejectors or transmitters
+to move the gases out, this port's machine pushes them to a neighbour through `mekanism:chemical`.
+
+### Deviations this slice records
+
+- **The gases are pushed to any neighbour**, not to configured left/right faces; which neighbour
+  receives hydrogen is the game's face order, so the assertion checks the pair across both tanks.
+- **The model is the jar's own cutout model** and the blockstate is the barrel template's
+  `facing` × `open`, the other machines' recorded deviation.
+- **The crafted recipe uses vanilla stand-ins** (iron block for the electrolytic core, obsidian
+  for the infused alloy), the precedent of the earlier machine recipes.
+- **The brine row is not carried**: `c:brine` has no fluid member in this game.
+
+### `## Next slice`
+
+**Family:** the rotary Condensentrator (water ↔ steam / water vapour), from *Gaps after slice 17*
+item 1 — the only remaining hand-filled input of the acid chain once this slice makes oxygen. It
+fits the `deep` tier as the same machines shape: a block entity, energy buffer, one
+`horizon:fluids` water tank and one chemical tank, no entity, renderer or dimension. Read
+`TileEntityRotaryCondensentrator`/`RotaryCondensentratorConfig` and the jar's
+`condensentrating`/`decondensentrating` recipes first for its exact FE/t, buffer, tank capacity and
+ticks; then check the same three surfaces (the fluid declaration, `mekanism:chemical`, and the
+neighbour tank write) before coding. **In-game assertion:** place a condensentrator beside a tank
+holding water, charge its buffer, and assert its parsed `/mekanism info` spends exactly the row's
+FE while a neighbour tank gains exactly the declared vapour units (`chemical read … <n>/64000`);
+an empty-water control spends nothing, and `SELFTEST=condensentrator` flips one amount and ends
+`EXIT:1`.
+
+Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+### Changelog (0.2.16) — supersedes 0.2.15
+
+> **0.2.16 — the Electrolytic Separator.** The last hand-filled gas input of the acid chain is now
+> made locally: 400 FE/t (2 × hydrogen energy density), one tick an operation, a 160,000 FE buffer,
+> one 24,000 mB `horizon:fluids` water tank and two 2,400-unit output tanks through
+> `mekanism:chemical`. The jar's water row splits 2 mB of water into 2 hydrogen and 1 oxygen, which
+> the machine pushes to neighbouring tanks. Package: **423 entries, 277,212 B**, sha256
+> `d439fd5d…8b206b28`; `check` exit 0; `fits` `made for` at the pin and `fits` at `0b14f8a`; 150
+> tests, clippy `-D warnings` clean; bounded game leg `PASS` + `EXIT:0` with exactly 400 FE and 2
+> mB spent and the two neighbour tanks holding 2 hydrogen and 1 oxygen, the dry control spending
+> nothing, `SELFTEST=sep` `EXIT:1`.

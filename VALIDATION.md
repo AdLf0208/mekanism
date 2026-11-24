@@ -1,5 +1,66 @@
 # Validation
 
+## 0.2.16 — the Electrolytic Separator, slice 18 (2026-11-24)
+
+Validated on Linux against the campaign pin **Horizon
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20, `package_format` 6,
+`content_api` "0.2", rust 1.99.1) and mixins `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`,
+both recorded in `horizon-mod.toml`'s `[native]`. Every build, test and game leg ran through
+`ports/tools/build-slot.sh` (one lease per step, `CARGO_INCREMENTAL=0`, no `--target-dir`). The
+compile steps forwarded to `AdLf-PC`; the `--offscreen` game legs and the launcher build stayed
+local (the far box has no renderer or launcher).
+
+Upstream numbers were read from tag `v1.21.1-10.7.19.85` (`a00109e4`): **400 FE/t** (`2 ×`
+hydrogen's 200 FE/mB data-map density, `MekanismBlockTypes.java:321`), **160,000 FE**
+(`StorageConfig.java:78`), **one tick per operation** (`CachedRecipe.java:67`'s default, the
+separator never calls `setRequiredTicks`), a **24,000 mB** water tank and **2 × 2,400** gas tanks
+(`TileEntityElectrolyticSeparator.java:94-95`). The jar's `separator/water.json` row is 2 mB water
+→ 2 hydrogen + 1 oxygen.
+
+| Check | Command | Result |
+|---|---|---|
+| the family's tests, RED first | `cargo test --offline separator` | **38 errors**, first `cannot find value HYDROGEN` (`slice18-unit-red.log`) |
+| tests | `cargo test --offline` (forwarded, after the final build) | **150 passed**, 0 failed (`sdk-test.log`, `test result: ok. 150 passed`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` (forwarded) | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` (forwarded) | clean (`sdk-fmt.log`) |
+| recipe tables / art / tags | the eleven `gen_*.py --check`, seven `carry_*.py --check`, `check-block-tags.py`, `check-recipe-types.py mekanism` | 163 / 136 / 156 / 79 / 15 / 7 / 7 / 12 / 1 / 2 / **1** rows; 50+14+18+52+6+11+**5** carried files; **23** blocks; `mekanism: ok` |
+| package, twice | `rm -f Cargo.lock && cargo horizon-mod build` | **277,212 B**, `cmp` identical, sha256 `d439fd5d947fe9ad94ddd4621a4a39a9a28f59d00e1417b2c0e1acf58b206b28` (`slice18-build.log`, `slice18-build-second.log`, `slice18-reproducible.txt`) |
+| registry check | `cargo horizon-mod check mekanism.hmod` | exit 0, `mekanism 0.2.16 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **423 entries** (`slice18-check-and-fits.log`) |
+| fits, the pin | `cargo horizon-mod fits mekanism.hmod --build 0a875da` | `0a875da  made for`, exit 0 |
+| fits, a different build | `cargo horizon-mod fits mekanism.hmod --build 0b14f8a` | `0b14f8a  fits`, exit 0 |
+| package gate | `python3 ports/tools/verify-sdk-package.py mekanism` | **1/1** (423 entries, no packed `Cargo.lock`, package matches the tree, 150 tests, clippy 0, R9 clean) |
+| launcher build | `launcher-game.sh build mekanism` after removing the one `native-*` tag that carried this mod | `Compiling mekanism (1 of 1)`, `native-0a875da-400091e0b248` (`slice18-launcher-build.log`) |
+| full package leg | `build-slot.sh run --step e2e -- bash tools/e2e.sh` | **`PASS` + `EXIT:0`** (`e2e-package.log`): 18 shaped recipes, 156 crushing, 163+7 smelting, 136 enriching, 79 injecting, 15 purifying, 7 washing, 7 crystallizing, 12 dissolution rows and the 4-phase acid chain all green, unchanged from 0.2.15 |
+| log gate | `python3 ports/tools/check-e2e-logs.py mekanism-e2e --strict` | `logs=12 ok=12 missing-exit=0 bad-exit=0` |
+
+### In-game proof of the separator
+
+The bounded leg (`tools/e2e-sep.sh`, the launcher-built game, `E2E_TMP` on the scratch volume)
+ended **`PASS` + `EXIT:0`** (`e2e-sep.log`). Its control used a separate block entity at
+`(16,76,8)` and kept `400/160000 FE, water 0/24000 mB` with both neighbour tanks empty. The main
+phase inserted 1,000 mB of water through `horizon:fluids`, charged one operation's 400 FE and read,
+verbatim:
+
+```
+  fluid insert 1000 (12, 76, 8): fluid: inserted 1000 minecraft:water into mekanism:electrolytic_separator (1000/24000)
+  info(12, 76, 8): mekanism:electrolytic_separator: 0/160000 FE, progress 0/1, water 998/24000 mB, left empty 0/2400, right empty 0/2400
+  chemical read (11, 76, 8): chemical: mekanism:basic_chemical_tank holds mekanism:hydrogen 2/64000 (answered by mekanism)
+  chemical read (13, 76, 8): chemical: mekanism:basic_chemical_tank holds mekanism:oxygen 1/64000 (answered by mekanism)
+```
+
+The buffer spent exactly 400 FE, the water tank exactly 2 mB, and the two neighbour tanks'
+parsed readouts and saved `amount` ints are exactly 2 hydrogen and 1 oxygen. `SELFTEST=sep` flips
+the hydrogen expectation to 3 and the leg fails verbatim (`e2e-sep-selftest.log`):
+
+```
+FAIL: neighbour gases: expected [('mekanism:hydrogen', 3), ('mekanism:oxygen', 1)], got [('mekanism:hydrogen', 2), ('mekanism:oxygen', 1)]
+EXIT:1
+```
+
+Harness defects found and fixed in this leg: a mutating command re-sent by the read-only answer
+helper (now `mutate()`, one attempt), and a control placed on the main machine's block entity
+(its unspent 400 FE carried over; the control now stands at x+4).
+
 ## 0.2.15 — the acid chain head, slice 17 (2026-11-24)
 
 Validated on Linux against the campaign pin **Horizon

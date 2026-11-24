@@ -7495,3 +7495,267 @@ mod acid_tests {
         assert_eq!(machine.energy, 80_000);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Slice 18: the Electrolytic Separator — water -> hydrogen + oxygen
+// ---------------------------------------------------------------------------
+
+/// The separator's left output (`separator/water.json`).
+pub const HYDROGEN: &str = "mekanism:hydrogen";
+
+/// Usage 400 FE/t: `MekanismBlockTypes.java:321` configures the separator with
+/// `2 × ChemicalUtil.hydrogenEnergyDensity()`, and the jar's hydrogen fuel data
+/// map is `{burn_time: 1, energy: 200}` (200 FE/mB).
+pub const SEPARATOR_USAGE: i32 = 400;
+/// Storage 160,000 FE (`StorageConfig.java:78`, `electrolyticSeparator`).
+pub const SEPARATOR_CAPACITY: i32 = 160_000;
+/// A separator has no `setRequiredTicks`: `CachedRecipe`'s default is one tick.
+pub const SEPARATOR_TICKS: i32 = 1;
+pub const SEPARATOR_OPERATION: Operation = Operation {
+    ticks: SEPARATOR_TICKS,
+    usage: SEPARATOR_USAGE,
+};
+/// `TileEntityElectrolyticSeparator.MAX_FLUID = 24 * BUCKET_VOLUME` mB.
+pub const SEPARATOR_FLUID: u32 = 24_000;
+/// `TileEntityElectrolyticSeparator.MAX_GAS = 2_400` units, per output tank.
+pub const SEPARATOR_GAS: u32 = 2_400;
+
+/// One separating recipe: a fluid in, a gas out of each of the two tanks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeparateRecipe {
+    pub fluid: &'static str,
+    pub fluid_amount: u32,
+    pub left: &'static str,
+    pub left_amount: u32,
+    pub right: &'static str,
+    pub right_amount: u32,
+}
+
+/// The jar's `mekanism:separating` rows over fluids this game has, generated
+/// into `src/runtime.rs` by `tools/gen_separating.py`.
+pub mod separating {
+    use super::SeparateRecipe;
+
+    pub const ROW_COUNT: usize = TABLE.len();
+
+    #[must_use]
+    pub fn recipe_for(fluid: &str) -> Option<SeparateRecipe> {
+        TABLE.iter().find(|row| row.0 == fluid).map(recipe)
+    }
+
+    #[must_use]
+    pub fn rows() -> &'static [Row] {
+        TABLE
+    }
+
+    pub type Row = (&'static str, u32, &'static str, u32, &'static str, u32);
+
+    fn recipe(row: &Row) -> SeparateRecipe {
+        SeparateRecipe {
+            fluid: row.0,
+            fluid_amount: row.1,
+            left: row.2,
+            left_amount: row.3,
+            right: row.4,
+            right_amount: row.5,
+        }
+    }
+
+    // BEGIN GENERATED SEPARATING TABLE (tools/gen_separating.py)
+    // Generated from the jar's `mekanism:separating` recipes by
+    // `tools/gen_separating.py`; do not edit by hand. Each row is
+    // `(fluid, mB per operation, left chemical, left amount,
+    //  right chemical, right amount)`.
+    // Source recipes: 2. Rows: 1. Skipped: 1.
+    static TABLE: &[Row] = &[(
+        "minecraft:water",
+        2,
+        "mekanism:hydrogen",
+        2,
+        "mekanism:oxygen",
+        1,
+    )];
+    // END GENERATED SEPARATING TABLE
+}
+
+/// One tick of the Electrolytic Separator: 2 mB of water become the row's two
+/// gases in a single tick for 400 FE (`OneInputCachedRecipe.separating` with
+/// `CachedRecipe`'s one-tick default). Both gases are made at the operation's
+/// finish, which here is this tick; the fluid is spent with them.
+///
+/// No row (or a fluid with too little of it), no room for either whole gas
+/// batch, or no energy holds the operation and spends nothing.
+pub fn process_separate_tick(
+    machine: &mut Machine,
+    operation: Operation,
+    water: &mut FluidTank,
+    left: &mut Tank,
+    right: &mut Tank,
+    lookup: &dyn Fn(&str) -> Option<SeparateRecipe>,
+) -> Outcome {
+    let Some((fluid, held)) = water.held() else {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoFluid);
+    };
+    let Some(recipe) = lookup(fluid) else {
+        machine.progress = 0;
+        return Outcome::Idle(IdleReason::NoRecipe);
+    };
+    if held < recipe.fluid_amount {
+        return Outcome::Idle(IdleReason::NoFluid);
+    }
+    if room_in_tank(left, recipe.left, recipe.left_amount, SEPARATOR_GAS) < recipe.left_amount
+        || room_in_tank(right, recipe.right, recipe.right_amount, SEPARATOR_GAS)
+            < recipe.right_amount
+    {
+        return Outcome::Idle(IdleReason::NoOutputSpace);
+    }
+    if machine.energy < operation.usage {
+        return Outcome::Idle(IdleReason::NoEnergy);
+    }
+    machine.energy -= operation.usage;
+    machine.progress = 0;
+    water.spend(recipe.fluid_amount);
+    insert_chemical(left, recipe.left, recipe.left_amount, SEPARATOR_GAS)
+        .expect("a generated separating row names a registered chemical");
+    insert_chemical(right, recipe.right, recipe.right_amount, SEPARATOR_GAS)
+        .expect("a generated separating row names a registered chemical");
+    Outcome::Produced
+}
+
+#[cfg(test)]
+mod separator_tests {
+    use super::*;
+
+    /// The family's rule, from the jar's own numbers: 2 mB of water become
+    /// 2 units of hydrogen and 1 of oxygen in one tick for 400 FE, and the
+    /// water is taken at the operation's finish (one tick).
+    #[test]
+    fn one_operation_splits_two_mb_of_water_into_two_hydrogen_and_one_oxygen() {
+        let recipe = separating::recipe_for(WATER).expect("the jar's water row");
+        assert_eq!(recipe.fluid, WATER);
+        assert_eq!(recipe.fluid_amount, 2);
+        assert_eq!(recipe.left, HYDROGEN);
+        assert_eq!(recipe.left_amount, 2);
+        assert_eq!(recipe.right, OXYGEN);
+        assert_eq!(recipe.right_amount, 1);
+        assert_eq!(SEPARATOR_USAGE, 400, "2 x hydrogen energy density");
+        assert_eq!(SEPARATOR_CAPACITY, 160_000);
+        assert_eq!(
+            SEPARATOR_TICKS, 1,
+            "no setRequiredTicks: CachedRecipe defaults to one"
+        );
+        assert_eq!(SEPARATOR_OPERATION.ticks, 1);
+        assert_eq!(SEPARATOR_OPERATION.usage, 400);
+        assert_eq!(SEPARATOR_FLUID, 24_000);
+        assert_eq!(SEPARATOR_GAS, 2_400);
+        assert_eq!(separating::ROW_COUNT, 1, "brine has no fluid in this game");
+
+        let mut machine = Machine {
+            energy: SEPARATOR_CAPACITY,
+            progress: 0,
+        };
+        let mut water = FluidTank::new(WATER, 1_000);
+        let mut hydrogen = Tank::default();
+        let mut oxygen = Tank::default();
+        assert_eq!(
+            process_separate_tick(
+                &mut machine,
+                SEPARATOR_OPERATION,
+                &mut water,
+                &mut hydrogen,
+                &mut oxygen,
+                &separating::recipe_for,
+            ),
+            Outcome::Produced
+        );
+        assert_eq!(machine.energy, 159_600, "one 400 FE operation");
+        assert_eq!(water, FluidTank::new(WATER, 998), "2 mB were consumed");
+        assert_eq!(hydrogen, Tank::new(HYDROGEN, 2));
+        assert_eq!(oxygen, Tank::new(OXYGEN, 1));
+    }
+
+    /// No water, too little water, no energy, or a tank that already holds a
+    /// different gas all hold the operation and spend nothing; a fluid with no
+    /// row resets it. An empty-water control cannot pass this test.
+    #[test]
+    fn a_separator_holds_without_water_energy_or_room_and_resets_without_a_row() {
+        let mut machine = Machine {
+            energy: SEPARATOR_CAPACITY,
+            progress: 0,
+        };
+        let mut hydrogen = Tank::default();
+        let mut oxygen = Tank::default();
+        let mut empty = FluidTank::default();
+        assert_eq!(
+            process_separate_tick(
+                &mut machine,
+                SEPARATOR_OPERATION,
+                &mut empty,
+                &mut hydrogen,
+                &mut oxygen,
+                &separating::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoFluid)
+        );
+        assert_eq!(machine.energy, SEPARATOR_CAPACITY);
+
+        let mut too_little = FluidTank::new(WATER, 1);
+        assert_eq!(
+            process_separate_tick(
+                &mut machine,
+                SEPARATOR_OPERATION,
+                &mut too_little,
+                &mut hydrogen,
+                &mut oxygen,
+                &separating::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoFluid)
+        );
+
+        let mut unknown = FluidTank::new("mekanism:brine", 1_000);
+        machine.progress = 0;
+        assert_eq!(
+            process_separate_tick(
+                &mut machine,
+                SEPARATOR_OPERATION,
+                &mut unknown,
+                &mut hydrogen,
+                &mut oxygen,
+                &separating::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoRecipe)
+        );
+        assert_eq!(machine.progress, 0, "no row resets the progress");
+
+        let mut water = FluidTank::new(WATER, 1_000);
+        machine.energy = 399;
+        assert_eq!(
+            process_separate_tick(
+                &mut machine,
+                SEPARATOR_OPERATION,
+                &mut water,
+                &mut hydrogen,
+                &mut oxygen,
+                &separating::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoEnergy)
+        );
+        assert_eq!(water.amount, 1_000, "no energy takes no water");
+
+        machine.energy = SEPARATOR_CAPACITY;
+        let mut wrong_gas = Tank::new(OXYGEN, 5);
+        assert_eq!(
+            process_separate_tick(
+                &mut machine,
+                SEPARATOR_OPERATION,
+                &mut water,
+                &mut wrong_gas,
+                &mut oxygen,
+                &separating::recipe_for,
+            ),
+            Outcome::Idle(IdleReason::NoOutputSpace)
+        );
+        assert_eq!(machine.energy, SEPARATOR_CAPACITY);
+    }
+}

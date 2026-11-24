@@ -357,6 +357,22 @@ def main() -> int:
         ],
         "mekanism:chemical_dissolution_chamber", 1, "minecraft:obsidian",
     )
+    check(
+        "electrolytic separator: 4 iron + 2 redstone + 2 obsidian + iron block",
+        [
+            ("minecraft:iron_ingot", 4),
+            ("minecraft:redstone", 2),
+            ("minecraft:obsidian", 2),
+            ("minecraft:iron_block", 1),
+        ],
+        [
+            ("minecraft:iron_ingot", every(100, 102, 106, 108)),
+            ("minecraft:redstone", every(101, 107)),
+            ("minecraft:obsidian", every(103, 105)),
+            ("minecraft:iron_block", every(104)),
+        ],
+        "mekanism:electrolytic_separator", 1, "minecraft:obsidian",
+    )
 
     # --- controls: a wrong ingredient leaves the result empty -------------
     empty_control(
@@ -473,6 +489,21 @@ def main() -> int:
             ("minecraft:stick", every(107)),
             ("minecraft:redstone", every(103, 105)),
             ("minecraft:iron_block", every(104)),
+        ],
+    )
+    empty_control(
+        "electrolytic separator with a stick where the iron block goes",
+        [
+            ("minecraft:iron_ingot", 4),
+            ("minecraft:redstone", 2),
+            ("minecraft:obsidian", 2),
+            ("minecraft:stick", 1),
+        ],
+        [
+            ("minecraft:iron_ingot", every(100, 102, 106, 108)),
+            ("minecraft:redstone", every(101, 107)),
+            ("minecraft:obsidian", every(103, 105)),
+            ("minecraft:stick", every(104)),
         ],
     )
     empty_control(

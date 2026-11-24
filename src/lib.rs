@@ -1,4 +1,4 @@
-//! Mekanism for Horizon — slices 1–11, one flat SDK package (mod API 0.2).
+//! Mekanism for Horizon — slices 1–18, one flat SDK package (mod API 0.2).
 //!
 //! The carried blocks, items, models, textures, recipes, loot, tag and lang are
 //! the `assets/` and `data/` at the package root; the behaviour is the one

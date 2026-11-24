@@ -65,6 +65,9 @@
     "mekanism:block_tin",
     "mekanism:nugget_tin",
     "mekanism:block_uranium",
-    "mekanism:nugget_uranium"
+    "mekanism:nugget_uranium",
+    "mekanism:chemical_oxidizer",
+    "mekanism:chemical_infuser",
+    "mekanism:electrolytic_separator"
   ]
 }
